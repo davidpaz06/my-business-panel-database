@@ -1,5 +1,3 @@
--- SCHEMA: inventory 
-drop schema if exists inventory_module cascade;
 create schema if not exists inventory_module;
 set search_path to inventory_module;
 
