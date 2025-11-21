@@ -30,7 +30,7 @@ create table if not exists branch(
     branch_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     branch_name varchar(100) not null,
-    address text,
+    branch_address text,
     contact_email varchar(100),
     is_main_branch boolean default false,
     created_at timestamp default current_timestamp,
