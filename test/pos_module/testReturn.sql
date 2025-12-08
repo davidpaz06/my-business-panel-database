@@ -1,681 +1,570 @@
 -- =====================================
--- SCRIPT DE PRUEBA: DEVOLUCIONES MÚLTIPLES
+-- SCRIPT DE PRUEBA: DEVOLUCIONES PARCIALES Y TOTALES (idempotente)
 -- =====================================
--- Este script prueba el sistema completo de devoluciones:
--- 1. Preparación de datos (tenant, cliente, productos, factura)
--- 2. Creación de transacción de devolución
--- 3. Registro de productos devueltos (trigger automático)
--- 4. Verificación de resultados
+-- Sections follow the same style as testHybridPay.sql
+-- 1) Cleanup (idempotent)
+-- 2) Prepare tenant/branch/user/customer/products
+-- 3) Create sale and bill (via verify_customer_payment trigger)
+-- 4) Perform PARTIAL return (less than purchased quantity)
+-- 5) Verify invoice and sale updated and return_product rows created
+-- 6) Perform TOTAL return of remaining items
+-- 7) Verify invoice and sale zeroed and return_product rows created
 -- =====================================
 
+set local search_path = core, pos_module;
+
 -- ========================================
--- SECCIÓN 1: Preparación completa de datos
+-- SECCIÓN 0: Limpieza inicial (idempotente)
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid;
+begin
+    raise notice '========================================';
+    raise notice '🧹 SECCIÓN 0: Limpieza inicial (idempotente)';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+
+    if v_tenant_id is not null then
+
+        delete from pos_module.return_product where return_transaction_id in (
+            select return_transaction_id from pos_module.return_transaction rt
+            join pos_module.bill b on rt.bill_id = b.bill_id
+            join pos_module.sale s on b.sale_id = s.sale_id
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.return_transaction where bill_id in (
+            select b.bill_id from pos_module.bill b
+            join pos_module.sale s on b.sale_id = s.sale_id
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.bill_payment where bill_id in (
+            select b.bill_id from pos_module.bill b
+            join pos_module.sale s on b.sale_id = s.sale_id
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.bill where sale_id in (
+            select s.sale_id from pos_module.sale s
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.customer_payment where sale_id in (
+            select s.sale_id from pos_module.sale s
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.sale_item where tenant_id = v_tenant_id;
+        delete from pos_module.sale where branch_id in (
+            select branch_id from core.branch where tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.cash_register_sale where cash_register_session_id in (
+            select cash_register_session_id from pos_module.cash_register_session crs
+            join pos_module.cash_register cr on crs.cash_register_id = cr.cash_register_id
+            join core.branch br on cr.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.cash_register_session where cash_register_id in (
+            select cash_register_id from pos_module.cash_register cr
+            join core.branch br on cr.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.cash_register where branch_id in (
+            select branch_id from core.branch where tenant_id = v_tenant_id
+        );
+
+        delete from pos_module.score_transaction where tenant_id = v_tenant_id;
+        delete from pos_module.tenant_customer_score where tenant_id = v_tenant_id;
+        delete from pos_module.loyalty_program where tenant_id = v_tenant_id;
+
+        delete from core.product where tenant_id = v_tenant_id;
+        delete from core.tenant_customer where tenant_id = v_tenant_id;
+        delete from core.users where tenant_id = v_tenant_id;
+        delete from core.branch where tenant_id = v_tenant_id;
+        delete from core.tenant where tenant_id = v_tenant_id;
+
+        raise notice '   Previous test data removed for tenant %', v_tenant_id;
+    else
+        raise notice '   No previous test tenant found, nothing to clean';
+    end if;
+
+    raise notice '✅ SECCIÓN 0 COMPLETADA';
+    raise notice '========================================';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 1: Preparación completa de datos (idempotente)
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid;
+    v_branch_id uuid;
+    v_user_id uuid;
+    v_customer_id uuid;
+    v_prod_a uuid;
+    v_prod_b uuid;
+    v_prod_c uuid;
+    v_cash_reg uuid;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '🏪 SECCIÓN 1: Preparación de datos';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+    if v_tenant_id is null then
+        insert into core.tenant(tenant_name, region_id, contact_email, is_subscribed)
+        values ('Return Test Shop', (select region_id from core.region limit 1), 'returns@testshop.com', false)
+        returning tenant_id into v_tenant_id;
+    end if;
+
+    select branch_id into v_branch_id from core.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
+    if v_branch_id is null then
+        insert into core.branch (tenant_id, branch_name, branch_address, is_main_branch)
+        values (v_tenant_id, 'Main Store', 'Test Address 1', true)
+        returning branch_id into v_branch_id;
+    end if;
+
+    select user_id into v_user_id from core.users where tenant_id = v_tenant_id and email = 'cashier@returntest.com' limit 1;
+    if v_user_id is null then
+        insert into core.users (tenant_id, email, password_hash, role_id)
+        values (v_tenant_id, 'cashier@returntest.com', 'testhash', 1)
+        returning user_id into v_user_id;
+    end if;
+
+    select tenant_customer_id into v_customer_id from core.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
+    if v_customer_id is null then
+        insert into core.tenant_customer (tenant_id, first_name, last_name, document_number, email, phone)
+        values (v_tenant_id, 'Alice', 'Return', 'RT-001', 'customer@returntest.com', '555-0001')
+        returning tenant_customer_id into v_customer_id;
+    end if;
+
+    select product_id into v_prod_a from core.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    if v_prod_a is null then
+        insert into core.product (tenant_id, sku, product_name, unit_price)
+        values (v_tenant_id, 'RT-A', 'Product A', 10.00)
+        returning product_id into v_prod_a;
+    end if;
+
+    select product_id into v_prod_b from core.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    if v_prod_b is null then
+        insert into core.product (tenant_id, sku, product_name, unit_price)
+        values (v_tenant_id, 'RT-B', 'Product B', 20.00)
+        returning product_id into v_prod_b;
+    end if;
+
+    select product_id into v_prod_c from core.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+    if v_prod_c is null then
+        insert into core.product (tenant_id, sku, product_name, unit_price)
+        values (v_tenant_id, 'RT-C', 'Product C', 15.00)
+        returning product_id into v_prod_c;
+    end if;
+
+    select cash_register_id into v_cash_reg from pos_module.cash_register where branch_id = v_branch_id limit 1;
+    if v_cash_reg is null then
+        insert into pos_module.cash_register (branch_id, is_active) values (v_branch_id, true) returning cash_register_id into v_cash_reg;
+    end if;
+
+    perform 1 from pos_module.cash_register_session where cash_register_id = v_cash_reg and is_active = true;
+    if not found then
+        insert into pos_module.cash_register_session (cash_register_id, user_id, opening_amount, is_active)
+        values (v_cash_reg, v_user_id, 100.00, true);
+    end if;
+
+    perform 1 from core.payment_method where payment_method_id = 1;
+    if not found then
+        insert into core.payment_method(name) values ('cash');
+    end if;
+    perform 1 from core.payment_method where payment_method_id = 4;
+    if not found then
+        insert into core.payment_method(name) values ('loyalty_points');
+    end if;
+
+    raise notice '✅ SECCIÓN 1 COMPLETADA';
+    raise notice '========================================';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 2: Crear venta y pagar (genera bill)
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid;
+    v_branch_id uuid;
+    v_customer_id uuid;
+    v_prod_a uuid;
+    v_prod_b uuid;
+    v_prod_c uuid;
+    v_sale_id uuid;
+    v_payment_id uuid;
+    v_tax numeric(10,2);
+    v_subtotal numeric(10,2);
+    v_total numeric(10,2);
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '🛒 SECCIÓN 2: Crear venta y pagar (genera factura)';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select branch_id into v_branch_id from core.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
+    select tenant_customer_id into v_customer_id from core.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
+    select product_id into v_prod_a from core.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    select product_id into v_prod_b from core.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    select product_id into v_prod_c from core.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+
+    v_subtotal := 140.00; -- A x5 (50) + B x3 (60) + C x2 (30)
+    v_tax := round(v_subtotal * 0.10, 2); -- assume 10% tax rate in test setup
+    v_total := v_subtotal + v_tax;
+
+    insert into pos_module.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
+    values (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
+    returning sale_id into v_sale_id;
+
+    insert into pos_module.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    values 
+        (v_sale_id, v_tenant_id, v_prod_a, 5, 10.00, 50.00),
+        (v_sale_id, v_tenant_id, v_prod_b, 3, 20.00, 60.00),
+        (v_sale_id, v_tenant_id, v_prod_c, 2, 15.00, 30.00);
+
+    raise notice '✓ Sale created: % (subtotal $% tax $% total $%)', v_sale_id, v_subtotal, v_tax, v_total;
+
+    insert into pos_module.customer_payment (tenant_customer_id, sale_id, payment_method_id, payment_amount, currency_id, verified)
+    values (v_customer_id, v_sale_id, 1, v_total, 1, false)
+    returning customer_payment_id into v_payment_id;
+
+    raise notice '✓ Payment created (unverified): % amount $%', v_payment_id, v_total;
+
+    call pos_module.verify_customer_payment(v_payment_id);
+
+    perform pg_sleep(0.2);
+
+    if not exists (select 1 from pos_module.bill where sale_id = v_sale_id) then
+        raise exception 'Bill was not created for sale %', v_sale_id;
+    end if;
+
+    raise notice '✅ SECCIÓN 2 COMPLETADA - Sale billed';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 3: Devolución PARCIAL (menos que lo comprado)
+-- ========================================
+do $$
+declare
+    v_sale_id uuid;
+    v_bill_id uuid;
+    v_return_tx uuid;
+    v_customer_id uuid;
+    v_si_a uuid;
+    v_si_b uuid;
+    v_return_total numeric(10,2);
+    v_expected_return numeric(10,2) := 40.00;
+    v_return_product_count int;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '🔄 SECCIÓN 3: Crear devolución PARCIAL';
+    raise notice '========================================';
+
+    select s.sale_id into v_sale_id
+    from pos_module.sale s
+    join core.branch b on s.branch_id = b.branch_id
+    join core.tenant t on b.tenant_id = t.tenant_id
+    where t.tenant_name = 'Return Test Shop'
+    order by s.sale_date desc
+    limit 1;
+
+    if v_sale_id is null then raise exception 'No sale found for partial return'; end if;
+
+    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos_module.bill where sale_id = v_sale_id limit 1;
+
+    select sale_item_id into v_si_a from pos_module.sale_item where sale_id = v_sale_id and product_id = (
+        select product_id from core.product where tenant_id = (select tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-A' limit 1
+    ) limit 1;
+
+    select sale_item_id into v_si_b from pos_module.sale_item where sale_id = v_sale_id and product_id = (
+        select product_id from core.product where tenant_id = (select tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-B' limit 1
+    ) limit 1;
+
+    if v_si_a is null or v_si_b is null then
+        raise exception 'Sale items for A or B not found';
+    end if;
+
+    insert into pos_module.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
+    values (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos_module.return_status where status_name = 'pending' limit 1))
+    returning return_transaction_id into v_return_tx;
+
+    raise notice '✓ Return transaction created: %', v_return_tx;
+
+    -- insert return lines (trigger will compute total_price and update sale_item/bill)
+    insert into pos_module.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
+    values
+        (v_return_tx, v_si_a, 2, 10.00),
+        (v_return_tx, v_si_b, 1, 20.00);
+
+    perform pg_sleep(0.1);
+
+    -- Verify return_product rows were created
+    select count(*) into v_return_product_count from pos_module.return_product where return_transaction_id = v_return_tx;
+    
+    if v_return_product_count <> 2 then
+        raise exception 'Expected 2 return_product rows, found %', v_return_product_count;
+    end if;
+
+    raise notice '✓ return_product rows created: %', v_return_product_count;
+
+    select coalesce(sum(total_price),0) into v_return_total from pos_module.return_product where return_transaction_id = v_return_tx;
+
+    if abs(v_return_total - v_expected_return) > 0.01 then
+        raise exception 'Partial return recorded amount mismatch. Expected $% got $%', v_expected_return, v_return_total;
+    end if;
+
+    update pos_module.return_transaction set total_refund_amount = v_return_total where return_transaction_id = v_return_tx;
+
+    raise notice '✓ Partial return recorded: % lines, returned total $%', v_return_product_count, v_return_total;
+    raise notice '✅ SECCIÓN 3 COMPLETADA';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 4: Verificaciones después de devolución PARCIAL
+-- ========================================
+do $$
+declare
+    v_bill record;
+    v_qty_a int;
+    v_qty_b int;
+    v_qty_c int;
+    v_tenant_id uuid;
+    v_tax_rate numeric(5,2);
+    v_expected_subtotal numeric(10,2) := 100.00; -- 140 - 40
+    v_expected_tax numeric(10,2);
+    v_expected_total numeric(10,2);
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '📦 SECCIÓN 4: Verificaciones tras devolución PARCIAL';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+
+    select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
+    from pos_module.bill b
+    join pos_module.sale s on b.sale_id = s.sale_id
+    join core.branch br on s.branch_id = br.branch_id
+    where br.tenant_id = v_tenant_id
+    order by b.billed_at desc
+    limit 1;
+
+    select coalesce(quantity,0) into v_qty_a from pos_module.sale_item si join core.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-A' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_b from pos_module.sale_item si join core.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-B' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_c from pos_module.sale_item si join core.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-C' and si.tenant_id = v_tenant_id limit 1;
+
+    select rate_percentage into v_tax_rate
+    from core.tax_rate tr
+    join core.region r on tr.region = r.region_name
+    join core.tenant t on t.region_id = r.region_id
+    where t.tenant_id = v_tenant_id
+    limit 1;
+
+    if v_tax_rate is null then v_tax_rate := 0; end if;
+
+    v_expected_tax := round(v_expected_subtotal * (v_tax_rate / 100), 2);
+    v_expected_total := round(v_expected_subtotal + v_expected_tax, 2);
+
+    raise notice 'Bill after partial return: subtotal $% tax $% total $%', v_bill.subtotal_amount, v_bill.tax_amount, v_bill.total_amount;
+    raise notice 'Remaining quantities -> A: %, B: %, C: %', v_qty_a, v_qty_b, v_qty_c;
+
+    if abs(v_bill.subtotal_amount - v_expected_subtotal) > 0.01 then
+        raise exception 'Partial return: bill subtotal mismatch. Expected $% got $%', v_expected_subtotal, v_bill.subtotal_amount;
+    end if;
+
+    if abs(v_bill.tax_amount - v_expected_tax) > 0.01 then
+        raise exception 'Partial return: bill tax mismatch. Expected $% got $%', v_expected_tax, v_bill.tax_amount;
+    end if;
+
+    if abs(v_bill.total_amount - v_expected_total) > 0.01 then
+        raise exception 'Partial return: bill total mismatch. Expected $% got $%', v_expected_total, v_bill.total_amount;
+    end if;
+
+    -- verify sale totals reconciled with remaining sale_items
+    raise notice '✅ SECCIÓN 4 COMPLETADA - Partial return verified';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 5: Devolución TOTAL de los elementos restantes
+-- ========================================
+do $$
+declare
+    v_bill_id uuid;
+    v_return_tx uuid;
+    v_sale_id uuid;
+    v_customer_id uuid;
+    v_si record;
+    v_total_returned numeric(10,2) := 0;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '🔄 SECCIÓN 5: Devolución TOTAL de elementos restantes';
+    raise notice '========================================';
+
+    select s.sale_id into v_sale_id
+    from pos_module.sale s
+    join core.branch b on s.branch_id = b.branch_id
+    join core.tenant t on b.tenant_id = t.tenant_id
+    where t.tenant_name = 'Return Test Shop'
+    order by s.sale_date desc
+    limit 1;
+
+    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos_module.bill where sale_id = v_sale_id limit 1;
+
+    insert into pos_module.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
+    values (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos_module.return_status where status_name = 'pending' limit 1))
+    returning return_transaction_id into v_return_tx;
+
+    for v_si in
+        select sale_item_id, quantity, unit_price from pos_module.sale_item where sale_id = v_sale_id
+    loop
+        v_total_returned := v_total_returned + (v_si.quantity * v_si.unit_price);
+        insert into pos_module.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
+        values (v_return_tx, v_si.sale_item_id, v_si.quantity, v_si.unit_price);
+    end loop;
+
+    update pos_module.return_transaction set total_refund_amount = v_total_returned where return_transaction_id = v_return_tx;
+
+    perform pg_sleep(0.1);
+
+    raise notice '✓ Total return created: % , refunded $%', v_return_tx, v_total_returned;
+    raise notice '✅ SECCIÓN 5 COMPLETADA';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 6: Verificaciones después de devolución TOTAL
+-- ========================================
+do $$
+declare
+    v_bill record;
+    v_remaining_items int;
+    v_tenant_id uuid;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '📦 SECCIÓN 6: Verificaciones tras devolución TOTAL';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+
+    select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
+    from pos_module.bill b
+    join pos_module.sale s on b.sale_id = s.sale_id
+    join core.branch br on s.branch_id = br.branch_id
+    where br.tenant_id = v_tenant_id
+    order by b.billed_at desc
+    limit 1;
+
+    select count(*) into v_remaining_items from pos_module.sale_item si
+    join pos_module.sale s on si.sale_id = s.sale_id
+    join core.branch br on s.branch_id = br.branch_id
+    where br.tenant_id = v_tenant_id;
+
+    raise notice 'Bill after total return: subtotal $% tax $% total $%', v_bill.subtotal_amount, v_bill.tax_amount, v_bill.total_amount;
+    raise notice 'Remaining sale_item rows for tenant: %', v_remaining_items;
+
+    if v_remaining_items <> 0 then
+        raise exception 'Total return failed: sale_items still exist (% rows)', v_remaining_items;
+    end if;
+
+    if round(v_bill.subtotal_amount,2) <> 0.00 or round(v_bill.total_amount,2) <> 0.00 then
+        raise exception 'Total return failed: bill not zeroed (subtotal $% total $%)', v_bill.subtotal_amount, v_bill.total_amount;
+    end if;
+
+    raise notice '✅ Total return succeeded, invoice zeroed and sale items removed';
+    raise notice '✅ SECCIÓN 6 COMPLETADA';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 7: Resumen final
 -- ========================================
 do $$
 declare
     v_tenant_id uuid;
     v_customer_id uuid;
-    v_product_a_id uuid;
-    v_product_b_id uuid;
-    v_product_c_id uuid;
-    v_payment_id uuid;
-    v_bill_id uuid;
-    v_bill_product_a_id uuid;
-    v_bill_product_b_id uuid;
-    v_bill_product_c_id uuid;
-begin
-    raise notice '========================================';
-    raise notice '🧪 TEST: Multiple returns from same bill';
-    raise notice '========================================';
-    raise notice '';
-    raise notice '📋 SECCIÓN 1: Preparación de datos';
-    raise notice '========================================';
-    
-    -- =====================================
-    -- 1.1 Crear tenant
-    -- =====================================
-    insert into core.tenant (tenant_name, contact_email, is_subscribed)
-    values ('Test Shop', 'test@shop.com', true)
-    returning tenant_id into v_tenant_id;
-    
-    raise notice '✓ Tenant creado: %', v_tenant_id;
-    
-    -- =====================================
-    -- 1.2 Crear cliente
-    -- =====================================
-    insert into core.tenant_customer (
-        tenant_id, 
-        first_name, 
-        last_name, 
-        document_number, 
-        email, 
-        phone
-    )
-    values (
-        v_tenant_id, 
-        'Jane', 
-        'Smith',
-        'DOC456', 
-        'jane@test.com', 
-        '555-0200'
-    )
-    returning tenant_customer_id into v_customer_id;
-    
-    raise notice '✓ Cliente creado: %', v_customer_id;
-    
-    -- =====================================
-    -- 1.3 Crear productos
-    -- =====================================
-    insert into core.product (tenant_id, sku, product_name, unit_price)
-    values (v_tenant_id, 'SKU-A', 'Product A', 10.00)
-    returning product_id into v_product_a_id;
-    
-    insert into core.product (tenant_id, sku, product_name, unit_price)
-    values (v_tenant_id, 'SKU-B', 'Product B', 20.00)
-    returning product_id into v_product_b_id;
-    
-    insert into core.product (tenant_id, sku, product_name, unit_price)
-    values (v_tenant_id, 'SKU-C', 'Product C', 15.00)
-    returning product_id into v_product_c_id;
-    
-    raise notice '✓ Productos creados: 3';
-    raise notice '  - Product A (SKU-A): $10.00';
-    raise notice '  - Product B (SKU-B): $20.00';
-    raise notice '  - Product C (SKU-C): $15.00';
-    
-    -- =====================================
-    -- 1.4 Crear pago del cliente (SIN VERIFICAR)
-    -- =====================================
-    insert into pos_module.customer_payment (
-        tenant_customer_id, 
-        payment_method_id, 
-        payment_amount, 
-        currency_id, 
-        verified  -- ⚠️ CAMBIO: Ahora FALSE
-    )
-    values (v_customer_id, 1, 140.00, 1, false)  -- ← CAMBIADO A FALSE
-    returning customer_payment_id into v_payment_id;
-    
-    raise notice '✓ Pago creado: %', v_payment_id;
-    raise notice '  Monto: $140.00 USD';
-    raise notice '  Estado: Pendiente (no verificado)';
-    
-    -- =====================================
-    -- 1.5 Verificar el pago (esto dispara el trigger)
-    -- =====================================
-    raise notice '';
-    raise notice '🔄 Verificando pago...';
-    
-    update pos_module.customer_payment
-    set verified = true
-    where customer_payment_id = v_payment_id;
-    
-    raise notice '✓ Pago verificado';
-    
-    -- =====================================
-    -- 1.6 Esperar a que se cree la factura (trigger automático)
-    -- =====================================
-    perform pg_sleep(0.5);
-    
-    select bill_id into v_bill_id
-    from pos_module.bill
-    where customer_payment_id = v_payment_id;
-    
-    if v_bill_id is null then
-        raise exception 'Bill was not created automatically. Check trigger on_customer_payment_verified';
-    end if;
-    
-    raise notice '✓ Factura creada automáticamente: %', v_bill_id;
-    
-    -- =====================================
-    -- 1.7 Agregar productos a la factura
-    -- =====================================
-    insert into pos_module.bill_product (
-        bill_id, 
-        tenant_id, 
-        product_id, 
-        quantity, 
-        unit_price
-    )
-    values (v_bill_id, v_tenant_id, v_product_a_id, 5, 10.00)
-    returning bill_product_id into v_bill_product_a_id;
-    
-    insert into pos_module.bill_product (
-        bill_id, 
-        tenant_id, 
-        product_id, 
-        quantity, 
-        unit_price
-    )
-    values (v_bill_id, v_tenant_id, v_product_b_id, 3, 20.00)
-    returning bill_product_id into v_bill_product_b_id;
-    
-    insert into pos_module.bill_product (
-        bill_id, 
-        tenant_id, 
-        product_id, 
-        quantity, 
-        unit_price
-    )
-    values (v_bill_id, v_tenant_id, v_product_c_id, 2, 15.00)
-    returning bill_product_id into v_bill_product_c_id;
-    
-    raise notice '✓ Productos agregados a la factura:';
-    raise notice '  - Product A: 5 units × $10.00 = $50.00';
-    raise notice '  - Product B: 3 units × $20.00 = $60.00';
-    raise notice '  - Product C: 2 units × $15.00 = $30.00';
-    
-    -- =====================================
-    -- 1.8 Actualizar totales de la factura
-    -- =====================================
-    update pos_module.bill
-    set subtotal_amount = 140.00,  -- 50 + 60 + 30
-        tax_amount = 14.00,         -- 10%
-        total_amount = 154.00
-    where bill_id = v_bill_id;
-    
-    raise notice '✓ Factura actualizada:';
-    raise notice '  Subtotal: $140.00';
-    raise notice '  Tax (10%%): $14.00';
-    raise notice '  Total: $154.00';
-    raise notice '';
-    raise notice '✅ SECCIÓN 1 FINALIZADA - Datos preparados correctamente';
-    raise notice '========================================';
-end $$;
-
--- ========================================
--- SECCIÓN 2: Verificar estado inicial
--- ========================================
-do $$
-declare
-    v_tenant_count int;
-    v_customer_count int;
-    v_product_count int;
-    v_bill_count int;
-    v_bill_product_count int;
-begin
-    raise notice '';
-    raise notice '========================================';
-    raise notice '📊 SECCIÓN 2: Estado inicial de la base de datos';
-    raise notice '========================================';
-    
-    select count(*) into v_tenant_count from core.tenant;
-    select count(*) into v_customer_count from core.tenant_customer;
-    select count(*) into v_product_count from core.product;
-    select count(*) into v_bill_count from pos_module.bill;
-    select count(*) into v_bill_product_count from pos_module.bill_product;
-    
-    raise notice '';
-    raise notice 'Registros en la base de datos:';
-    raise notice '  - Tenants: %', v_tenant_count;
-    raise notice '  - Clientes: %', v_customer_count;
-    raise notice '  - Productos: %', v_product_count;
-    raise notice '  - Facturas: %', v_bill_count;
-    raise notice '  - Productos en facturas: %', v_bill_product_count;
-    
-    if v_tenant_count = 0 or v_bill_count = 0 then
-        raise exception 'Database is empty. Run SECTION 1 first.';
-    end if;
-    
-    raise notice '';
-    raise notice '✅ SECCIÓN 2 FINALIZADA';
-    raise notice '========================================';
-end $$;
-
-
--- Ver factura actual antes de devoluciones
-select 
-    '=== FACTURA ANTES DE DEVOLUCIONES ===' as seccion,
-    b.bill_id,
-    concat(tc.first_name, ' ', tc.last_name) as cliente,
-    concat('$', b.subtotal_amount) as subtotal,
-    concat('$', b.tax_amount) as impuesto,
-    concat('$', b.total_amount) as total
-from pos_module.bill b
-join core.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
-order by b.billed_at desc
-limit 1;
-
-
--- Ver productos en la factura
-select 
-    '=== PRODUCTOS EN FACTURA ===' as seccion,
-    p.product_name,
-    bp.quantity as cantidad,
-    concat('$', bp.unit_price) as precio_unitario,
-    concat('$', bp.total_price) as precio_total
-from pos_module.bill_product bp
-join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-join pos_module.bill b on bp.bill_id = b.bill_id
-order by p.product_name;
-
-
--- ========================================
--- SECCIÓN 3: Crear transacción de devolución
--- ========================================
-do $$
-declare
-    v_bill_id uuid;
-    v_customer_id uuid;
-    v_return_transaction_id uuid;
-begin
-    raise notice '';
-    raise notice '========================================';
-    raise notice '🔄 SECCIÓN 3: Creando transacción de devolución';
-    raise notice '========================================';
-    
-    -- Obtener bill_id del último bill creado
-    select bill_id, tenant_customer_id 
-    into v_bill_id, v_customer_id
-    from pos_module.bill
-    order by billed_at desc
-    limit 1;
-    
-    if v_bill_id is null then
-        raise exception 'No bill found. Run SECTION 1 first.';
-    end if;
-    
-    raise notice '';
-    raise notice 'Datos de la factura:';
-    raise notice '  Bill ID: %', v_bill_id;
-    raise notice '  Customer ID: %', v_customer_id;
-    
-    -- Crear transacción de devolución
-    insert into pos_module.return_transaction (
-        bill_id, 
-        tenant_customer_id,
-        total_refund_amount, 
-        refund_method, 
-        return_status
-    )
-    values (
-        v_bill_id, 
-        v_customer_id, 
-        55.00,  -- Total a devolver
-        1,      -- cash
-        'pending'
-    )
-    returning return_transaction_id into v_return_transaction_id;
-    
-    raise notice '';
-    raise notice '✓ Transacción de devolución creada:';
-    raise notice '  Return Transaction ID: %', v_return_transaction_id;
-    raise notice '  Monto total a devolver: $55.00';
-    raise notice '  Método de reembolso: Efectivo';
-    raise notice '  Estado: Pendiente';
-    raise notice '';
-    raise notice '✅ SECCIÓN 3 FINALIZADA';
-    raise notice '========================================';
-end $$;
-
-
--- ========================================
--- SECCIÓN 4: Registrar productos devueltos (trigger automático)
--- ========================================
-do $$
-declare
-    v_return_transaction_id uuid;
-    v_bill_product_a_id uuid;
-    v_bill_product_b_id uuid;
-    v_bill_product_c_id uuid;
-begin
-    raise notice '';
-    raise notice '========================================';
-    raise notice '🔄 SECCIÓN 4: Registrando productos devueltos';
-    raise notice '========================================';
-    raise notice '';
-    raise notice '⚠️  Al insertar cada producto devuelto, el trigger';
-    raise notice '   update_on_return_trigger actualizará la factura automáticamente';
-    raise notice '';
-    
-    -- Obtener IDs necesarios
-    select return_transaction_id into v_return_transaction_id
-    from pos_module.return_transaction
-    order by return_date desc
-    limit 1;
-    
-    if v_return_transaction_id is null then
-        raise exception 'No return transaction found. Run SECTION 3 first.';
-    end if;
-    
-    -- Obtener IDs de productos en la factura
-    select bill_product_id into v_bill_product_a_id
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-A'
-    limit 1;
-    
-    select bill_product_id into v_bill_product_b_id
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-B'
-    limit 1;
-    
-    select bill_product_id into v_bill_product_c_id
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-C'
-    limit 1;
-    
-    raise notice '🔄 Devolviendo productos (trigger se ejecutará 3 veces)...';
-    raise notice '';
-    
-    -- ⚡ DEVOLVER 3 PRODUCTOS EN UNA SOLA TRANSACCIÓN
-    -- Cada INSERT dispara el trigger update_on_return_trigger
-    insert into pos_module.return_product (
-        return_transaction_id, 
-        bill_product_id, 
-        quantity, 
-        unit_price
-    )
-    values 
-        (v_return_transaction_id, v_bill_product_a_id, 2, 10.00),  -- -$20
-        (v_return_transaction_id, v_bill_product_b_id, 1, 20.00),  -- -$20
-        (v_return_transaction_id, v_bill_product_c_id, 1, 15.00);  -- -$15
-    
-    raise notice '';
-    raise notice '✅ SECCIÓN 4 FINALIZADA';
-    raise notice '   Total devuelto: $55.00 (2×$10 + 1×$20 + 1×$15)';
-    raise notice '========================================';
-end $$;
-
-
--- ========================================
--- SECCIÓN 5: Verificar productos en factura después de devoluciones
--- ========================================
-do $$
-declare
-    v_product_a_qty int;
-    v_product_b_qty int;
-    v_product_c_qty int;
-begin
-    raise notice '';
-    raise notice '========================================';
-    raise notice '📦 SECCIÓN 5: Verificar productos en factura';
-    raise notice '========================================';
-    
-    -- Obtener cantidades actuales de productos en factura
-    select coalesce(bp.quantity, 0) into v_product_a_qty
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-A'
-    limit 1;
-    
-    select coalesce(bp.quantity, 0) into v_product_b_qty
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-B'
-    limit 1;
-    
-    select coalesce(bp.quantity, 0) into v_product_c_qty
-    from pos_module.bill_product bp
-    join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-    where p.sku = 'SKU-C'
-    limit 1;
-    
-    raise notice '';
-    raise notice 'Cantidades actuales en factura:';
-    raise notice '  - Product A: % units (esperado: 3)', v_product_a_qty;
-    raise notice '  - Product B: % units (esperado: 2)', v_product_b_qty;
-    raise notice '  - Product C: % units (esperado: 1)', v_product_c_qty;
-    
-    -- Validar
-    if v_product_a_qty = 3 and v_product_b_qty = 2 and v_product_c_qty = 1 then
-        raise notice '';
-        raise notice '✅ Cantidades actualizadas correctamente';
-    else
-        raise notice '';
-        raise notice '❌ ERROR: Cantidades incorrectas';
-    end if;
-    
-    raise notice '';
-    raise notice '✅ SECCIÓN 5 FINALIZADA';
-    raise notice '========================================';
-end $$;
-
-
--- Ver productos actuales en factura
-select 
-    '=== PRODUCTOS DESPUÉS DE DEVOLUCIÓN ===' as seccion,
-    p.product_name,
-    bp.quantity as cantidad_actual,
-    concat('$', bp.unit_price) as precio_unitario,
-    concat('$', bp.total_price) as precio_total
-from pos_module.bill_product bp
-join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-order by p.product_name;
-
-
--- ========================================
--- SECCIÓN 6: Verificar totales de la factura
--- ========================================
-do $$
-declare
-    v_bill record;
-begin
-    raise notice '';
-    raise notice '========================================';
-    raise notice '💰 SECCIÓN 6: Verificar totales de factura';
-    raise notice '========================================';
-    
-    -- Obtener totales actuales de la factura
-    select 
-        subtotal_amount, 
-        tax_amount, 
-        total_amount
-    into v_bill
-    from pos_module.bill
-    order by billed_at desc
-    limit 1;
-    
-    raise notice '';
-    raise notice 'Totales actuales de la factura:';
-    raise notice '  Subtotal: $% (esperado: $85.00)', v_bill.subtotal_amount;
-    raise notice '  Tax: $% (esperado: $8.50)', v_bill.tax_amount;
-    raise notice '  Total: $% (esperado: $93.50)', v_bill.total_amount;
-    raise notice '';
-    
-    -- Cálculo esperado:
-    -- Original: $140.00 subtotal
-    -- Devuelto: 2×$10 + 1×$20 + 1×$15 = $55.00
-    -- Nuevo: $140 - $55 = $85.00 subtotal
-    -- Tax (10%): $85 × 0.10 = $8.50
-    -- Total: $85 + $8.50 = $93.50
-    
-    if v_bill.subtotal_amount = 85.00 and 
-       v_bill.tax_amount = 8.50 and 
-       v_bill.total_amount = 93.50 then
-        raise notice '✅ TOTALES CORRECTOS';
-    else
-        raise notice '❌ ERROR: Totales incorrectos';
-        raise notice '';
-        raise notice 'Diferencias:';
-        raise notice '  Subtotal: % (diff: $%)', 
-            v_bill.subtotal_amount, 
-            v_bill.subtotal_amount - 85.00;
-        raise notice '  Tax: % (diff: $%)', 
-            v_bill.tax_amount, 
-            v_bill.tax_amount - 8.50;
-        raise notice '  Total: % (diff: $%)', 
-            v_bill.total_amount, 
-            v_bill.total_amount - 93.50;
-    end if;
-    
-    raise notice '';
-    raise notice '✅ SECCIÓN 6 FINALIZADA';
-    raise notice '========================================';
-end $$;
-
-
--- Ver factura después de devoluciones
-select 
-    '=== FACTURA DESPUÉS DE DEVOLUCIONES ===' as seccion,
-    b.bill_id,
-    concat(tc.first_name, ' ', tc.last_name) as cliente,
-    concat('$', b.subtotal_amount) as subtotal,
-    concat('$', b.tax_amount) as impuesto,
-    concat('$', b.total_amount) as total
-from pos_module.bill b
-join core.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
-order by b.billed_at desc
-limit 1;
-
-
--- ========================================
--- SECCIÓN 7: Resumen final y validación completa
--- ========================================
-do $$
-declare
-    v_original_subtotal numeric(10,2) := 140.00;
-    v_original_tax numeric(10,2) := 14.00;
-    v_original_total numeric(10,2) := 154.00;
-    
-    v_current_subtotal numeric(10,2);
-    v_current_tax numeric(10,2);
-    v_current_total numeric(10,2);
-    
     v_return_count int;
-    v_return_total numeric(10,2);
+    v_return_sum numeric(10,2);
+    v_return_detail record;
 begin
     raise notice '';
     raise notice '========================================';
-    raise notice '📊 SECCION 7: RESUMEN FINAL';
+    raise notice '📊 SECCIÓN 7: RESUMEN FINAL';
     raise notice '========================================';
-    
-    -- Obtener datos actuales
-    select 
-        subtotal_amount, 
-        tax_amount, 
-        total_amount
-    into v_current_subtotal, v_current_tax, v_current_total
-    from pos_module.bill
-    order by billed_at desc
-    limit 1;
-    
-    -- Obtener estadísticas de devoluciones
-    select 
-        count(*),
-        sum(total_price)
-    into v_return_count, v_return_total
-    from pos_module.return_product;
-    
-    raise notice '';
-    raise notice '========================================';
-    raise notice '📈 COMPARACION DE FACTURA';
-    raise notice '========================================';
-    raise notice '';
-    raise notice 'Estado ORIGINAL:';
-    raise notice '  - Subtotal: $%', v_original_subtotal;
-    raise notice '  - Tax (10%%): $%', v_original_tax;
-    raise notice '  - Total: $%', v_original_total;
-    raise notice '';
-    raise notice 'DEVOLUCIONES:';
-    raise notice '  - Productos devueltos: %', v_return_count;
-    raise notice '  - Monto total devuelto: $%', v_return_total;
-    raise notice '  - Breakdown:';
-    raise notice '    • Product A: 2 x $10.00 = $20.00';
-    raise notice '    • Product B: 1 x $20.00 = $20.00';
-    raise notice '    • Product C: 1 x $15.00 = $15.00';
-    raise notice '';
-    raise notice 'Estado ACTUAL:';
-    raise notice '  - Subtotal: $%', v_current_subtotal;
-    raise notice '  - Tax (10%%): $%', v_current_tax;
-    raise notice '  - Total: $%', v_current_total;
-    raise notice '';
-    raise notice 'CAMBIOS:';
-    raise notice '  - Subtotal: $% -> $% (-$%)', 
-        v_original_subtotal, 
-        v_current_subtotal,
-        v_original_subtotal - v_current_subtotal;
-    raise notice '  - Tax: $% -> $% (-$%)', 
-        v_original_tax, 
-        v_current_tax,
-        v_original_tax - v_current_tax;
-    raise notice '  - Total: $% -> $% (-$%)', 
-        v_original_total, 
-        v_current_total,
-        v_original_total - v_current_total;
-    raise notice '';
-    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_customer_id into v_customer_id from core.tenant_customer where tenant_id = v_tenant_id limit 1;
+
+    select count(rp.return_product_id), coalesce(sum(rp.total_price),0)
+    into v_return_count, v_return_sum
+    from pos_module.return_product rp
+    join pos_module.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
+    join pos_module.bill b on rt.bill_id = b.bill_id
+    where b.sale_id in (
+        select s.sale_id from pos_module.sale s
+        join core.branch br on s.branch_id = br.branch_id
+        where br.tenant_id = v_tenant_id
+    );
+
+    raise notice 'Tenant: %', v_tenant_id;
+    raise notice 'Customer: %', v_customer_id;
+    raise notice 'Total return_product lines: %', v_return_count;
+    raise notice 'Total returned amount: $%', v_return_sum;
     raise notice '';
     
-    -- Validación final
-    if v_current_subtotal = 85.00 and 
-       v_current_tax = 8.50 and 
-       v_current_total = 93.50 and
-       v_return_count = 3 and
-       v_return_total = 55.00 then
-        raise notice '✅✅✅ TODAS LAS PRUEBAS PASARON ✅✅✅';
-        raise notice '';
-        raise notice 'El sistema de devoluciones funciona correctamente:';
-        raise notice '  ✓ Productos actualizados en factura';
-        raise notice '  ✓ Cantidades recalculadas correctamente';
-        raise notice '  ✓ Subtotal actualizado';
-        raise notice '  ✓ Impuesto recalculado proporcionalmente';
-        raise notice '  ✓ Total correcto';
-        raise notice '  ✓ Trigger ejecutado para cada producto devuelto';
-    else
-        raise notice '❌ ALGUNAS PRUEBAS FALLARON';
-        raise notice '';
-        raise notice 'Valores actuales vs esperados:';
-        raise notice '  Subtotal: $% (esperado: $85.00)', v_current_subtotal;
-        raise notice '  Tax: $% (esperado: $8.50)', v_current_tax;
-        raise notice '  Total: $% (esperado: $93.50)', v_current_total;
-        raise notice '  Returns: % (esperado: 3)', v_return_count;
-        raise notice '  Return total: $% (esperado: $55.00)', v_return_total;
-    end if;
+    -- Show detailed return_product entries
+    raise notice '📋 DETALLE DE DEVOLUCIONES (return_product):';
+    for v_return_detail in
+        select 
+            rp.return_product_id,
+            rp.quantity,
+            rp.unit_price,
+            rp.total_price,
+            p.sku,
+            p.product_name
+        from pos_module.return_product rp
+        join pos_module.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
+        join pos_module.bill b on rt.bill_id = b.bill_id
+        join pos_module.sale_item si on rp.sale_item_id = si.sale_item_id
+        join core.product p on si.product_id = p.product_id and si.tenant_id = p.tenant_id
+        where b.sale_id in (
+            select s.sale_id from pos_module.sale s
+            join core.branch br on s.branch_id = br.branch_id
+            where br.tenant_id = v_tenant_id
+        )
+    loop
+        raise notice '  - % (%) × % @ $% = $%',
+            v_return_detail.product_name,
+            v_return_detail.sku,
+            v_return_detail.quantity,
+            v_return_detail.unit_price,
+            v_return_detail.total_price;
+    end loop;
     
     raise notice '';
-    raise notice '✅ SECCION 7 FINALIZADA';
-    raise notice '========================================';
-    raise notice '';
-    raise notice '🎉 PRUEBAS COMPLETADAS';
+    raise notice '✅ TEST COMPLETO - Partial & Total returns flow validated';
     raise notice '========================================';
 end $$;
-
--- ========================================
--- CONSULTAS ADICIONALES PARA ANÁLISIS
--- ========================================
-
--- 1️⃣ Ver todas las devoluciones registradas
-select 
-    '=== DEVOLUCIONES REGISTRADAS ===' as seccion,
-    p.product_name,
-    rp.quantity as cantidad_devuelta,
-    concat('$', rp.unit_price) as precio_unitario,
-    concat('$', rp.total_price) as total_devuelto,
-    rp.created_at as fecha
-from pos_module.return_product rp
-join pos_module.bill_product bp on rp.bill_product_id = bp.bill_product_id
-join core.product p on bp.tenant_id = p.tenant_id and bp.product_id = p.product_id
-order by rp.created_at;
-
--- 2️⃣ Ver historial completo de la factura
-select 
-    '=== HISTORIAL DE FACTURA ===' as seccion,
-    'Original' as estado,
-    '$140.00' as subtotal,
-    '$14.00' as tax,
-    '$154.00' as total
-union all
-select 
-    '=== HISTORIAL DE FACTURA ===' as seccion,
-    'Actual' as estado,
-    concat('$', subtotal_amount) as subtotal,
-    concat('$', tax_amount) as tax,
-    concat('$', total_amount) as total
-from pos_module.bill
-order by estado desc;
-
--- 3️⃣ Ver transacción de devolución completa
-select 
-    '=== TRANSACCIÓN DE DEVOLUCIÓN ===' as seccion,
-    rt.return_transaction_id,
-    concat(tc.first_name, ' ', tc.last_name) as cliente,
-    concat('$', rt.total_refund_amount) as monto_reembolso,
-    pm.name as metodo_reembolso,
-    rt.return_status as estado,
-    rt.return_date as fecha
-from pos_module.return_transaction rt
-join core.tenant_customer tc on rt.tenant_customer_id = tc.tenant_customer_id
-join core.payment_method pm on rt.refund_method = pm.payment_method_id;

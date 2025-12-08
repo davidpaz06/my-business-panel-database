@@ -1,32 +1,48 @@
--- SCHEMA: core schema for common tables
 create schema if not exists core;
 set search_path to core;
 
-create table tenant(
-    tenant_id uuid primary key default gen_random_uuid(),
-    tenant_name varchar(100) unique not null,
-    contact_email varchar(100) not null,
-    is_subscribed boolean default false,
+create table if not exists region(
+    region_id serial primary key,
+    region_name varchar(100) unique not null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
-    -- TODO: preguntar si se necesita más info sobre el tenant
 );
+insert into region(region_name) values
+    ('Costa Rica'),
+    ('Panama'),
+    ('United States'),
+    ('United Kingdom'),
+    ('Japan')
+on conflict do nothing;
 
-create table branch(
+create table if not exists tenant(
+    tenant_id uuid primary key default gen_random_uuid(),
+    tenant_name varchar(100) unique not null,
+    region_id integer references core.region(region_id) on delete set null,
+    contact_email varchar(100) not null,
+    is_subscribed boolean default false,
+    stripe_id varchar(255) unique default null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+alter table core.tenant
+    add column if not exists stripe_id varchar(255) unique default null;
+
+create table if not exists branch(
     branch_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     branch_name varchar(100) not null,
-    address text,
+    branch_address text,
     contact_email varchar(100),
     is_main_branch boolean default false,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
-create unique index unique_main_branch_per_tenant 
+create unique index if not exists unique_main_branch_per_tenant 
     on core.branch (tenant_id) 
     where is_main_branch = true;
 
-create table document_type(
+create table if not exists document_type(
     document_type_id serial primary key, 
     type_name varchar(50) unique not null,
     description text,
@@ -36,23 +52,25 @@ create table document_type(
 insert into document_type(type_name, description) values
     ('passport', 'International travel document'),
     ('driver_license', 'Official driving permit'),
-    ('national_id', 'Government issued identification card');
+    ('national_id', 'Government issued identification card')
+on conflict do nothing;
 
-    create table customer_segment(
+create table if not exists customer_segment(
     customer_segment_id serial primary key,
     segment_name varchar(100) unique not null,
     segment_hierarchy integer not null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
-);
+    );
 insert into customer_segment(segment_name, segment_hierarchy) values
     ('vip', 1),
     ('loyal', 2),
     ('regular', 3),
     ('new', 4),
-    ('inactive', 5);
+    ('inactive', 5)
+on conflict do nothing;
 
-create table customer_segment_margin_type(
+create table if not exists customer_segment_margin_type(
     customer_segment_margin_type_id serial primary key,
     type_name varchar(50) unique not null,
     description text,
@@ -62,9 +80,11 @@ create table customer_segment_margin_type(
 insert into customer_segment_margin_type(type_name, description) values
     ('spending_based', 'Discounts based on total spending'),
     ('seniority_based', 'Discounts based on customer seniority'),
-    ('frequency_based', 'Discounts based on a monthly basis purchase frequency');
+    ('frequency_based', 'Discounts based on a monthly basis purchase frequency'),
+    ('free_selection', 'Customers can select products for free up to a limit')
+on conflict do nothing;
 
-create table customer_segment_margin(
+create table if not exists customer_segment_margin(
     customer_segment_margin_id uuid primary key not null default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     customer_segment_id int not null references core.customer_segment(customer_segment_id) on delete cascade,
@@ -74,8 +94,7 @@ create table customer_segment_margin(
     frequency_per_month int check (frequency_per_month >= 0)
 );
 
--- n:m table to link customers to tenants
-create table tenant_customer(
+create table if not exists tenant_customer(
     tenant_customer_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,  
     first_name varchar(100) not null,
@@ -95,7 +114,7 @@ create table tenant_customer(
     unique(tenant_id, phone)    
 );
 
-create table role(
+create table if not exists role(
     role_id serial primary key,
     role_name varchar(50) unique not null,
     role_hierarchy integer not null,
@@ -106,9 +125,10 @@ insert into role(role_name, role_hierarchy) values
     ('superuser', 4),
     ('admin', 3),
     ('manager', 2),
-    ('employee', 1);
+    ('employee', 1)
+on conflict do nothing;
 
-create table users( 
+create table if not exists users( 
     user_id uuid primary key default gen_random_uuid(),
     tenant_id uuid references core.tenant(tenant_id) on delete cascade,
     email varchar(100) unique not null,
@@ -118,7 +138,7 @@ create table users(
     updated_at timestamp default current_timestamp
 );
 
-create table currency(
+create table if not exists currency(
     currency_id serial primary key,
     currency_id_code char(3) unique not null,
     currency_name varchar(50) not null,
@@ -127,26 +147,32 @@ create table currency(
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
-insert into currency(currency_id_code, currency_name, symbol, exchange_rate_to_usd) values
-('USD', 'US Dollar', '$', 1.000000),
-('EUR', 'Euro', '€', 1.100000),
-('GBP', 'British Pound', '£', 1.250000),
-('JPY', 'Japanese Yen', '¥', 0.009000);
+insert into currency(currency_code, currency_name, symbol) values
+('CRC', 'Costa Rican Colón', '₡'),
+('USD', 'US Dollar', '$'),
+('EUR', 'Euro', '€'),
+('GBP', 'British Pound', '£'),
+('JPY', 'Japanese Yen', '¥')
+on conflict do nothing;
 
-create table tax_rate(
+create table if not exists tax_rate(
     tax_rate_id serial primary key,
     region varchar(100) unique not null,
+    region_id integer references core.region(region_id) on delete set null,
     rate_percentage numeric(5,2) not null check (rate_percentage >= 0 and rate_percentage <= 100),
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
-insert into tax_rate(region, rate_percentage) values
-('US Federal', 10.00),
-('EU Standard', 20.00),
-('UK Standard', 20.00),
-('JP Standard', 8.00);
+insert into core.tax_rate(region, region_id, rate_percentage) values
+('CR Standard', (select region_id from core.region where region_name = 'Costa Rica'), 13.00),
+('PA Standard', (select region_id from core.region where region_name = 'Panama'), 7.00),
+('US Federal', (select region_id from core.region where region_name = 'United States'), 10.00),
+('EU Standard', null, 20.00),
+('UK Standard', (select region_id from core.region where region_name = 'United Kingdom'), 20.00),
+('JP Standard', (select region_id from core.region where region_name = 'Japan'), 8.00)
+on conflict do nothing;
 
-create table subscription_type ( 
+create table if not exists subscription_type ( 
     subscription_type_id serial primary key,
     subscription_type_name varchar(25) not null,
     subscription_type_detail text not null,
@@ -157,9 +183,10 @@ create table subscription_type (
 insert into subscription_type (subscription_type_name, subscription_type_detail, duration_months, subscription_type_cost) values
 ('Basic', 'Basic subscription plan', 1, 9.99),
 ('Standard', 'Standard subscription plan', 6, 49.99),
-('Premium', 'Premium subscription plan', 12, 89.99);
+('Premium', 'Premium subscription plan', 12, 89.99)
+on conflict do nothing;
 
-create table payment_method(
+create table if not exists payment_method(
     payment_method_id serial primary key,
     name varchar(50) unique not null,
     description text,
@@ -170,9 +197,10 @@ insert into payment_method(name, description) values
 ('cash', 'Payment made with cash'),
 ('debit_card', 'Payment made with debit card'),
 ('credit_card', 'Payment made with credit card'),
-('loyalty_points', 'Payment made via loyalty points');
+('loyalty_points', 'Payment made via loyalty points')
+on conflict do nothing;
 
-create table tenant_payment(
+create table if not exists tenant_payment(
     tenant_payment_id uuid primary key default gen_random_uuid(),
     tenant_id uuid references core.tenant(tenant_id) on delete cascade,
     payment_method_id integer references core.payment_method(payment_method_id) on delete set null,
@@ -184,7 +212,7 @@ create table tenant_payment(
     updated_at timestamp default current_timestamp
 );
 
-create table subscription(
+create table if not exists subscription(
     subscription_id uuid primary key default gen_random_uuid(),
     tenant_id uuid references core.tenant(tenant_id) on delete cascade,
     subscription_type_id integer references core.subscription_type(subscription_type_id) on delete set null,
@@ -198,14 +226,14 @@ create table subscription(
     check (end_date > start_date)
 );
 
-create table product_category(
+create table if not exists product_category(
     product_category_id serial primary key,
     category_name varchar(100) unique not null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
 
-create table product(
+create table if not exists product(
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     product_id uuid not null default gen_random_uuid(),
     sku varchar(50) not null,
@@ -234,17 +262,17 @@ create unique index if not exists idx_product_tenant_sku on core.product(tenant_
 create index if not exists idx_product_tenant_btree on core.product(tenant_id);
 create index if not exists idx_product_name_fts on core.product using gin ( product_name_tsv );
 
-create table global_attribute (
+create table if not exists global_attribute (
     global_attribute_id serial primary key,
     attribute_name varchar(100) not null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
 
-create unique index unique_attribute_name 
+create unique index if not exists unique_attribute_name 
     on core.global_attribute (lower(attribute_name));
 
-create table tenant_attribute (
+create table if not exists tenant_attribute (
     tenant_attribute_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     global_attribute_id int references core.global_attribute(global_attribute_id) on delete set null,
@@ -262,7 +290,7 @@ create table tenant_attribute (
 create unique index if not exists unique_tenant_attribute_name 
     on core.tenant_attribute (tenant_id, lower(attribute_name));
 
-create table product_attribute (
+create table if not exists product_attribute (
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     product_id uuid not null,
     tenant_attribute_id uuid not null references core.tenant_attribute(tenant_attribute_id) on delete cascade,
@@ -277,10 +305,9 @@ create table product_attribute (
         on delete cascade
 );
 
--- =====================================
--- FUNCTIONS AND TRIGGERS
--- =====================================
-
+-- ==========================================================================
+--                          FUNCTIONS AND TRIGGERS
+-- ==========================================================================
 create or replace procedure verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
@@ -506,32 +533,26 @@ drop trigger if exists update_tenant_payment_timestamp on tenant_payment;
 create trigger update_tenant_payment_timestamp before update on tenant_payment
 for each row execute function update_timestamp();
 
-
-
-
-
-
-
-
-
-
 -- SCHEMA: pos_module   
 create schema if not exists pos_module;
 set search_path to pos_module;
 
-create table sale(
+create table if not exists sale(
     sale_id uuid primary key default gen_random_uuid(),
     branch_id uuid not null references core.branch(branch_id) on delete cascade,  
     sale_date timestamp not null default current_timestamp,
-    user_id uuid not null references core.users(user_id) on delete set null,
     currency_id integer references core.currency(currency_id) on delete set null,
+    subtotal_amount numeric(10,2) not null default 0 check (subtotal_amount >= 0),
+    tax_amount numeric(10,2) not null default 0 check (tax_amount >= 0),
     total_amount numeric(10,2) not null,
     is_completed boolean default false,
     created_at timestamp not null default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+create index if not exists idx_sale_branch_id on pos_module.sale(branch_id);
+create index if not exists idx_sale_sale_date on pos_module.sale(sale_date);
 
-create table sale_item(
+create table if not exists sale_item(
     sale_item_id uuid primary key default gen_random_uuid(),
     sale_id uuid not null references pos_module.sale(sale_id) on delete cascade,
     tenant_id uuid not null, 
@@ -546,11 +567,44 @@ create table sale_item(
         references core.product(tenant_id, product_id) 
         on delete restrict
 );
+create index if not exists idx_sale_item_product_id on pos_module.sale_item(product_id);
+create index if not exists idx_sale_item_sale_id on pos_module.sale_item(sale_id);
+create index if not exists idx_sale_item_tenant_product on pos_module.sale_item(tenant_id, product_id);
 
-create table customer_payment(
+create table if not exists cash_register(
+    cash_register_id uuid primary key default gen_random_uuid(),
+    branch_id uuid not null references core.branch(branch_id) on delete cascade,
+    is_active boolean default true,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists cash_register_session(
+    cash_register_session_id uuid primary key default gen_random_uuid(),
+    cash_register_id uuid not null references pos_module.cash_register(cash_register_id) on delete cascade,
+    user_id uuid not null references core.users(user_id) on delete set null,
+    opened_at timestamp not null default current_timestamp,
+    closed_at timestamp,
+    opening_amount numeric(10,2) not null check (opening_amount >= 0),
+    closing_amount numeric(10,2) check (closing_amount >= 0),
+    is_active boolean default true,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists cash_register_sale(
+    cash_register_sale_id uuid primary key default gen_random_uuid(),
+    cash_register_session_id uuid not null references pos_module.cash_register_session(cash_register_session_id) on delete cascade,
+    sale_id uuid not null unique references pos_module.sale(sale_id) on delete cascade, 
+    transaction_time timestamp not null default current_timestamp,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists customer_payment(
     customer_payment_id uuid primary key not null default gen_random_uuid(),
     tenant_customer_id uuid not null references core.tenant_customer(tenant_customer_id) on delete cascade,   
-    sale_id uuid not null references pos_module.sale(sale_id) on delete set null,
+    sale_id uuid not null references pos_module.sale(sale_id) on delete cascade,
     payment_method_id integer references core.payment_method(payment_method_id) on delete set null,
     is_points_redemption boolean default false,
     points_redeemed integer default 0 check (points_redeemed >= 0),
@@ -569,10 +623,10 @@ create table customer_payment(
     )
 );
 
-
-create table bill(
+create table if not exists bill(
     bill_id uuid primary key default gen_random_uuid(),
     tenant_customer_id uuid references core.tenant_customer(tenant_customer_id) on delete set null,
+    sale_id uuid not null references pos_module.sale(sale_id) on delete cascade,
     currency_id integer references core.currency(currency_id) on delete set null,
     subtotal_amount numeric(10,2) not null check (subtotal_amount >= 0),
     tax_amount numeric(10,2) not null check (tax_amount >= 0),
@@ -580,8 +634,9 @@ create table bill(
     billed_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+create index if not exists idx_bill_sale_id on pos_module.bill(sale_id);
 
-create table bill_payment(
+create table if not exists bill_payment(
     bill_payment_id uuid primary key default gen_random_uuid(),
     bill_id uuid not null references pos_module.bill(bill_id) on delete cascade,
     customer_payment_id uuid not null references pos_module.customer_payment(customer_payment_id) on delete cascade,
@@ -592,23 +647,7 @@ create table bill_payment(
     unique (bill_id, customer_payment_id)
 );
 
-create table bill_product(
-    bill_product_id uuid primary key default gen_random_uuid(),
-    bill_id uuid not null references pos_module.bill(bill_id) on delete cascade,
-    tenant_id uuid not null,
-    product_id uuid not null,  
-    quantity integer not null check (quantity > 0),
-    unit_price numeric(10,2) not null check (unit_price >= 0),
-    total_price numeric(10,2) not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
-    
-    foreign key (tenant_id, product_id) 
-        references core.product(tenant_id, product_id) 
-        on delete restrict
-);
-
-create table return_reason(
+create table if not exists return_reason(
     return_reason_id serial primary key,
     reason_code varchar(50) unique not null,
     reason_name varchar(100) not null,
@@ -616,46 +655,56 @@ create table return_reason(
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
-
 insert into return_reason(reason_code, reason_name, description) values
     ('DEFECT', 'Defecto de fábrica', 'El producto tiene un defecto de fabricación'),
     ('SIZE_CHANGE', 'Cambio de talla', 'El cliente requiere una talla diferente'),
-    ('WRONG_PRODUCT', 'Producto equivocado', 'Se entregó un producto diferente al solicitado'),
+    ('WRonG_PRODUCT', 'Producto equivocado', 'Se entregó un producto diferente al solicitado'),
     ('NOT_AS_DESCRIBED', 'No coincide con descripción', 'El producto no coincide con la descripción publicada'),
     ('DAMAGED', 'Producto dañado', 'El producto llegó dañado o roto'),
     ('EXPIRED', 'Producto vencido', 'El producto está vencido o caducado'),
     ('CUSTOMER_REGRET', 'Arrepentimiento', 'El cliente cambió de opinión'),
-    ('OTHER', 'Otro motivo', 'Otro motivo no especificado');
+    ('OTHER', 'Otro motivo', 'Otro motivo no especificado')
+on conflict do nothing;
 
-create type return_status as enum (
-    'pending',      
-    'rejected',     
-    'processed'
+create table if not exists return_status(
+    return_status_id serial primary key,
+    status_name varchar(50) unique not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
 );
+insert into return_status(status_name) values
+    ('pending'),
+    ('rejected'),
+    ('processed')
+on conflict do nothing;
 
-create table return_transaction(
+drop table if exists return_transaction cascade;
+create table if not exists return_transaction(
     return_transaction_id uuid primary key default gen_random_uuid(),
     bill_id uuid not null references pos_module.bill(bill_id) on delete cascade,
     tenant_customer_id uuid references core.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int references core.payment_method(payment_method_id) on delete set null,
-    return_status return_status default 'pending',
+    return_status_id integer references pos_module.return_status(return_status_id) on delete set null,
     return_date timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+create index if not exists idx_return_transaction_bill_id on pos_module.return_transaction(bill_id);
+create index if not exists idx_return_transaction_date on pos_module.return_transaction(return_date);
 
-create table return_product(
+create table if not exists return_product(
     return_product_id uuid primary key default gen_random_uuid(),
     return_transaction_id uuid not null references pos_module.return_transaction(return_transaction_id) on delete cascade,
-    bill_product_id uuid not null references pos_module.bill_product(bill_product_id) on delete cascade,
+    sale_item_id uuid not null references pos_module.sale_item(sale_item_id) on delete cascade,
     quantity integer not null check (quantity > 0),
     unit_price numeric(10,2) not null check (unit_price >= 0),
     total_price numeric(10,2) not null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+create index if not exists idx_return_product_transaction_id on pos_module.return_product(return_transaction_id);
 
-create table promotion_type(
+create table if not exists promotion_type(
     promotion_type_id serial primary key,
     type_name varchar(50) unique not null,
     created_at timestamp default current_timestamp,
@@ -668,9 +717,10 @@ insert into promotion_type(type_name) values
     ('volume_discount'),
     ('tiered_pricing'),
     ('combo'),
-    ('free_shipping');
+    ('free_shipping')
+on conflict do nothing;
 
-create table promotion(
+create table if not exists promotion(
     promotion_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     promotion_name varchar(100) not null,
@@ -687,7 +737,7 @@ create table promotion(
     check (promotion_end_date > promotion_start_date)
 );
 
-create table promotion_rule(
+create table if not exists promotion_rule(
     promotion_rule_id uuid primary key default gen_random_uuid(),
     promotion_id uuid not null references pos_module.promotion(promotion_id) on delete cascade,
     -- =====================================
@@ -731,6 +781,7 @@ create table promotion_rule(
     updated_at timestamp default current_timestamp
 );
 
+drop type if exists discount_result cascade;
 create type discount_result as (
     discount_amount numeric(10,2),
     discount_percentage numeric(5,2),
@@ -738,38 +789,7 @@ create type discount_result as (
     success boolean
 );
 
-create table cash_register(
-    cash_register_id uuid primary key default gen_random_uuid(),
-    branch_id uuid not null references core.branch(branch_id) on delete cascade,
-    user_id uuid not null references core.users(user_id) on delete set null,
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
-);
-
-create table cash_register_session(
-    cash_register_session_id uuid primary key default gen_random_uuid(),
-    cash_register_id uuid not null references pos_module.cash_register(cash_register_id) on delete cascade,
-    opened_at timestamp not null default current_timestamp,
-    closed_at timestamp,
-    opening_amount numeric(10,2) not null check (opening_amount >= 0),
-    closing_amount numeric(10,2) check (closing_amount >= 0),
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
-);
-
-create table cash_transaction(
-    cash_transaction_id uuid primary key default gen_random_uuid(),
-    cash_register_session_id uuid not null references pos_module.cash_register_session(cash_register_session_id) on delete cascade,
-    transaction_type varchar(50) not null,  
-    amount numeric(10,2) not null,
-    transaction_time timestamp not null default current_timestamp,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
-);
-
-create table loyalty_program(
+create table if not exists loyalty_program(
     loyalty_program_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     points_per_dollar numeric(5,2) not null default 1.00 check (points_per_dollar >= 0),
@@ -780,7 +800,7 @@ create table loyalty_program(
     updated_at timestamp default current_timestamp
 );
 
-create table tenant_customer_score(
+create table if not exists tenant_customer_score(
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     tenant_customer_id uuid not null references core.tenant_customer(tenant_customer_id) on delete cascade,
     score integer not null default 0 check (score >= 0),
@@ -794,7 +814,7 @@ create table tenant_customer_score(
     primary key (tenant_customer_id, tenant_id)
 );
 
-create table score_redemption_status(
+create table if not exists score_redemption_status(
     score_redemption_status_id serial primary key,
     status_name varchar(50) unique not null,
     created_at timestamp default current_timestamp,
@@ -803,9 +823,10 @@ create table score_redemption_status(
 insert into score_redemption_status(status_name) values
     ('pending'),
     ('rejected'),
-    ('processed');
+    ('processed')
+on conflict do nothing;
 
-create table score_transaction_type(
+create table if not exists score_transaction_type(
     score_transaction_type_id serial primary key,
     type_name varchar(50) unique not null,
     description text,
@@ -815,21 +836,24 @@ create table score_transaction_type(
 insert into score_transaction_type(type_name, description) values
     ('earn', 'Points earned from purchases'),
     ('redeem', 'Points redeemed for rewards'),
-    ('adjustment', 'Manual adjustment of points');
+    ('adjustment', 'Manual adjustment of points')
+on conflict do nothing;
 
-create table score_transaction(
+create table if not exists score_transaction(
     score_transaction_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
     tenant_customer_id uuid not null references core.tenant_customer(tenant_customer_id) on delete cascade,
     transaction_type_id int references pos_module.score_transaction_type(score_transaction_type_id) on delete set null,
     points integer not null,
     bill_id uuid references pos_module.bill(bill_id) on delete set null,
-    created_at timestamp default current_timestamp
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
 );
 
--- =====================================
--- FUNCTIONS AND TRIGGERS
--- =====================================
+-- ==========================================================================
+--                          FUNCTIONS AND TRIGGERS
+-- ==========================================================================
+set search_path = pos_module;
 
 create or replace function check_sale_payment_completion(_sale_id uuid)
 returns boolean as $$
@@ -839,7 +863,8 @@ declare
     _is_completed boolean;
     _pending_payments int;
 begin
-    select total_amount, is_completed into _sale_total, _is_completed
+    select total_amount, is_completed 
+    into _sale_total, _is_completed
     from pos_module.sale
     where sale_id = _sale_id;
     
@@ -848,7 +873,6 @@ begin
     end if;
     
     if _is_completed then
-        raise notice '   ℹ️  Sale % is already completed', _sale_id;
         return true;
     end if;
     
@@ -858,7 +882,6 @@ begin
     and verified = false;
     
     if _pending_payments > 0 then
-        raise notice '   ⚠️  Sale % has % pending payment(s)', _sale_id, _pending_payments;
         return false;
     end if;
     
@@ -867,11 +890,10 @@ begin
     where sale_id = _sale_id
     and verified = true;
     
-    raise notice '   💰 Sale total: $%', _sale_total;
+    raise notice '   💰 Sale total (with tax): $%', _sale_total;
     raise notice '   💳 Payments total: $%', _payments_total;
     raise notice '   📊 Difference: $%', (_sale_total - _payments_total);
     
-    -- Validar si los pagos cubren el total (tolerancia de $0.01)
     if abs(_payments_total - _sale_total) <= 0.01 then
         update pos_module.sale
         set is_completed = true,
@@ -880,10 +902,12 @@ begin
         
         raise notice '   ✅ Sale % marked as COMPLETED', _sale_id;
         return true;
+        
     elsif _payments_total > _sale_total then
-        raise warning 'Overpayment detected: Sale total $%, Payments total $%',
+        raise warning 'Overpayment detected: Expected $%, Paid $%',
             _sale_total, _payments_total;
         return false;
+        
     else
         raise notice '   ⏳ Sale % still pending (shortage: $%)', 
             _sale_id, (_sale_total - _payments_total);
@@ -896,6 +920,46 @@ exception
         return false;
 end;
 $$ language plpgsql;
+
+create or replace function link_sale_to_session()
+returns trigger as $$
+declare 
+    _session_id uuid;
+begin
+    select crs.cash_register_session_id into _session_id
+    from pos_module.cash_register_session crs
+    join pos_module.cash_register cr on crs.cash_register_id = cr.cash_register_id
+    where cr.branch_id = new.branch_id
+    and crs.is_active = true
+    limit 1;
+    
+    if _session_id is not null then
+        insert into pos_module.cash_register_sale(
+            cash_register_session_id,
+            sale_id,
+            transaction_time
+        ) values (
+            _session_id,
+            new.sale_id,
+            current_timestamp
+        )
+        on conflict (sale_id) do nothing;
+        
+        raise notice '✅ Sale % linked to session %', new.sale_id, _session_id;
+    else
+        raise warning 'No active cash register session for branch %', new.branch_id;
+    end if;
+    
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists on_sale_completed_link_sale_to_session on pos_module.sale;
+create trigger on_sale_completed_link_sale_to_session
+    after update of is_completed on pos_module.sale
+    for each row
+    when (old.is_completed is false and new.is_completed is true)
+    execute function link_sale_to_session();
 
 create or replace function calculate_bill_total()
 returns trigger as $$
@@ -919,19 +983,40 @@ begin
 end;
 $$ language plpgsql;
 
--- Trigger for bill_product
-drop trigger if exists calculate_total_price_bill_product_trigger on pos_module.bill_product;
-create trigger calculate_total_price_bill_product_trigger
-    before insert or update on pos_module.bill_product
-    for each row
-    execute function calculate_total_price();
-
--- Trigger for return_product 
 drop trigger if exists calculate_total_price_return_product_trigger on pos_module.return_product;
 create trigger calculate_total_price_return_product_trigger
     before insert or update on pos_module.return_product
     for each row
     execute function calculate_total_price();
+
+create or replace function pos_module.get_bill(_sale_id uuid)
+returns table (
+    bill_id uuid,
+    sale_id uuid,
+    tenant_customer_id uuid,
+    currency_id integer,
+    subtotal_amount numeric(10,2),
+    tax_amount numeric(10,2),
+    total_amount numeric(10,2),
+    created_at timestamp,
+    updated_at timestamp
+) as $$
+begin
+    return query
+    select 
+        b.bill_id,
+        b.sale_id,
+        b.tenant_customer_id,
+        b.currency_id,
+        b.subtotal_amount,
+        b.tax_amount,
+        b.total_amount,
+        b.created_at,
+        b.updated_at
+    from pos_module.bill b
+    where b.sale_id = _sale_id;
+end;
+$$ language plpgsql;
 
 create or replace function create_bill()
 returns trigger as $$
@@ -940,17 +1025,16 @@ declare
     _tenant_customer_id uuid;
     _tenant_id uuid;
     _currency_id integer;
-    _total_amount numeric(10,2);
+    _subtotal numeric(10,2);
+    _tax numeric(10,2);
+    _total numeric(10,2);
     _payment_ids uuid[];
-    _products_count integer;
 begin
     raise notice '🧾 Creating bill for sale: %', new.sale_id;
     
     if exists(
-        select 1 
-        from pos_module.bill_payment bp
-        join pos_module.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
-        where cp.sale_id = new.sale_id
+        select 1 from pos_module.bill
+        where sale_id = new.sale_id
     ) then
         raise notice '⚠️  Bill already exists for sale: %', new.sale_id;
         return new;
@@ -968,24 +1052,30 @@ begin
     where tenant_customer_id = _tenant_customer_id;
     
     _currency_id := new.currency_id;
-    _total_amount := new.total_amount;
+    _subtotal := new.subtotal_amount;  
+    _tax := new.tax_amount;            
+    _total := new.total_amount;        
     
     raise notice '   Customer: %', _tenant_customer_id;
     raise notice '   Tenant: %', _tenant_id;
-    raise notice '   Total: $%', _total_amount;
+    raise notice '   Subtotal: $%', _subtotal;
+    raise notice '   Tax: $%', _tax;
+    raise notice '   Total: $%', _total;
 
     insert into pos_module.bill (
+        sale_id,              
         tenant_customer_id,
         currency_id,
         subtotal_amount,
         tax_amount,
         total_amount
     ) values (
+        new.sale_id,         
         _tenant_customer_id,
         _currency_id,
-        _total_amount,
-        0.00,
-        _total_amount
+        _subtotal,
+        _tax,
+        _total
     ) returning bill_id into _bill_id;
     
     raise notice '   ✅ Bill created: %', _bill_id;
@@ -1004,170 +1094,151 @@ begin
     where customer_payment_id = any(_payment_ids);
     
     raise notice '   ✅ % payment(s) linked to bill', array_length(_payment_ids, 1);
-    
-    insert into pos_module.bill_product(
-        bill_id,
-        tenant_id,
-        product_id,
-        quantity,
-        unit_price,
-        total_price
-    )
-    select
-        _bill_id,
-        _tenant_id,
-        si.product_id,
-        si.quantity,
-        si.unit_price,
-        si.total_price
-    from pos_module.sale_item si
-    where si.sale_id = new.sale_id;
-    
-    get diagnostics _products_count = row_count;
-    
-    raise notice '   ✅ % product(s) added to bill', _products_count;
     raise notice '';
     raise notice '🎉 Bill creation completed successfully';
     raise notice '   Bill ID: %', _bill_id;
-    raise notice '   Products: %', _products_count;
-    raise notice '   Payments: %', array_length(_payment_ids, 1);
-    raise notice '   Total: $%', _total_amount;
+    raise notice '   Sale ID: %', new.sale_id;
 
     return new;
     
 exception
     when others then
         raise notice '❌ Error creating bill: %', sqlerrm;
-        raise notice '   SQLSTATE: %', SQLSTATE;
         return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_sale_completed on pos_module.sale;
-create trigger on_sale_completed
+drop trigger if exists on_sale_completed_create_bill on pos_module.sale;
+create trigger on_sale_completed_create_bill
     after update of is_completed on pos_module.sale
     for each row
     when (old.is_completed is false and new.is_completed is true)
-    execute function pos_module.create_bill();
+    execute function create_bill();
 
 create or replace function update_on_return()
 returns trigger as $$
 declare
-_bill_id uuid;
-_bill_product_record record;
-_total_returned numeric(10,2) := 0;
-_original_subtotal numeric(10,2);
-_original_tax numeric(10,2);
-_original_total numeric(10,2);
-_new_subtotal numeric(10,2);
-_new_tax numeric(10,2);
-_new_total numeric(10,2);
-_tax_rate numeric(5,2);
-_quantity_remaining integer;
+    _bill_id uuid;
+    _sale_item_record record;
+    _total_returned numeric(10,2) := 0;
+    _original_subtotal numeric(10,2);
+    _original_tax numeric(10,2);
+    _original_total numeric(10,2);
+    _new_subtotal numeric(10,2);
+    _new_tax numeric(10,2);
+    _new_total numeric(10,2);
+    _tax_rate numeric(5,2);
+    _quantity_remaining integer;
+    _sale_id uuid;
 begin
-select bp.bill_id into _bill_id
-from pos_module.bill_product bp
-where bp.bill_product_id = new.bill_product_id;
+    select 
+        si.sale_item_id,
+        si.sale_id,
+        si.quantity,
+        si.unit_price,
+        si.total_price
+    into _sale_item_record
+    from pos_module.sale_item si
+    where si.sale_item_id = new.sale_item_id;
+    
+    if not found then
+        raise exception 'Sale item not found: %', new.sale_item_id;
+    end if;
+    
+    _sale_id := _sale_item_record.sale_id;
+    
+    select bill_id into _bill_id
+    from pos_module.bill
+    where sale_id = _sale_id;
+    
+    if _bill_id is null then
+        raise exception 'Bill not found for sale: %', _sale_id;
+    end if;
 
-if _bill_id is null then
-    raise exception 'Bill not found for bill_product_id: %', new.bill_product_id;
-end if;
+    raise notice '📄 Bill ID: %', _bill_id;
+    raise notice '📦 Original sale item:';
+    raise notice '   Quantity: %', _sale_item_record.quantity;
+    raise notice '   Unit price: $%', _sale_item_record.unit_price;
+    raise notice '   Total price: $%', _sale_item_record.total_price;
 
-raise notice '📄 Bill ID: %', _bill_id;
+    if new.quantity > _sale_item_record.quantity then
+        raise exception 'Cannot return more items than purchased. Purchased: %, Attempting to return: %',
+            _sale_item_record.quantity, new.quantity;
+    end if;
 
-select 
-    bp.bill_product_id,
-    bp.quantity,
-    bp.unit_price,
-    bp.total_price
-into _bill_product_record
-from pos_module.bill_product bp
-where bp.bill_product_id = new.bill_product_id;
+    _quantity_remaining := _sale_item_record.quantity - new.quantity;
 
-raise notice '📦 Original product in bill:';
-raise notice '   Quantity: %', _bill_product_record.quantity;
-raise notice '   Unit price: $%', _bill_product_record.unit_price;
-raise notice '   Total price: $%', _bill_product_record.total_price;
+    raise notice '🔢 Return quantity: %', new.quantity;
+    raise notice '🔢 Remaining quantity: %', _quantity_remaining;
 
-if new.quantity > _bill_product_record.quantity then
-    raise exception 'Cannot return more items than purchased. Purchased: %, Attempting to return: %',
-        _bill_product_record.quantity, new.quantity;
-end if;
+    if _quantity_remaining = 0 then
+        delete from pos_module.sale_item
+        where sale_item_id = new.sale_item_id;
 
-_quantity_remaining := _bill_product_record.quantity - new.quantity;
+        raise notice '🗑️  Sale item completely removed (quantity = 0)';
+    else
+        update pos_module.sale_item
+        set quantity = _quantity_remaining,
+            total_price = _quantity_remaining * unit_price,
+            updated_at = current_timestamp
+        where sale_item_id = new.sale_item_id;
 
-raise notice '🔢 Return quantity: %', new.quantity;
-raise notice '🔢 Remaining quantity: %', _quantity_remaining;
+        raise notice '✏️  Sale item quantity updated from % to %', 
+            _sale_item_record.quantity, _quantity_remaining;
+    end if;
 
-if _quantity_remaining = 0 then
-    delete from pos_module.bill_product
-    where bill_product_id = new.bill_product_id;
+    select subtotal_amount, tax_amount, total_amount
+    into _original_subtotal, _original_tax, _original_total
+    from pos_module.bill
+    where bill_id = _bill_id;
 
-    raise notice '🗑️  Product completely removed from bill (quantity = 0)';
-else
-    update pos_module.bill_product
-    set quantity = _quantity_remaining,
-        total_price = _quantity_remaining * unit_price,
+    raise notice '';
+    raise notice '📊 Original bill totals:';
+    raise notice '   Subtotal: $%', _original_subtotal;
+    raise notice '   Tax: $%', _original_tax;
+    raise notice '   Total: $%', _original_total;
+
+    _total_returned := new.quantity * new.unit_price;
+    raise notice '';
+    raise notice '💰 Amount returned: $%', _total_returned;
+
+    _new_subtotal := _original_subtotal - _total_returned;
+
+    if _new_subtotal < 0 then
+        _new_subtotal := 0;
+        raise warning 'Subtotal became negative, setting to 0';
+    end if;
+
+    select rate_percentage into _tax_rate
+    from core.tax_rate
+    where region = 'US Federal'
+    limit 1;
+
+    if _tax_rate is null then
+        _tax_rate := 0;
+        raise warning 'Tax rate not found, using 0%%';
+    end if;
+
+    _new_tax := _new_subtotal * (_tax_rate / 100);
+    _new_total := _new_subtotal + _new_tax;
+
+    raise notice '';
+    raise notice '📊 New bill totals:';
+    raise notice '   Subtotal: $%', _new_subtotal;
+    raise notice '   Tax: $%', _new_tax;
+    raise notice '   Total: $%', _new_total;
+
+    update pos_module.bill
+    set subtotal_amount = _new_subtotal,
+        tax_amount = _new_tax,
+        total_amount = _new_total,
         updated_at = current_timestamp
-    where bill_product_id = new.bill_product_id;
+    where bill_id = _bill_id;
 
-    raise notice '✏️  Product quantity updated from % to %', 
-        _bill_product_record.quantity, _quantity_remaining;
-end if;
+    raise notice '';
+    raise notice '✅ Bill % updated successfully', _bill_id;
 
-select subtotal_amount, tax_amount, total_amount
-into _original_subtotal, _original_tax, _original_total
-from pos_module.bill
-where bill_id = _bill_id;
-
-raise notice '';
-raise notice '📊 Original bill totals:';
-raise notice '   Subtotal: $%', _original_subtotal;
-raise notice '   Tax: $%', _original_tax;
-raise notice '   Total: $%', _original_total;
-
-_total_returned := new.quantity * new.unit_price;
-
-raise notice '';
-raise notice '💰 Amount returned: $%', _total_returned;
-
-_new_subtotal := _original_subtotal - _total_returned;
-
-if _new_subtotal < 0 then
-    _new_subtotal := 0;
-    raise warning 'Subtotal became negative, setting to 0';
-end if;
-
-select rate_percentage into _tax_rate
-from core.tax_rate
-where region = 'US Federal'  -- TODO: Hacer dinámico según tenant
-limit 1;
-
-if _tax_rate is null then
-    _tax_rate := 0;
-    raise warning 'Tax rate not found, using 0%%';
-end if;
-
-_new_tax := _new_subtotal * (_tax_rate / 100);
-_new_total := _new_subtotal + _new_tax;
-
-raise notice '';
-raise notice '📊 New bill totals:';
-raise notice '   Subtotal: $%', _new_subtotal;
-raise notice '   Tax: $%', _new_tax;
-raise notice '   Total: $%', _new_total;
-
-update pos_module.bill
-set subtotal_amount = _new_subtotal,
-    tax_amount = _new_tax,
-    total_amount = _new_total,
-    updated_at = current_timestamp
-where bill_id = _bill_id;
-
-raise notice '';
-raise notice '✅ Bill % updated successfully', _bill_id;
-
-return new;
+    return new;
 end;
 $$ language plpgsql;
 
@@ -1176,6 +1247,7 @@ create trigger update_on_return_trigger
     after insert on pos_module.return_product
     for each row
     execute function update_on_return();
+
 
 create or replace function auto_toggle_promotions()
 returns table(
@@ -1630,11 +1702,12 @@ begin
 end;
 $$ language plpgsql;
 
-create or replace function open_close_cash_register_session(
-_cash_register_id uuid,
-_action varchar(10), 
-_amount numeric(10,2)
-) returns void as $$
+create or replace procedure open_close_cash_register_session(
+    _cash_register_id uuid,
+    _action varchar(10), 
+    _amount numeric(10,2)
+)
+as $$
 declare
     _session_id uuid;
     _session record;
@@ -1702,6 +1775,9 @@ begin
         raise notice '   Closing amount: $%', _session.closing_amount;
         raise notice '   Difference: $%', (_session.closing_amount - _session.opening_amount);
         raise notice '   Duration: %', (_session.closed_at - _session.opened_at);
+        
+    else
+        raise exception 'Invalid action: %. Use "open" or "close"', _action;
     end if;
     
 exception
@@ -1770,7 +1846,6 @@ declare
     _cash_payments_total numeric(10,2);
     _points_already_awarded boolean;
 begin
-    -- El trigger ahora recibe NEW de bill_payment
     _bill_id := new.bill_id;
     
     -- ✅ Verificar si ya se otorgaron puntos para esta factura
@@ -1961,7 +2036,7 @@ begin
     ) values (
         _tenant_id,
         _tenant_customer_id,
-        2,  -- 'redeem'
+        2,  
         -_points_to_redeem,  
         current_timestamp
     );
@@ -2111,10 +2186,6 @@ drop trigger if exists update_bill_timestamp on pos_module.bill;
 create trigger update_bill_timestamp before update on pos_module.bill
 for each row execute function core.update_timestamp();
 
-drop trigger if exists update_bill_product_timestamp on pos_module.bill_product;
-create trigger update_bill_product_timestamp before update on pos_module.bill_product
-for each row execute function core.update_timestamp();
-
 drop trigger if exists update_return_transaction_timestamp on pos_module.return_transaction;
 create trigger update_return_transaction_timestamp before update on pos_module.return_transaction
 for each row execute function core.update_timestamp();
@@ -2135,8 +2206,8 @@ drop trigger if exists update_cash_register_session_timestamp on pos_module.cash
 create trigger update_cash_register_session_timestamp before update on pos_module.cash_register_session
 for each row execute function core.update_timestamp();
 
-drop trigger if exists update_cash_transaction_timestamp on pos_module.cash_transaction;
-create trigger update_cash_transaction_timestamp before update on pos_module.cash_transaction
+drop trigger if exists update_cash_register_sale_timestamp on pos_module.cash_register_sale;
+create trigger update_cash_register_sale_timestamp before update on pos_module.cash_register_sale
 for each row execute function core.update_timestamp();
 
 drop trigger if exists update_tenant_customer_score_timestamp on pos_module.tenant_customer_score;
@@ -2158,5 +2229,3 @@ for each row execute function core.update_timestamp();
 drop trigger if exists update_sale_item_timestamp on pos_module.sale_item;
 create trigger update_sale_item_timestamp before update on pos_module.sale_item
 for each row execute function core.update_timestamp();
-
-

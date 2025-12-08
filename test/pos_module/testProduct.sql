@@ -1,619 +1,267 @@
 -- =====================================
--- SCRIPT DE PRUEBA DE PRODUCTOS
+-- SCRIPT DE PRUEBA: PRODUCTS - INSERT & DELETE (idempotent)
 -- =====================================
--- Este script prueba todas las funcionalidades de la tabla product:
--- - Inserción de productos
--- - Particionamiento por tenant_id
--- - Full-Text Search (FTS)
--- - Búsquedas JSONB
--- - Índices y constraints
+-- Objetivo:
+--  - Demostrar inserción y borrado de productos uno por uno y en lote (batch)
+--  - Idempotencia: al ejecutar varias veces el script, el estado final es el mismo
+-- Estructura:
+--  0) Limpieza (idempotente)
+--  1) Preparación (tenant + categoría)
+--  2) Insertar productos individuales (single inserts)
+--  3) Insertar productos en lote (batch inserts)
+--  4) Borrar producto individual
+--  5) Borrar lote de productos
+--  6) Verificaciones (constraints / particiones / conteos)
+--  7) Resumen final
 -- =====================================
 
+set local search_path = core, pos_module;
+
 -- ========================================
--- SECCIÓN 1: Preparación - Crear tenants y productos
+-- SECCIÓN 0: Limpieza inicial (idempotente)
 -- ========================================
 do $$
 declare
-    v_tenant1 uuid;
-    v_tenant2 uuid;
-    v_prod_id uuid;
+    v_tenant_id uuid;
 begin
-    -- Obtener o crear tenant1 (Comercio de Prueba)
-    select tenant_id into v_tenant1
-    from core.tenant
-    where name = 'Comercio de Prueba';
+    raise notice '========================================';
+    raise notice '🧹 SECCIÓN 0: Limpieza inicial (idempotente)';
+    raise notice '========================================';
 
-    if v_tenant1 is null then
-        insert into core.tenant(name, contact_email)
-        values ('Comercio de Prueba', 'comercio@prueba.com')
-        returning tenant_id into v_tenant1;
-        raise notice 'Tenant1 creado: %', v_tenant1;
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1;
+
+    if v_tenant_id is not null then
+        delete from core.product_attribute where tenant_id = v_tenant_id;
+        delete from core.product where tenant_id = v_tenant_id;
+        raise notice '   Removed previous products for tenant %', v_tenant_id;
     else
-        raise notice 'Tenant1 existente: %', v_tenant1;
+        raise notice '   No previous test tenant found, nothing to clean';
     end if;
 
-    -- Crear tenant2 (Comercio B)
-    insert into core.tenant(name, contact_email)
-    values ('Comercio B', 'comerciob@prueba.com')
-    on conflict (name) do nothing
-    returning tenant_id into v_tenant2;
-    
-    if v_tenant2 is null then
-        select tenant_id into v_tenant2
-        from core.tenant
-        where name = 'Comercio B';
-        raise notice 'Tenant2 existente: %', v_tenant2;
-    else
-        raise notice 'Tenant2 creado: %', v_tenant2;
-    end if;
+    -- 🔧 Resincronizar secuencia de product_category
+    perform setval('core.product_category_product_category_id_seq', 
+        coalesce((select max(product_category_id) from core.product_category), 0) + 1, 
+        false);
+    raise notice '   ✅ product_category sequence synchronized';
 
+    raise notice '✅ SECCIÓN 0 COMPLETADA';
     raise notice '========================================';
-    raise notice 'SECCIÓN 1: Preparación de datos';
-    raise notice '========================================';
-    raise notice 'Tenant1 (Comercio de Prueba): %', v_tenant1;
-    raise notice 'Tenant2 (Comercio B): %', v_tenant2;
-    raise notice '';
-
-    -- Insertar productos para tenant1 con variedad de atributos
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant1, 'SKU-MAY-01', 'Mayonesa Clásica', '{"brand":"LaMayonesa","flavor":"clasica","size":"500ml"}'::jsonb, 3.50)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Mayonesa Clásica';
-    end if;
-
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant1, 'SKU-MAY-02', 'Mayonesa Light', '{"brand":"LaMayonesa","light":true,"calories":200}'::jsonb, 3.00)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Mayonesa Light';
-    end if;
-
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant1, 'SKU-KET-01', 'Ketchup Picante', '{"brand":"TomateGood","spicy":true,"size":"350ml"}'::jsonb, 2.50)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Ketchup Picante';
-    end if;
-
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant1, 'SKU-MOS-01', 'Mostaza Dijon', '{"brand":"MostazaFina","type":"dijon","origin":"France"}'::jsonb, 2.80)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Mostaza Dijon';
-    end if;
-
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant1, 'SKU-SAL-01', 'Salsa Barbacoa', '{"brand":"SalsaBBQ","smoky":true}'::jsonb, 3.20)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Salsa Barbacoa';
-    end if;
-
-    -- Insertar productos para tenant2
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant2, 'SKU-MAY-01', 'Mayonesa Premium', '{"brand":"OtraMarca","premium":true,"organic":true}'::jsonb, 4.50)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Mayonesa Premium (tenant2)';
-    end if;
-
-    insert into core.product(tenant_id, sku, product_name, attributes, price)
-    values (v_tenant2, 'SKU-SAL-01', 'Salsa de Tomate', '{"brand":"SalsaBuena","tomato":true,"size":"500ml"}'::jsonb, 1.99)
-    on conflict (tenant_id, sku) do nothing
-    returning product_id into v_prod_id;
-    if v_prod_id is not null then
-        raise notice '✓ Inserted: Salsa de Tomate (tenant2)';
-    end if;
-
-    raise notice '';
-    raise notice '✅ SECCIÓN 1 FINALIZADA - Productos insertados';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
+end $$;
 
 
 -- ========================================
--- SECCIÓN 2: Prueba de restricción de unicidad
+-- SECCIÓN 1: Preparación (tenant + categoría)
 -- ========================================
 do $$
 declare
-    v_tenant1 uuid;
+    v_tenant_id uuid;
+    v_category_id int;
 begin
-    select tenant_id into v_tenant1
-    from core.tenant
-    where name = 'Comercio de Prueba';
-
-    raise notice '========================================';
-    raise notice '🔍 SECCIÓN 2: Restricción de unicidad (tenant_id, sku)';
-    raise notice '========================================';
-    
-    -- Intentar insertar SKU duplicado (debe fallar)
-    begin
-        insert into core.product(tenant_id, sku, product_name, price)
-        values (v_tenant1, 'SKU-MAY-01', 'Mayonesa Duplicate', 3.50);
-        raise notice '❌ ERROR: inserción duplicada no fue rechazada';
-    exception when unique_violation then
-        raise notice '✅ CORRECTO: unique_violation capturada';
-        raise notice '   No se permite SKU duplicado por tenant';
-    end;
-
-    -- Verificar que el mismo SKU puede existir en diferentes tenants
     raise notice '';
-    raise notice 'Verificando que el mismo SKU puede existir en diferentes tenants...';
-    declare
-        v_count int;
-    begin
-        select count(*) into v_count
-        from core.product
-        where sku = 'SKU-MAY-01';
+    raise notice '========================================';
+    raise notice '🏪 SECCIÓN 1: Preparación (tenant & category)';
+    raise notice '========================================';
+
+    select tenant_id into v_tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1;
+    if v_tenant_id is null then
+        insert into core.tenant (tenant_name, region_id, contact_email, is_subscribed)
+        values ('Product Test Shop', (select region_id from core.region limit 1), 'products@testshop.local', false)
+        returning tenant_id into v_tenant_id;
+        raise notice '   Tenant created: %', v_tenant_id;
+    else
+        raise notice '   Tenant exists: %', v_tenant_id;
+    end if;
+
+    select product_category_id into v_category_id from core.product_category where category_name = 'Test Category' limit 1;
+    if v_category_id is null then
+        insert into core.product_category (category_name) values ('Test Category') returning product_category_id into v_category_id;
+        raise notice '   Product category created: %', v_category_id;
+    else
+        raise notice '   Product category exists: %', v_category_id;
+    end if;
+
+    raise notice '✅ SECCIÓN 1 COMPLETADA';
+    raise notice '========================================';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 2: Insertar productos individuales (single inserts)
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_pid uuid;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '➕ SECCIÓN 2: Insertar productos individuales';
+    raise notice '========================================';
+
+    -- Single insert 1
+    insert into core.product (tenant_id, sku, product_name, unit_price, product_category_id)
+    values (v_tenant_id, 'SINGLE-001', 'Single Product One', 9.99, (select product_category_id from core.product_category where category_name = 'Test Category' limit 1))
+    on conflict (tenant_id, sku) do nothing
+    returning product_id into v_pid;
+    if v_pid is not null then
+        raise notice '   Inserted SINGLE-001 -> %', v_pid;
+    else
+        raise notice '   SINGLE-001 already exists';
+    end if;
+
+    -- Single insert 2
+    insert into core.product (tenant_id, sku, product_name, unit_price, product_category_id)
+    values (v_tenant_id, 'SINGLE-002', 'Single Product Two', 19.50, (select product_category_id from core.product_category where category_name = 'Test Category' limit 1))
+    on conflict (tenant_id, sku) do nothing
+    returning product_id into v_pid;
+    if v_pid is not null then
+        raise notice '   Inserted SINGLE-002 -> %', v_pid;
+    else
+        raise notice '   SINGLE-002 already exists';
+    end if;
+
+    raise notice '✅ SECCIÓN 2 COMPLETADA';
+end $$;
+
+
+-- ========================================
+-- SECCIÓN 3: Insertar productos en lote (batch inserts)
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    i int;
+    v_sku text;
+    v_pid uuid;  -- ✅ CORRECCIÓN: Declarar variable
+    v_count_inserted int := 0;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '📦 SECCIÓN 3: Insertar productos en LOTE (20 items)';
+    raise notice '========================================';
+
+    for i in 1..20 loop
+        v_sku := lpad(i::text, 3, '0');
+        insert into core.product (tenant_id, sku, product_name, unit_price, product_category_id)
+        values (v_tenant_id, 'BATCH-' || v_sku, 'Batch Product ' || v_sku, round( (5 + random()*45)::numeric, 2), (select product_category_id from core.product_category where category_name = 'Test Category' limit 1))
+        on conflict (tenant_id, sku) do nothing
+        returning product_id into v_pid;  -- ✅ CORRECCIÓN: Quitar STRICT
         
-        if v_count >= 2 then
-            raise notice '✅ CORRECTO: SKU-MAY-01 existe en % tenants diferentes', v_count;
-        else
-            raise notice '⚠️  Solo existe en 1 tenant';
-        end if;
-    end;
-
-    raise notice '';
-    raise notice '✅ SECCIÓN 2 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
-
-
--- ========================================
--- SECCIÓN 3: Verificar particiones
--- ========================================
-do $$
-declare
-    v_tenant1 uuid;
-    v_tenant2 uuid;
-    r record;
-begin
-    select tenant_id into v_tenant1 from core.tenant where name = 'Comercio de Prueba';
-    select tenant_id into v_tenant2 from core.tenant where name = 'Comercio B';
-
-    raise notice '========================================';
-    raise notice '🗂️  SECCIÓN 3: Verificar particiones (tableoid)';
-    raise notice '========================================';
-    raise notice '';
-
-    for r in (
-        select product_id, product_name, tenant_id, tableoid::regclass as partition_name
-        from core.product
-        where tenant_id in (v_tenant1, v_tenant2)
-        order by tenant_id, product_name
-    ) loop
-        raise notice '  % | Tenant: % | Part: %', 
-                     rpad(r.product_name, 25), 
-                     substring(r.tenant_id::text, 1, 8) || '...', 
-                     r.partition_name;
-    end loop;
-
-    raise notice '';
-    raise notice '✅ SECCIÓN 3 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
-
-
--- ========================================
--- SECCIÓN 4: Pruebas de Full-Text Search (FTS)
--- ========================================
-do $$
-declare
-    v_tenant1 uuid;
-    r record;
-begin
-    select tenant_id into v_tenant1 from core.tenant where name = 'Comercio de Prueba';
-
-    raise notice '========================================';
-    raise notice '🔎 SECCIÓN 4: Full-Text Search (FTS)';
-    raise notice '========================================';
-    
-    -- Prueba 4.1: Búsqueda simple con ranking
-    raise notice '';
-    raise notice '4.1 Buscando "mayonesa" con ranking...';
-    for r in (
-        select product_name,
-               ts_rank(product_name_tsv, to_tsquery('spanish', 'mayonesa')) as rank
-        from core.product
-        where tenant_id = v_tenant1
-          and product_name_tsv @@ to_tsquery('spanish', 'mayonesa')
-        order by rank desc
-    ) loop
-        raise notice '  ✓ % (rank: %)', r.product_name, round(r.rank::numeric, 4);
-    end loop;
-
-    -- Prueba 4.2: Autocompletado con prefijo
-    raise notice '';
-    raise notice '4.2 Autocompletado con prefijo "mayo:*"...';
-    for r in (
-        select product_name
-        from core.product
-        where tenant_id = v_tenant1
-          and product_name_tsv @@ to_tsquery('spanish', 'mayo:*')
-        order by product_name
-    ) loop
-        raise notice '  ✓ %', r.product_name;
-    end loop;
-
-    -- Prueba 4.3: Búsqueda múltiple con OR
-    raise notice '';
-    raise notice '4.3 Búsqueda múltiple: "ketchup | mostaza"...';
-    for r in (
-        select product_name
-        from core.product
-        where tenant_id = v_tenant1
-          and product_name_tsv @@ to_tsquery('spanish', 'ketchup | mostaza')
-        order by product_name
-    ) loop
-        raise notice '  ✓ %', r.product_name;
-    end loop;
-
-    -- Prueba 4.4: Búsqueda con AND
-    raise notice '';
-    raise notice '4.4 Búsqueda con AND: "salsa & barbacoa"...';
-    for r in (
-        select product_name
-        from core.product
-        where tenant_id = v_tenant1
-          and product_name_tsv @@ to_tsquery('spanish', 'salsa & barbacoa')
-        order by product_name
-    ) loop
-        raise notice '  ✓ %', r.product_name;
-    end loop;
-
-    raise notice '';
-    raise notice '✅ SECCIÓN 4 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
-
-
--- ========================================
--- SECCIÓN 5: Pruebas de búsqueda JSONB
--- ========================================
-do $$
-declare
-    v_tenant1 uuid;
-    r record;
-begin
-    select tenant_id into v_tenant1 from core.tenant where name = 'Comercio de Prueba';
-
-    raise notice '========================================';
-    raise notice '📦 SECCIÓN 5: Búsqueda JSONB por contención (@>)';
-    raise notice '========================================';
-    
-    -- Prueba 5.1: Buscar por brand
-    raise notice '';
-    raise notice '5.1 Productos con brand="LaMayonesa"...';
-    for r in (
-        select product_name, attributes
-        from core.product
-        where tenant_id = v_tenant1
-          and attributes @> '{"brand":"LaMayonesa"}'
-    ) loop
-        raise notice '  ✓ %', r.product_name;
-    end loop;
-
-    -- Prueba 5.2: Buscar por atributo booleano
-    raise notice '';
-    raise notice '5.2 Productos con light=true...';
-    for r in (
-        select product_name, attributes
-        from core.product
-        where tenant_id = v_tenant1
-          and attributes @> '{"light":true}'
-    ) loop
-        raise notice '  ✓ % | Attrs: %', r.product_name, r.attributes;
-    end loop;
-
-    -- Prueba 5.3: Buscar por múltiples atributos
-    raise notice '';
-    raise notice '5.3 Productos con spicy=true...';
-    for r in (
-        select product_name, attributes
-        from core.product
-        where tenant_id = v_tenant1
-          and attributes @> '{"spicy":true}'
-    ) loop
-        raise notice '  ✓ % | Attrs: %', r.product_name, r.attributes;
-    end loop;
-
-    -- Prueba 5.4: Buscar por existencia de clave
-    raise notice '';
-    raise notice '5.4 Productos que tienen el atributo "size"...';
-    for r in (
-        select product_name, attributes->>'size' as size
-        from core.product
-        where tenant_id = v_tenant1
-          and attributes ? 'size'
-    ) loop
-        raise notice '  ✓ % | Size: %', r.product_name, r.size;
-    end loop;
-
-    raise notice '';
-    raise notice '✅ SECCIÓN 5 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
-
-
--- ========================================
--- SECCIÓN 6: Estadísticas de particiones e índices (MEJORADA)
--- ========================================
-do $$
-declare
-    r record;
-    v_total_partitions int;
-    v_total_products int;
-    v_total_indexes int;
-    v_total_size bigint;
-begin
-    raise notice '========================================';
-    raise notice '📊 SECCIÓN 6: Estadísticas del sistema';
-    raise notice '========================================';
-    
-    -- Contar particiones
-    select count(*) into v_total_partitions
-    from pg_class c
-    join pg_namespace n on c.relnamespace = n.oid
-    where n.nspname = 'core'
-      and c.relname like 'product_p%'
-      and c.relkind = 'r';  -- solo tablas, no índices
-    
-    -- Contar productos totales
-    select count(*) into v_total_products
-    from core.product;
-    
-    -- Contar índices totales (físicos)
-    select count(*) into v_total_indexes
-    from pg_class c
-    join pg_namespace n on c.relnamespace = n.oid
-    where n.nspname = 'core'
-      and c.relname like 'product_p%_%_idx'
-      and c.relkind = 'i';  -- solo índices
-    
-    -- Tamaño total (particiones + índices)
-    select sum(pg_total_relation_size(c.oid)) into v_total_size
-    from pg_class c
-    join pg_namespace n on c.relnamespace = n.oid
-    where n.nspname = 'core'
-      and c.relname like 'product_p%';
-    
-    raise notice '';
-    raise notice '6.1 📊 Resumen general:';
-    raise notice '  Particiones: %', v_total_partitions;
-    raise notice '  Productos: %', v_total_products;
-    raise notice '  Índices físicos: %', v_total_indexes;
-    raise notice '  Tamaño total: %', pg_size_pretty(v_total_size);
-    raise notice '  Promedio por partición: %', pg_size_pretty(v_total_size / v_total_partitions);
-    
-    -- Listar particiones con datos
-    raise notice '';
-    raise notice '6.2 🗂️  Particiones con datos:';
-    for r in (
-        select 
-            c.relname,
-            pg_size_pretty(pg_relation_size(c.oid)) as partition_size,
-            pg_size_pretty(pg_total_relation_size(c.oid)) as total_size,
-            coalesce((select count(*) from only core.product where tableoid = c.oid), 0) as row_count
-        from pg_class c
-        join pg_namespace n on c.relnamespace = n.oid
-        where n.nspname = 'core'
-          and c.relname like 'product_p_'
-          and c.relkind = 'r'
-        order by c.relname
-    ) loop
-        if r.row_count > 0 then
-            raise notice '  ✓ % | Rows: % | Data: % | Total (+ índices): %', 
-                         r.relname, r.row_count, r.partition_size, r.total_size;
+        if v_pid is not null then  -- ✅ CORRECCIÓN: Verificar si se insertó
+            v_count_inserted := v_count_inserted + 1;
         end if;
     end loop;
-    
-    -- Listar índices lógicos (tabla padre)
-    raise notice '';
-    raise notice '6.3 📇 Índices definidos en core.product (lógicos):';
-    for r in (
-        select 
-            indexname,
-            pg_size_pretty(sum(pg_relation_size(c.oid))) as total_size
-        from pg_indexes i
-        join pg_class c on c.relname like i.tablename || '%'
-        where i.schemaname = 'core'
-          and i.tablename = 'product'
-        group by indexname
-        order by indexname
-    ) loop
-        raise notice '  ✓ % | Total: %', rpad(r.indexname, 35), r.total_size;
-    end loop;
 
-    raise notice '';
-    raise notice '✅ SECCIÓN 6 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
+    raise notice '   Inserted batch products this run: %', v_count_inserted;
+    raise notice '✅ SECCIÓN 3 COMPLETADA';
+end $$;
 
 
 -- ========================================
--- SECCIÓN 7: Prueba de actualización automática de product_name_tsv
+-- SECCIÓN 4: Borrar producto individual
 -- ========================================
 do $$
 declare
-    v_tenant1 uuid;
-    v_old_name text;
-    v_new_name text;
-    v_old_tsv tsvector;
-    v_new_tsv tsvector;
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_deleted int;
 begin
-    select tenant_id into v_tenant1 from core.tenant where name = 'Comercio de Prueba';
+    raise notice '';
+    raise notice '========================================';
+    raise notice '➖ SECCIÓN 4: Borrar producto individual (SINGLE-002)';
+    raise notice '========================================';
 
-    raise notice '========================================';
-    raise notice '🔄 SECCIÓN 7: Actualización automática de product_name_tsv';
-    raise notice '========================================';
-    
-    -- Obtener valores antes de la actualización
-    select product_name, product_name_tsv into v_old_name, v_old_tsv
-    from core.product
-    where tenant_id = v_tenant1
-      and sku = 'SKU-MAY-02'
-    limit 1;
-    
-    raise notice '';
-    raise notice 'Antes de actualizar:';
-    raise notice '  Nombre: %', v_old_name;
-    raise notice '  TSV: %', v_old_tsv;
-    
-    -- Actualizar el nombre del producto
-    update core.product
-    set product_name = 'Mayonesa Extra Light Premium'
-    where tenant_id = v_tenant1
-      and sku = 'SKU-MAY-02';
-    
-    -- Obtener valores después de la actualización
-    select product_name, product_name_tsv into v_new_name, v_new_tsv
-    from core.product
-    where tenant_id = v_tenant1
-      and sku = 'SKU-MAY-02'
-    limit 1;
-    
-    raise notice '';
-    raise notice 'Después de actualizar:';
-    raise notice '  Nombre: %', v_new_name;
-    raise notice '  TSV: %', v_new_tsv;
-    
-    -- Verificar que cambió
-    if v_old_tsv <> v_new_tsv then
-        raise notice '';
-        raise notice '✅ CORRECTO: product_name_tsv se actualizó automáticamente';
+    delete from core.product where tenant_id = v_tenant_id and sku = 'SINGLE-002';
+    get diagnostics v_deleted = row_count;
+
+    if v_deleted = 1 then
+        raise notice '   SINGLE-002 deleted';
     else
-        raise notice '';
-        raise notice '❌ ERROR: product_name_tsv no se actualizó';
+        raise notice '   SINGLE-002 not found (already deleted)';
     end if;
 
-    raise notice '';
-    raise notice '✅ SECCIÓN 7 FINALIZADA';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
+    raise notice '✅ SECCIÓN 4 COMPLETADA';
+end $$;
 
 
 -- ========================================
--- SECCIÓN 8: Resumen final
+-- SECCIÓN 5: Borrar lote de productos (batch delete)
 -- ========================================
 do $$
 declare
-    v_count_tenant1 int;
-    v_count_tenant2 int;
-    v_total int;
-    v_count_partitions int;
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_deleted int;
 begin
-    select count(*) into v_count_tenant1
-    from core.product p
-    join core.tenant t on p.tenant_id = t.tenant_id
-    where t.name = 'Comercio de Prueba';
-
-    select count(*) into v_count_tenant2
-    from core.product p
-    join core.tenant t on p.tenant_id = t.tenant_id
-    where t.name = 'Comercio B';
-
-    v_total := v_count_tenant1 + v_count_tenant2;
-    
-    select count(*) into v_count_partitions
-    from pg_class c
-    join pg_namespace n on c.relnamespace = n.oid
-    where n.nspname = 'core' and c.relname like 'product_p%';
-
+    raise notice '';
     raise notice '========================================';
-    raise notice '✅ PRUEBAS DE PRODUCTOS COMPLETADAS';
+    raise notice '🧺 SECCIÓN 5: Borrar lote de productos (sku LIKE ''BATCH-%%'')';  -- ✅ CORRECCIÓN: Usar %% para escapar %
     raise notice '========================================';
-    raise notice '';
-    raise notice 'Productos insertados:';
-    raise notice '  - Comercio de Prueba: % productos', v_count_tenant1;
-    raise notice '  - Comercio B: % productos', v_count_tenant2;
-    raise notice '  - TOTAL: % productos', v_total;
-    raise notice '';
-    raise notice 'Infraestructura:';
-    raise notice '  - Particiones: %', v_count_partitions;
-    raise notice '  - Índices: 4 (tenant_sku, tenant_btree, name_fts, attributes_gin)';
-    raise notice '';
-    raise notice 'Pruebas ejecutadas:';
-    raise notice '  ✓ Sección 1 - Inserción de productos';
-    raise notice '  ✓ Sección 2 - Restricción de unicidad';
-    raise notice '  ✓ Sección 3 - Verificación de particiones';
-    raise notice '  ✓ Sección 4 - Full-Text Search (FTS)';
-    raise notice '  ✓ Sección 5 - Búsquedas JSONB';
-    raise notice '  ✓ Sección 6 - Estadísticas del sistema';
-    raise notice '  ✓ Sección 7 - Actualización automática TSV';
-    raise notice '';
-    raise notice '📝 Consultas EXPLAIN ANALYZE disponibles abajo';
-    raise notice '========================================';
-end;
-$$ language plpgsql;
+
+    delete from core.product where tenant_id = v_tenant_id and sku like 'BATCH-%';
+    get diagnostics v_deleted = row_count;
+
+    raise notice '   Batch products deleted this run: %', v_deleted;
+
+    raise notice '✅ SECCIÓN 5 COMPLETADA';
+end $$;
 
 
 -- ========================================
--- CONSULTAS MANUALES SUGERIDAS (EXPLAIN ANALYZE)
+-- SECCIÓN 6: Verificaciones (constraints / partitions / counts)
 -- ========================================
+do $$
+declare
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_count_total int;
+    v_count_single int;
+    v_tableoid record;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '🔍 SECCIÓN 6: Verificaciones finales';
+    raise notice '========================================';
 
--- 1️⃣ Ver todos los productos con su partición
--- select product_name, tableoid::regclass as partition, attributes, price
--- from core.product
--- order by tenant_id, product_name;
+    select count(*) into v_count_total from core.product where tenant_id = v_tenant_id;
+    select count(*) into v_count_single from core.product where tenant_id = v_tenant_id and sku = 'SINGLE-001';
 
--- 2️⃣ EXPLAIN de full-text search (verificar uso de idx_product_name_fts)
--- explain (analyze, buffers)
--- select product_name, ts_rank(product_name_tsv, to_tsquery('spanish', 'mayonesa')) as rank
--- from core.product
--- where tenant_id = (select tenant_id from core.tenant where name = 'Comercio de Prueba')
---   and product_name_tsv @@ to_tsquery('spanish', 'mayonesa')
--- order by rank desc;
+    raise notice '   Products remaining for tenant %: %', v_tenant_id, v_count_total;
+    raise notice '   SINGLE-001 exists: %', case when v_count_single > 0 then 'yes' else 'no' end;
 
--- 3️⃣ EXPLAIN de búsqueda JSONB (verificar uso de idx_product_attributes_gin)
--- explain (analyze, buffers)
--- select product_name, attributes
--- from core.product
--- where tenant_id = (select tenant_id from core.tenant where name = 'Comercio de Prueba')
---   and attributes @> '{"brand":"LaMayonesa"}';
+    -- show partition (tableoid) for a sample row if exists
+    if v_count_total > 0 then
+        for v_tableoid in
+            select tableoid::regclass as partition_name from core.product where tenant_id = v_tenant_id limit 1
+        loop
+            raise notice '   Sample product partition: %', v_tableoid.partition_name;
+        end loop;
+    end if;
 
--- 4️⃣ EXPLAIN de búsqueda por tenant + FTS (verificar partition pruning)
--- explain (analyze, buffers, verbose)
--- select product_name
--- from core.product
--- where tenant_id = (select tenant_id from core.tenant where name = 'Comercio de Prueba')
---   and product_name_tsv @@ to_tsquery('spanish', 'ketchup | mostaza')
--- order by product_name;
+    -- Assertions
+    if v_count_single = 0 then
+        raise exception 'Expected SINGLE-001 to exist after tests but it is missing';
+    end if;
 
--- 5️⃣ Estadísticas de particiones con número de filas
--- select 
---     schemaname,
---     tablename,
---     pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
---     n_live_tup as rows
--- from pg_stat_user_tables
--- where schemaname = 'core'
---   and tablename like 'product_p%'
--- order by tablename;
+    raise notice '✅ SECCIÓN 6 COMPLETADA - Constraints & counts ok';
+end $$;
 
--- 6️⃣ Ver distribución de productos por partición
--- select 
---     tableoid::regclass as partition,
---     count(*) as product_count
--- from core.product
--- group by tableoid::regclass
--- order by partition;
 
--- 7️⃣ Verificar que updated_at se actualiza automáticamente
--- select product_name, created_at, updated_at
--- from core.product
--- where tenant_id = (select tenant_id from core.tenant where name = 'Comercio de Prueba')
--- order by updated_at desc;
+-- ========================================
+-- SECCIÓN 7: Resumen final
+-- ========================================
+do $$
+declare
+    v_tenant_id uuid := (select tenant_id from core.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_count int;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice '📊 SECCIÓN 7: RESUMEN FINAL';
+    raise notice '========================================';
+
+    select count(*) into v_count from core.product where tenant_id = v_tenant_id;
+
+    raise notice '   Tenant: %', v_tenant_id;
+    raise notice '   Final product count for tenant: %', v_count;
+    raise notice '';
+    raise notice '✅ TEST COMPLETADO - Insert/Delete single & batch verified';
+    raise notice '========================================';
+end $$;

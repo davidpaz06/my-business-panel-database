@@ -21,10 +21,12 @@ create table if not exists tenant(
     region_id integer references core.region(region_id) on delete set null,
     contact_email varchar(100) not null,
     is_subscribed boolean default false,
+    stripe_id varchar(255) unique default null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
-    -- TODO: preguntar si se necesita más info sobre el tenant
 );
+alter table core.tenant
+    add column if not exists stripe_id varchar(255) unique default null;
 
 create table if not exists branch(
     branch_id uuid primary key default gen_random_uuid(),

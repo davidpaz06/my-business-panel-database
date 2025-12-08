@@ -16,19 +16,22 @@ begin
     );
     delete from supplies_module.account_payable where supply_order_id in (
         select supply_order_id from supplies_module.supply_order so
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Cash NoTax'
     );
     delete from supplies_module.supply_order_item where supply_order_id in (
         select supply_order_id from supplies_module.supply_order so
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Cash NoTax'
     );
     delete from supplies_module.supply_order where supplier_id in (
+        select supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Cash NoTax'
+    );
+    delete from supplies_module.supplier_branch where supplier_id in (
         select supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Cash NoTax'
     );
     delete from supplies_module.supplier where supplier_name = 'Proveedor Test Cash NoTax';
@@ -84,11 +87,14 @@ begin
     select warehouse_id into v_warehouse_id from inventory_module.warehouse where warehouse_name = 'Warehouse Test Cash NoTax' and branch_id = v_branch_id limit 1;
 
     -- Supplier (idempotente)
-    insert into supplies_module.supplier (branch_id, supplier_name, supplier_contact_info)
-    values (v_branch_id, 'Proveedor Test Cash NoTax', 'contact@cashnotax.local')
-    on conflict do nothing;
-    select supplier_id into v_supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Cash NoTax' and branch_id = v_branch_id limit 1;
+    insert into supplies_module.supplier (supplier_name, supplier_contact_info, supplier_address)
+    values ('Proveedor Test Cash NoTax', 'contact@cashnotax.local', 'Dirección Proveedor Cash NoTax')
+    on conflict do nothing
+    returning supplier_id into v_supplier_id;
 
+    insert into supplies_module.supplier_branch (supplier_id, branch_id)
+    values (v_supplier_id, v_branch_id)
+    on conflict do nothing;
     -- Productos (idempotentes)
     insert into core.product (tenant_id, sku, product_name, unit_price)
     values (v_tenant_id, 'CNT-001', 'Producto CNT A', 200.00)
@@ -173,8 +179,8 @@ begin
     select account_payable_id, subtotal_amount into v_account_payable_id, v_amount_due
     from supplies_module.account_payable ap
     join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
-    join supplies_module.supplier s on so.supplier_id = s.supplier_id
-    join core.branch b on s.branch_id = b.branch_id
+    join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+    join core.branch b on sb.branch_id = b.branch_id
     join core.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Tenant Test Supplies Cash NoTax'
     limit 1;

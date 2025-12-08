@@ -68,7 +68,7 @@ create table if not exists cash_register_sale(
 create table if not exists customer_payment(
     customer_payment_id uuid primary key not null default gen_random_uuid(),
     tenant_customer_id uuid not null references core.tenant_customer(tenant_customer_id) on delete cascade,   
-    sale_id uuid not null references pos_module.sale(sale_id) on delete set null,
+    sale_id uuid not null references pos_module.sale(sale_id) on delete cascade,
     payment_method_id integer references core.payment_method(payment_method_id) on delete set null,
     is_points_redemption boolean default false,
     points_redeemed integer default 0 check (points_redeemed >= 0),
@@ -310,5 +310,6 @@ create table if not exists score_transaction(
     transaction_type_id int references pos_module.score_transaction_type(score_transaction_type_id) on delete set null,
     points integer not null,
     bill_id uuid references pos_module.bill(bill_id) on delete set null,
-    created_at timestamp default current_timestamp
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
 );

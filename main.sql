@@ -1,4 +1,3 @@
--- SCHEMA: core schema for common tables
 create schema if not exists core;
 set search_path to core;
 
@@ -22,10 +21,12 @@ create table if not exists tenant(
     region_id integer references core.region(region_id) on delete set null,
     contact_email varchar(100) not null,
     is_subscribed boolean default false,
+    stripe_id varchar(255) unique default null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
-    -- TODO: preguntar si se necesita más info sobre el tenant
 );
+alter table core.tenant
+    add column if not exists stripe_id varchar(255) unique default null;
 
 create table if not exists branch(
     branch_id uuid primary key default gen_random_uuid(),
@@ -303,11 +304,12 @@ create table if not exists product_attribute (
         references core.product(tenant_id, product_id) 
         on delete cascade
 );
+
 -- ==========================================================================
 --                          FUNCTIONS AND TRIGGERS
 -- ==========================================================================
 
-create or replace procedure verify_tenant_payment(_payment_id uuid)
+create or replace procedure core.verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
 declare
@@ -318,7 +320,7 @@ declare
 begin
     select exists(
         select 1 
-        from tenant_payment 
+        from core.tenant_payment 
         where tenant_payment_id = _payment_id
     ) into _exists;
     
@@ -329,7 +331,7 @@ begin
 
     select coalesce(verified, false), tenant_id 
     into _already_verified, _tenant_id
-    from tenant_payment 
+    from core.tenant_payment 
     where tenant_payment_id = _payment_id;
     
     if _already_verified then
@@ -337,7 +339,7 @@ begin
         return;
     end if;
 
-    update tenant_payment
+    update core.tenant_payment
     set verified = true,
         updated_at = current_timestamp
     where tenant_payment_id = _payment_id
@@ -363,7 +365,10 @@ exception
 end
 $$;
 
-create or replace function create_subscription()
+
+
+
+create or replace function core.create_subscription()
 returns trigger as $$
 declare
     _subscription_type_id int;
@@ -377,9 +382,10 @@ declare
 begin
     _tenant_id := new.tenant_id;
 
+
     select exists(
         select 1 
-        from subscription 
+        from core.subscription 
         where tenant_payment_id = new.tenant_payment_id  
     ) into _exists;
     
@@ -388,8 +394,9 @@ begin
         return new;
     end if;
 
+
     select end_date into _old_end_date
-    from subscription
+    from core.subscription
     where tenant_id = _tenant_id
     and is_active = true
     order by end_date desc
@@ -403,8 +410,9 @@ begin
         else 1 
     end;
     
+
     select (duration_months || ' months')::interval into _plan_duration
-    from subscription_type
+    from core.subscription_type
     where subscription_type_id = _subscription_type_id;
 
     if _old_end_date is not null and _old_end_date > new.payment_date::date then
@@ -416,7 +424,8 @@ begin
         
         raise notice 'Adding remaining time to new subscription. New end date: %', _new_end_date;
         
-        update subscription 
+    
+        update core.subscription 
         set is_active = false,
             updated_at = current_timestamp
         where tenant_id = _tenant_id
@@ -426,7 +435,8 @@ begin
         _new_end_date := _new_start_date + _plan_duration;
     end if;
 
-    insert into subscription (
+
+    insert into core.subscription (
         tenant_id,
         subscription_type_id,
         tenant_payment_id,  
@@ -449,17 +459,11 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_payment_verified on tenant_payment;
-create trigger on_payment_verified
-    after update of verified on tenant_payment  
-    for each row
-    when (old.verified is false and new.verified is true)
-    execute function create_subscription();
-
-create or replace function enable_tenant()
+create or replace function core.enable_tenant()
 returns trigger as $$
 begin
-    update tenant
+
+    update core.tenant
     set is_subscribed = true,
         updated_at = current_timestamp
     where tenant_id = new.tenant_id;
@@ -470,13 +474,20 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_subscription_created on subscription;
-create trigger on_subscription_created
-    after insert on subscription
+drop trigger if exists on_payment_verified on core.tenant_payment;
+create trigger on_payment_verified
+    after update of verified on core.tenant_payment  
     for each row
-    execute function enable_tenant();
+    when (old.verified is false and new.verified is true)
+    execute function core.create_subscription();
 
-create or replace function update_timestamp()
+drop trigger if exists on_subscription_created on core.subscription;
+create trigger on_subscription_created
+    after insert on core.subscription
+    for each row
+    execute function core.enable_tenant();
+
+create or replace function core.update_timestamp()
 returns trigger as $$
 begin
     new.updated_at = current_timestamp;
@@ -484,7 +495,7 @@ begin
 end;
 $$ language plpgsql;
 
-create or replace function update_product_tsv()
+create or replace function core.update_product_tsv()
 returns trigger as $$
 begin
     new.product_name_tsv = to_tsvector('spanish', new.product_name);
@@ -494,43 +505,43 @@ $$ language plpgsql;
 
 drop trigger if exists update_branch_timestamp on core.branch;
 create trigger update_branch_timestamp before update on core.branch
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_category_timestamp on core.product_category;
 create trigger update_product_category_timestamp before update on core.product_category
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_tsv on core.product;
 create trigger update_product_tsv before insert or update on core.product
-for each row execute function update_product_tsv();
+for each row execute function core.update_product_tsv();
 
 drop trigger if exists update_product_timestamp on core.product;
 create trigger update_product_timestamp before update on core.product
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_attribute_timestamp on core.product_attribute;
 create trigger update_product_attribute_timestamp before update on core.product_attribute
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_timestamp on tenant;
-create trigger update_tenant_timestamp before update on tenant
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_timestamp on core.tenant;
+create trigger update_tenant_timestamp before update on core.tenant
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_customer_timestamp on tenant_customer;
-create trigger update_tenant_customer_timestamp before update on tenant_customer
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_customer_timestamp on core.tenant_customer;
+create trigger update_tenant_customer_timestamp before update on core.tenant_customer
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_users_timestamp on users;
-create trigger update_users_timestamp before update on users
-for each row execute function update_timestamp();
+drop trigger if exists update_users_timestamp on core.users;
+create trigger update_users_timestamp before update on core.users
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_subscription_timestamp on subscription;
-create trigger update_subscription_timestamp before update on subscription
-for each row execute function update_timestamp();
+drop trigger if exists update_subscription_timestamp on core.subscription;
+create trigger update_subscription_timestamp before update on core.subscription
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_payment_timestamp on tenant_payment;
-create trigger update_tenant_payment_timestamp before update on tenant_payment
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_payment_timestamp on core.tenant_payment;
+create trigger update_tenant_payment_timestamp before update on core.tenant_payment
+for each row execute function core.update_timestamp();
 
 -- SCHEMA: pos_module   
 create schema if not exists pos_module;
@@ -603,7 +614,7 @@ create table if not exists cash_register_sale(
 create table if not exists customer_payment(
     customer_payment_id uuid primary key not null default gen_random_uuid(),
     tenant_customer_id uuid not null references core.tenant_customer(tenant_customer_id) on delete cascade,   
-    sale_id uuid not null references pos_module.sale(sale_id) on delete set null,
+    sale_id uuid not null references pos_module.sale(sale_id) on delete cascade,
     payment_method_id integer references core.payment_method(payment_method_id) on delete set null,
     is_points_redemption boolean default false,
     points_redeemed integer default 0 check (points_redeemed >= 0),
@@ -845,12 +856,14 @@ create table if not exists score_transaction(
     transaction_type_id int references pos_module.score_transaction_type(score_transaction_type_id) on delete set null,
     points integer not null,
     bill_id uuid references pos_module.bill(bill_id) on delete set null,
-    created_at timestamp default current_timestamp
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
 );
 
 -- ==========================================================================
 --                          FUNCTIONS AND TRIGGERS
 -- ==========================================================================
+set search_path = pos_module;
 
 create or replace function check_sale_payment_completion(_sale_id uuid)
 returns boolean as $$
@@ -1115,8 +1128,9 @@ create trigger on_sale_completed_create_bill
 create or replace function update_on_return()
 returns trigger as $$
 declare
-    _bill_id uuid;
     _sale_item_record record;
+    _bill_id uuid;
+    _sale_id uuid;
     _total_returned numeric(10,2) := 0;
     _original_subtotal numeric(10,2);
     _original_tax numeric(10,2);
@@ -1126,37 +1140,36 @@ declare
     _new_total numeric(10,2);
     _tax_rate numeric(5,2);
     _quantity_remaining integer;
-    _sale_id uuid;
+    _sale_subtotal_after numeric(10,2);
+    _region_name varchar;
+    _tenant_id uuid;
 begin
     select 
         si.sale_item_id,
         si.sale_id,
         si.quantity,
         si.unit_price,
-        si.total_price
+        si.total_price,
+        si.product_id,
+        si.tenant_id
     into _sale_item_record
     from pos_module.sale_item si
     where si.sale_item_id = new.sale_item_id;
-    
+
     if not found then
         raise exception 'Sale item not found: %', new.sale_item_id;
     end if;
-    
+
     _sale_id := _sale_item_record.sale_id;
-    
-    select bill_id into _bill_id
-    from pos_module.bill
-    where sale_id = _sale_id;
-    
+
+    -- get bill for sale
+    select bill_id into _bill_id from pos_module.bill where sale_id = _sale_id limit 1;
     if _bill_id is null then
         raise exception 'Bill not found for sale: %', _sale_id;
     end if;
 
     raise notice '📄 Bill ID: %', _bill_id;
-    raise notice '📦 Original sale item:';
-    raise notice '   Quantity: %', _sale_item_record.quantity;
-    raise notice '   Unit price: $%', _sale_item_record.unit_price;
-    raise notice '   Total price: $%', _sale_item_record.total_price;
+    raise notice '📦 Original sale item: qty=% unit=$% total=$%', _sale_item_record.quantity, _sale_item_record.unit_price, _sale_item_record.total_price;
 
     if new.quantity > _sale_item_record.quantity then
         raise exception 'Cannot return more items than purchased. Purchased: %, Attempting to return: %',
@@ -1164,66 +1177,45 @@ begin
     end if;
 
     _quantity_remaining := _sale_item_record.quantity - new.quantity;
+    raise notice '🔢 Return quantity: %  Remaining qty: %', new.quantity, _quantity_remaining;
 
-    raise notice '🔢 Return quantity: %', new.quantity;
-    raise notice '🔢 Remaining quantity: %', _quantity_remaining;
-
+    -- Update or remove sale_item to reconcile sale
     if _quantity_remaining = 0 then
-        delete from pos_module.sale_item
-        where sale_item_id = new.sale_item_id;
-
-        raise notice '🗑️  Sale item completely removed (quantity = 0)';
+        delete from pos_module.sale_item where sale_item_id = _sale_item_record.sale_item_id;
+        raise notice '🗑️  Sale item removed (quantity = 0)';
     else
         update pos_module.sale_item
         set quantity = _quantity_remaining,
             total_price = _quantity_remaining * unit_price,
             updated_at = current_timestamp
-        where sale_item_id = new.sale_item_id;
-
-        raise notice '✏️  Sale item quantity updated from % to %', 
-            _sale_item_record.quantity, _quantity_remaining;
+        where sale_item_id = _sale_item_record.sale_item_id;
+        raise notice '✏️  Sale item quantity updated from % to %', _sale_item_record.quantity, _quantity_remaining;
     end if;
 
-    select subtotal_amount, tax_amount, total_amount
-    into _original_subtotal, _original_tax, _original_total
-    from pos_module.bill
-    where bill_id = _bill_id;
-
-    raise notice '';
-    raise notice '📊 Original bill totals:';
-    raise notice '   Subtotal: $%', _original_subtotal;
-    raise notice '   Tax: $%', _original_tax;
-    raise notice '   Total: $%', _original_total;
+    -- Update bill totals
+    select subtotal_amount, tax_amount, total_amount into _original_subtotal, _original_tax, _original_total
+    from pos_module.bill where bill_id = _bill_id;
 
     _total_returned := new.quantity * new.unit_price;
-    raise notice '';
-    raise notice '💰 Amount returned: $%', _total_returned;
+    raise notice '💰 Amount returned (line): $%', _total_returned;
 
     _new_subtotal := _original_subtotal - _total_returned;
+    if _new_subtotal < 0 then _new_subtotal := 0; end if;
 
-    if _new_subtotal < 0 then
-        _new_subtotal := 0;
-        raise warning 'Subtotal became negative, setting to 0';
-    end if;
-
-    select rate_percentage into _tax_rate
-    from core.tax_rate
-    where region = 'US Federal'
+    -- determine tax rate by tenant -> region (fallback to 0 if not found)
+    select t.tenant_id, r.region_name into _tenant_id, _region_name
+    from core.tenant t
+    join core.branch b on b.tenant_id = t.tenant_id
+    join pos_module.sale s on s.branch_id = b.branch_id
+    join core.region r on r.region_id = t.region_id
+    where s.sale_id = _sale_id
     limit 1;
 
-    if _tax_rate is null then
-        _tax_rate := 0;
-        raise warning 'Tax rate not found, using 0%%';
-    end if;
+    select rate_percentage into _tax_rate from core.tax_rate where region = coalesce(_region_name, 'US Federal') limit 1;
+    if _tax_rate is null then _tax_rate := 0; end if;
 
-    _new_tax := _new_subtotal * (_tax_rate / 100);
-    _new_total := _new_subtotal + _new_tax;
-
-    raise notice '';
-    raise notice '📊 New bill totals:';
-    raise notice '   Subtotal: $%', _new_subtotal;
-    raise notice '   Tax: $%', _new_tax;
-    raise notice '   Total: $%', _new_total;
+    _new_tax := round(_new_subtotal * (_tax_rate / 100), 2);
+    _new_total := round(_new_subtotal + _new_tax, 2);
 
     update pos_module.bill
     set subtotal_amount = _new_subtotal,
@@ -1232,8 +1224,20 @@ begin
         updated_at = current_timestamp
     where bill_id = _bill_id;
 
-    raise notice '';
-    raise notice '✅ Bill % updated successfully', _bill_id;
+    raise notice '📊 Bill updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
+
+    select coalesce(sum(si.total_price),0) into _sale_subtotal_after from pos_module.sale_item si where si.sale_id = _sale_id;
+    _new_tax := round(_sale_subtotal_after * (_tax_rate / 100), 2);
+    _new_total := round(_sale_subtotal_after + _new_tax, 2);
+
+    update pos_module.sale
+    set subtotal_amount = _sale_subtotal_after,
+        tax_amount = _new_tax,
+        total_amount = _new_total,
+        updated_at = current_timestamp
+    where sale_id = _sale_id;
+
+    raise notice '🔁 Sale updated: subtotal $% tax $% total $%', _sale_subtotal_after, _new_tax, _new_total;
 
     return new;
 end;
@@ -2226,5 +2230,3 @@ for each row execute function core.update_timestamp();
 drop trigger if exists update_sale_item_timestamp on pos_module.sale_item;
 create trigger update_sale_item_timestamp before update on pos_module.sale_item
 for each row execute function core.update_timestamp();
-
-

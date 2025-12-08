@@ -18,33 +18,36 @@ begin
     delete from supplies_module.supplier_invoice_item where supplier_invoice_id in (
         select supplier_invoice_id from supplies_module.supplier_invoice si
         join supplies_module.supply_order so on si.supply_order_id = so.supply_order_id
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Split'
     );
     delete from supplies_module.supplier_invoice where supply_order_id in (
         select supply_order_id from supplies_module.supply_order so
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Split'
     );
     delete from supplies_module.account_payable where supply_order_id in (
         select supply_order_id from supplies_module.supply_order so
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Split'
     );
     delete from supplies_module.supply_order_item where supply_order_id in (
         select supply_order_id from supplies_module.supply_order so
-        join supplies_module.supplier s on so.supplier_id = s.supplier_id
-        join core.branch b on s.branch_id = b.branch_id
+        join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+        join core.branch b on sb.branch_id = b.branch_id
         join core.tenant t on b.tenant_id = t.tenant_id
         where t.tenant_name = 'Tenant Test Supplies Split'
     );
     delete from supplies_module.supply_order where supplier_id in (
+        select supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Split'
+    );
+    delete from supplies_module.supplier_branch where supplier_id in (
         select supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Split'
     );
     delete from supplies_module.supplier where supplier_name = 'Proveedor Test Split';
@@ -103,12 +106,17 @@ begin
     select warehouse_id into v_warehouse_id from inventory_module.warehouse where warehouse_name = 'Warehouse Test Split' and branch_id = v_branch_id limit 1;
     raise notice '  Warehouse creado/recuperado: %', v_warehouse_id;
 
-    -- Supplier (idempotente)
-    insert into supplies_module.supplier (branch_id, supplier_name, supplier_contact_info)
-    values (v_branch_id, 'Proveedor Test Split', 'contact@suppliertest.local')
+    -- Supplier (idempotente) -> ahora insertamos supplier y mapping en supplier_branch
+    insert into supplies_module.supplier (supplier_name, supplier_contact_info, supplier_address)
+    values ('Proveedor Test Split', 'contact@suppliertest.local', 'Dirección Proveedor Test')
     on conflict do nothing;
-    select supplier_id into v_supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Split' and branch_id = v_branch_id limit 1;
-    raise notice '  Supplier creado/recuperado: %', v_supplier_id;
+    select supplier_id into v_supplier_id from supplies_module.supplier where supplier_name = 'Proveedor Test Split' limit 1;
+
+    -- Crear mapping supplier_branch (idempotente)
+    insert into supplies_module.supplier_branch (supplier_id, branch_id)
+    values (v_supplier_id, v_branch_id)
+    on conflict do nothing;
+    raise notice '  Supplier creado/recuperado: % (mapped to branch %)', v_supplier_id, v_branch_id;
 
     -- Productos (idempotentes)
     insert into core.product (tenant_id, sku, product_name, unit_price)
@@ -220,8 +228,8 @@ begin
     select account_payable_id, subtotal_amount into v_account_payable_id, v_amount_due
     from supplies_module.account_payable ap
     join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
-    join supplies_module.supplier s on so.supplier_id = s.supplier_id
-    join core.branch b on s.branch_id = b.branch_id
+    join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+    join core.branch b on sb.branch_id = b.branch_id
     join core.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Tenant Test Supplies Split'
     limit 1;
@@ -280,8 +288,8 @@ begin
     select account_payable_id, subtotal_amount into v_account_payable_id, v_amount_due
     from supplies_module.account_payable ap
     join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
-    join supplies_module.supplier s on so.supplier_id = s.supplier_id
-    join core.branch b on s.branch_id = b.branch_id
+    join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+    join core.branch b on sb.branch_id = b.branch_id
     join core.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Tenant Test Supplies Split'
     limit 1;
@@ -332,8 +340,8 @@ begin
     select account_payable_id, subtotal_amount, amount_paid into v_account_payable_id, v_amount_due, v_paid_so_far
     from supplies_module.account_payable ap
     join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
-    join supplies_module.supplier s on so.supplier_id = s.supplier_id
-    join core.branch b on s.branch_id = b.branch_id
+    join supplies_module.supplier_branch sb on so.supplier_id = sb.supplier_id
+    join core.branch b on sb.branch_id = b.branch_id
     join core.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Tenant Test Supplies Split'
     limit 1;

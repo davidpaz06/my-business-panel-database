@@ -5,11 +5,24 @@ set search_path to supplies_module;
 
 create table if not exists supplier(
     supplier_id uuid primary key default gen_random_uuid(),
-    branch_id uuid not null references core.branch(branch_id) on delete cascade,
     supplier_name varchar(255) not null,
     supplier_contact_info text,
+    supplier_address text,
+    supplier_notes text,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
+);
+
+create unique index if not exists ux_supplier_name on supplies_module.supplier(supplier_name);
+
+create table if not exists supplier_branch(
+    supplier_branch_id uuid primary key default gen_random_uuid(),
+    supplier_id uuid not null references supplies_module.supplier(supplier_id) on delete cascade,
+    branch_id uuid not null references core.branch(branch_id) on delete cascade,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    unique(supplier_id, branch_id)
 );
 
 create table if not exists supply_order_status(
@@ -96,6 +109,7 @@ create table if not exists goods_receipt(
     goods_receipt_id uuid primary key default gen_random_uuid(),
     supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
     received_date timestamp default current_timestamp,
+    total_amount numeric(12,3) default 0,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
@@ -348,19 +362,28 @@ as $$
 declare
     v_supply_order_id uuid;
     v_tenant_id uuid;
+    v_branch_id uuid;              
     v_subtotal numeric(12, 3) := 0;
     v_item jsonb;
     v_product_id uuid;
     v_qty int;
     v_unit numeric(12,3);
 begin
+    select sb.branch_id into v_branch_id
+    from supplies_module.supplier_branch sb
+    where sb.supplier_id = p_supplier_id
+    limit 1;
+
+    if v_branch_id is null then
+        raise exception 'No branch mapping found for supplier %', p_supplier_id;
+    end if;
+
     select b.tenant_id into v_tenant_id
-    from supplies_module.supplier s
-    join core.branch b on b.branch_id = s.branch_id
-    where s.supplier_id = p_supplier_id;
+    from core.branch b
+    where b.branch_id = v_branch_id;
 
     if v_tenant_id is null then
-        raise exception 'Cannot determine tenant_id for supplier %', p_supplier_id;
+        raise exception 'Cannot determine tenant_id for supplier % (branch: %)', p_supplier_id, v_branch_id;
     end if;
 
     insert into supplies_module.supply_order(
@@ -449,25 +472,23 @@ begin
         notes,
         changed_at
     ) values (
-        coalesce(new.supply_order_id, old.supply_order_id),
+        new.supply_order_id,
         old.supply_order_status_id,
         new.supply_order_status_id,
         'Status updated via trigger',
         current_timestamp
     );
 
-    update supplies_module.supply_order
-    set supply_order_status_id = new.supply_order_status_id,
-        updated_at = current_timestamp
-    where supply_order_id = coalesce(new.supply_order_id, old.supply_order_id);
-
-    return new;
+    return new; 
 end;
 $$ language plpgsql;
+
 drop trigger if exists on_order_status_insert on supplies_module.supply_order;
 create trigger on_order_status_insert
 after update of supply_order_status_id on supplies_module.supply_order
-for each row execute function update_order_status();
+for each row 
+when (old.supply_order_status_id is distinct from new.supply_order_status_id)  
+execute function update_order_status();
 
 create or replace function check_account_payable_completion(
     _account_payable_id uuid
@@ -616,12 +637,12 @@ create trigger recalc_account_payable_on_payment_trigger
     execute function supplies_module.recalc_account_payable_on_payment();
 
 create or replace function create_supplier_invoice()
-returns trigger as $$
+returns trigger as $$ 
 declare
     v_supplier_invoice_id uuid;
     v_supply_order_id uuid;
     v_supplier_id uuid;
-    v_branch_id uuid;
+    v_branch_id uuid;      
     v_tenant_id uuid;
     v_region_id int;
     v_rate_pct numeric;
@@ -649,9 +670,10 @@ begin
         return new;
     end if;
 
-    select branch_id into v_branch_id
-    from supplies_module.supplier
-    where supplier_id = v_supplier_id;
+    select sb.branch_id into v_branch_id
+    from supplies_module.supplier_branch sb
+    where sb.supplier_id = v_supplier_id
+    limit 1;
 
     if v_branch_id is not null then
         select tenant_id into v_tenant_id
@@ -792,25 +814,99 @@ create trigger update_invoice_paid_status_trigger
     for each row
     execute function supplies_module.update_invoice_paid_status();
 
--- create or replace function create_goods_receipt()
--- returns trigger as $$
--- declare
---     v_goods_receipt_id uuid;
---     v_supply_order_id uuid;
---     v_item record;
--- begin
--- end
--- $$ language plpgsql;
+create or replace function create_goods_receipt()
+returns trigger as $$
+declare
+    v_goods_receipt_id uuid;
+    v_supply_order_id uuid := coalesce(new.supply_order_id, old.supply_order_id);
+    v_exists boolean;
+    v_item record;
+    v_total numeric(12,3);
+begin
+    select exists(
+        select 1 from supplies_module.goods_receipt where supply_order_id = v_supply_order_id
+    ) into v_exists;
 
--- drop trigger if exists create_goods_receipt on supplies_module.supply_order;
--- create trigger create_goods_receipt
---     after update of supply_order_status_id on supplies_module.supply_order
---     for each row
---     when (new.supply_order_status_id = 4 and old.supply_order_status_id is distinct from 4)
---     execute function supplies_module.create_goods_receipt();
+    if v_exists then
+        raise notice 'ℹ️ Goods receipt already exists for supply_order %', v_supply_order_id;
+        return new;
+    end if;
 
--- create or replace function payment_alert_check()
+    select si.total_amount
+    into v_total
+    from supplies_module.supplier_invoice si
+    where si.supply_order_id = v_supply_order_id
+    limit 1;
 
+    if v_total is null then
+        select coalesce(sum(quantity_ordered * unit_price), 0)
+        into v_total
+        from supplies_module.supply_order_item
+        where supply_order_id = v_supply_order_id;
+    end if;
+
+    v_total := round(coalesce(v_total, 0)::numeric, 3);
+
+    insert into supplies_module.goods_receipt(
+        goods_receipt_id,
+        supply_order_id,
+        received_date,
+        total_amount,
+        created_at,
+        updated_at
+    ) values (
+        gen_random_uuid(),
+        v_supply_order_id,
+        current_timestamp,
+        v_total,
+        current_timestamp,
+        current_timestamp
+    ) returning goods_receipt_id into v_goods_receipt_id;
+
+    raise notice '✅ Goods receipt % created for supply_order % (total $%)', v_goods_receipt_id, v_supply_order_id, v_total;
+
+    for v_item in 
+        select tenant_id, product_id, quantity_ordered, unit_price
+        from supplies_module.supply_order_item
+        where supply_order_id = v_supply_order_id
+    loop
+        insert into supplies_module.goods_receipt_item(
+            goods_receipt_item_id,
+            goods_receipt_id,
+            tenant_id,
+            product_id,
+            quantity_received,
+            created_at,
+            updated_at
+        ) values (
+            gen_random_uuid(),
+            v_goods_receipt_id,
+            v_item.tenant_id,
+            v_item.product_id,
+            v_item.quantity_ordered,
+            current_timestamp,
+            current_timestamp
+        );
+    end loop;
+
+    raise notice '✅ Copied % items to goods_receipt', (
+        select count(*) from supplies_module.goods_receipt_item where goods_receipt_id = v_goods_receipt_id
+    );
+
+    return new;
+exception
+    when others then
+        raise notice '❌ Error creating goods receipt for order %: %', v_supply_order_id, sqlerrm;
+        return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists create_goods_receipt on supplies_module.supply_order;
+create trigger create_goods_receipt
+    after update of supply_order_status_id on supplies_module.supply_order
+    for each row
+    when (new.supply_order_status_id = 3 and old.supply_order_status_id is distinct from 3)
+    execute function supplies_module.create_goods_receipt();
 
 -- Update timestamp triggers
 

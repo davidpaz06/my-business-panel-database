@@ -1,4 +1,4 @@
-create or replace procedure verify_tenant_payment(_payment_id uuid)
+create or replace procedure core.verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
 declare
@@ -9,7 +9,7 @@ declare
 begin
     select exists(
         select 1 
-        from tenant_payment 
+        from core.tenant_payment 
         where tenant_payment_id = _payment_id
     ) into _exists;
     
@@ -20,7 +20,7 @@ begin
 
     select coalesce(verified, false), tenant_id 
     into _already_verified, _tenant_id
-    from tenant_payment 
+    from core.tenant_payment 
     where tenant_payment_id = _payment_id;
     
     if _already_verified then
@@ -28,7 +28,7 @@ begin
         return;
     end if;
 
-    update tenant_payment
+    update core.tenant_payment
     set verified = true,
         updated_at = current_timestamp
     where tenant_payment_id = _payment_id
@@ -54,7 +54,10 @@ exception
 end
 $$;
 
-create or replace function create_subscription()
+
+
+
+create or replace function core.create_subscription()
 returns trigger as $$
 declare
     _subscription_type_id int;
@@ -68,9 +71,10 @@ declare
 begin
     _tenant_id := new.tenant_id;
 
+
     select exists(
         select 1 
-        from subscription 
+        from core.subscription 
         where tenant_payment_id = new.tenant_payment_id  
     ) into _exists;
     
@@ -79,8 +83,9 @@ begin
         return new;
     end if;
 
+
     select end_date into _old_end_date
-    from subscription
+    from core.subscription
     where tenant_id = _tenant_id
     and is_active = true
     order by end_date desc
@@ -94,8 +99,9 @@ begin
         else 1 
     end;
     
+
     select (duration_months || ' months')::interval into _plan_duration
-    from subscription_type
+    from core.subscription_type
     where subscription_type_id = _subscription_type_id;
 
     if _old_end_date is not null and _old_end_date > new.payment_date::date then
@@ -107,7 +113,8 @@ begin
         
         raise notice 'Adding remaining time to new subscription. New end date: %', _new_end_date;
         
-        update subscription 
+    
+        update core.subscription 
         set is_active = false,
             updated_at = current_timestamp
         where tenant_id = _tenant_id
@@ -117,7 +124,8 @@ begin
         _new_end_date := _new_start_date + _plan_duration;
     end if;
 
-    insert into subscription (
+
+    insert into core.subscription (
         tenant_id,
         subscription_type_id,
         tenant_payment_id,  
@@ -140,17 +148,11 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_payment_verified on tenant_payment;
-create trigger on_payment_verified
-    after update of verified on tenant_payment  
-    for each row
-    when (old.verified is false and new.verified is true)
-    execute function create_subscription();
-
-create or replace function enable_tenant()
+create or replace function core.enable_tenant()
 returns trigger as $$
 begin
-    update tenant
+
+    update core.tenant
     set is_subscribed = true,
         updated_at = current_timestamp
     where tenant_id = new.tenant_id;
@@ -161,13 +163,20 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_subscription_created on subscription;
-create trigger on_subscription_created
-    after insert on subscription
+drop trigger if exists on_payment_verified on core.tenant_payment;
+create trigger on_payment_verified
+    after update of verified on core.tenant_payment  
     for each row
-    execute function enable_tenant();
+    when (old.verified is false and new.verified is true)
+    execute function core.create_subscription();
 
-create or replace function update_timestamp()
+drop trigger if exists on_subscription_created on core.subscription;
+create trigger on_subscription_created
+    after insert on core.subscription
+    for each row
+    execute function core.enable_tenant();
+
+create or replace function core.update_timestamp()
 returns trigger as $$
 begin
     new.updated_at = current_timestamp;
@@ -175,7 +184,7 @@ begin
 end;
 $$ language plpgsql;
 
-create or replace function update_product_tsv()
+create or replace function core.update_product_tsv()
 returns trigger as $$
 begin
     new.product_name_tsv = to_tsvector('spanish', new.product_name);
@@ -185,40 +194,40 @@ $$ language plpgsql;
 
 drop trigger if exists update_branch_timestamp on core.branch;
 create trigger update_branch_timestamp before update on core.branch
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_category_timestamp on core.product_category;
 create trigger update_product_category_timestamp before update on core.product_category
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_tsv on core.product;
 create trigger update_product_tsv before insert or update on core.product
-for each row execute function update_product_tsv();
+for each row execute function core.update_product_tsv();
 
 drop trigger if exists update_product_timestamp on core.product;
 create trigger update_product_timestamp before update on core.product
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_attribute_timestamp on core.product_attribute;
 create trigger update_product_attribute_timestamp before update on core.product_attribute
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_timestamp on tenant;
-create trigger update_tenant_timestamp before update on tenant
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_timestamp on core.tenant;
+create trigger update_tenant_timestamp before update on core.tenant
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_customer_timestamp on tenant_customer;
-create trigger update_tenant_customer_timestamp before update on tenant_customer
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_customer_timestamp on core.tenant_customer;
+create trigger update_tenant_customer_timestamp before update on core.tenant_customer
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_users_timestamp on users;
-create trigger update_users_timestamp before update on users
-for each row execute function update_timestamp();
+drop trigger if exists update_users_timestamp on core.users;
+create trigger update_users_timestamp before update on core.users
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_subscription_timestamp on subscription;
-create trigger update_subscription_timestamp before update on subscription
-for each row execute function update_timestamp();
+drop trigger if exists update_subscription_timestamp on core.subscription;
+create trigger update_subscription_timestamp before update on core.subscription
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_payment_timestamp on tenant_payment;
-create trigger update_tenant_payment_timestamp before update on tenant_payment
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_payment_timestamp on core.tenant_payment;
+create trigger update_tenant_payment_timestamp before update on core.tenant_payment
+for each row execute function core.update_timestamp();
