@@ -17,22 +17,28 @@ create or replace function create_supply_order(
     p_supplier_id uuid,
     p_warehouse_id uuid,
     p_expected_delivery_date date,
-    p_items jsonb default '[]'::jsonb    
+    p_items jsonb default '[]'::jsonb,
+    p_has_invoice boolean default true,
+    p_payment_condition varchar(10) default 'CREDIT'
 ) returns uuid as $$
 declare
     v_supply_order_id uuid;
+    v_supplier_invoice_id uuid;
     v_item jsonb;
     v_tenant_id uuid;
     v_product_id uuid;
     v_qty integer;
     v_unit numeric(12,3);
-    v_total numeric(12,3);
+    v_subtotal numeric(12,3);
+    v_tax_rate numeric(5,2);
+    v_tax_amount numeric(12,3);
 begin
-
     select b.tenant_id into v_tenant_id
     from supplies_module.supplier s
-    join core.branch b on b.branch_id = s.branch_id
-    where s.supplier_id = p_supplier_id;
+    join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
+    join core.branch b on b.branch_id = sb.branch_id
+    where s.supplier_id = p_supplier_id
+    limit 1;
 
     if v_tenant_id is null then
         raise exception 'Cannot determine tenant_id for supplier %', p_supplier_id;
@@ -51,7 +57,7 @@ begin
     ) returning supply_order_id into v_supply_order_id;
 
     if p_items is not null and jsonb_typeof(p_items) = 'array' and jsonb_array_length(p_items) > 0 then
-        for v_item in select * from jsonb_array_elements(p_items)
+        for v_item in select value from jsonb_array_elements(p_items)
         loop
             v_product_id := (v_item ->> 'product_id')::uuid;
             v_qty := coalesce((v_item ->> 'quantity_ordered')::int, 0);
@@ -73,30 +79,76 @@ begin
         end loop;
     end if;
 
-    v_total := coalesce(supplies_module.calculate_supply_order_total(v_supply_order_id), 0);
+    v_subtotal := coalesce(supplies_module.calculate_supply_order_total(v_supply_order_id), 0);
+
+    select coalesce(tr.rate_percentage, 13.00) into v_tax_rate
+    from core.tenant t
+    left join core.tax_rate tr on tr.region_id = t.region_id
+    where t.tenant_id = v_tenant_id
+    limit 1;
+
+    v_tax_amount := round(v_subtotal * (v_tax_rate / 100.0), 3);
 
     insert into supplies_module.account_payable(
-        account_payable_id,
         supply_order_id,
-        amount_due,
+        has_invoice,
+        subtotal_amount,
+        tax_amount,
         due_date,
-        account_status,
-        created_at,
-        updated_at
+        account_status
     ) values (
-        gen_random_uuid(),
         v_supply_order_id,
-        v_total,
+        p_has_invoice,
+        v_subtotal,
+        v_tax_amount,
         (current_date + interval '30 days')::date,
-        1,
-        current_timestamp,
-        current_timestamp
-    )
-    on conflict (supply_order_id) do update
-    set amount_due = excluded.amount_due,
-        due_date = excluded.due_date,
-        account_status = excluded.account_status,
-        updated_at = current_timestamp;
+        1
+    );
+
+    if p_has_invoice then
+        insert into supplies_module.supplier_invoice(
+            supply_order_id,
+            invoice_number,
+            invoice_date,
+            payment_condition,
+            due_date,
+            subtotal_amount,
+            tax_rate
+        ) values (
+            v_supply_order_id,
+            'INV-' || to_char(current_timestamp, 'YYYYMMDD-HH24MISS') || '-' || substring(v_supply_order_id::text, 1, 8),
+            current_timestamp,
+            p_payment_condition,
+            (current_date + interval '30 days')::date,
+            v_subtotal,
+            v_tax_rate
+        ) returning supplier_invoice_id into v_supplier_invoice_id;
+
+        for v_item in 
+            select jsonb_build_object(
+                'tenant_id', tenant_id,
+                'product_id', product_id,
+                'quantity_ordered', quantity_ordered,
+                'unit_price', unit_price
+            ) as value
+            from supplies_module.supply_order_item
+            where supply_order_id = v_supply_order_id
+        loop
+            insert into supplies_module.supplier_invoice_item(
+                supplier_invoice_id,
+                tenant_id,
+                product_id,
+                quantity_billed,
+                unit_price
+            ) values (
+                v_supplier_invoice_id,
+                (v_item ->> 'tenant_id')::uuid,
+                (v_item ->> 'product_id')::uuid,
+                (v_item ->> 'quantity_ordered')::integer,
+                (v_item ->> 'unit_price')::numeric
+            );
+        end loop;
+    end if;
 
     return v_supply_order_id;
 end;
@@ -112,23 +164,19 @@ begin
         notes,
         changed_at
     ) values (
-        coalesce(new.supply_order_id, old.supply_order_id),
+        new.supply_order_id,
         old.supply_order_status_id,
         new.supply_order_status_id,
         'Status updated via trigger',
         current_timestamp
     );
 
-    update supplies_module.supply_order
-    set supply_order_status_id = new.supply_order_status_id,
-        updated_at = current_timestamp
-    where supply_order_id = coalesce(new.supply_order_id, old.supply_order_id);
-
     return new;
 end;
 $$ language plpgsql;
-drop trigger if exists on_order_status_insert on supplies_module.supply_order;
-create trigger on_order_status_insert
+
+drop trigger if exists on_order_status_update on supplies_module.supply_order;
+create trigger on_order_status_update
 after update of supply_order_status_id on supplies_module.supply_order
 for each row execute function update_order_status();
 
@@ -139,10 +187,9 @@ declare
     _amount_due numeric(12,3);
     _payments_total numeric(12,3);
     _pending_payments int;
-    _current_status int;
 begin
-    select amount_due, account_status
-    into _amount_due, _current_status
+    select amount_due
+    into _amount_due
     from supplies_module.account_payable
     where account_payable_id = _account_payable_id;
     
@@ -156,7 +203,6 @@ begin
     and verified = false;
     
     if _pending_payments > 0 then
-        raise notice '   ⏳ Account % has % unverified payments', _account_payable_id, _pending_payments;
         return false;
     end if;
     
@@ -165,49 +211,28 @@ begin
     where account_payable_id = _account_payable_id
     and verified = true;
     
-    raise notice '   💰 Amount due: $%', _amount_due;
-    raise notice '   💳 Payments total: $%', _payments_total;
-    raise notice '   📊 Balance: $%', (_amount_due - _payments_total);
-    
-    if abs(_payments_total - _amount_due) <= 0.01 then
+    if abs(_payments_total - _amount_due) <= 0.01 or _payments_total > _amount_due then
         update supplies_module.account_payable
         set amount_paid = _payments_total,
-            account_status = 3,  
-            updated_at = current_timestamp
-        where account_payable_id = _account_payable_id;
-        
-        raise notice '   ✅ Account % marked as PAID', _account_payable_id;
-        return true;
-        
-    elsif _payments_total > _amount_due then
-        raise warning 'Overpayment detected: Expected $%, Paid $%', _amount_due, _payments_total;
-        
-        update supplies_module.account_payable
-        set amount_paid = _payments_total,
-            account_status = 3,  
+            account_status = 3,
             updated_at = current_timestamp
         where account_payable_id = _account_payable_id;
         
         return true;
-        
     elsif _payments_total > 0 then
         update supplies_module.account_payable
         set amount_paid = _payments_total,
-            account_status = 2,  
+            account_status = 2,
             updated_at = current_timestamp
         where account_payable_id = _account_payable_id;
         
-        raise notice '   ⏳ Account % partially paid (shortage: $%)', 
-            _account_payable_id, (_amount_due - _payments_total);
         return false;
     else
-        raise notice '   ⏳ Account % still pending (no payments)', _account_payable_id;
         return false;
     end if;
     
 exception
     when others then
-        raise notice '   ❌ Error checking account completion: %', sqlerrm;
         return false;
 end;
 $$ language plpgsql;
@@ -219,9 +244,6 @@ declare
     _exists boolean;
     _already_verified boolean;
     _account_payable_id uuid;
-    _amount_paid numeric(10,2);
-    _payment_method varchar(50);
-    _account_completed boolean;
 begin
     select exists(
         select 1 
@@ -233,44 +255,21 @@ begin
         raise exception 'Payment not found: %', _payment_id;
     end if;
     
-    select verified, account_payable_id, amount_paid
-    into _already_verified, _account_payable_id, _amount_paid
+    select verified, account_payable_id
+    into _already_verified, _account_payable_id
     from supplies_module.supply_order_payment
     where payment_id = _payment_id;
     
     if _already_verified then
-        raise notice '⚠️  Payment % is already verified', _payment_id;
         return;
     end if;
-
-    select pm.name into _payment_method
-    from core.payment_method pm
-    join supplies_module.supply_order_payment sop on pm.payment_method_id = sop.payment_method_id
-    where sop.payment_id = _payment_id;
     
     update supplies_module.supply_order_payment
     set verified = true,
         updated_at = current_timestamp
     where payment_id = _payment_id;
     
-    raise notice '✅ Payment verified successfully';
-    raise notice '';
-    
-    raise notice '🔍 Checking if account is fully paid...';
-    _account_completed := supplies_module.check_account_payable_completion(_account_payable_id);
-    
-    if _account_completed then
-        raise notice '';
-        raise notice '🎉 Account % is FULLY PAID', _account_payable_id;
-    else
-        raise notice '';
-        raise notice '⏳ Account % still has pending balance', _account_payable_id;
-    end if;
-    
-exception
-    when others then
-        raise notice '❌ Payment verification failed: %', sqlerrm;
-        raise;
+    perform supplies_module.check_account_payable_completion(_account_payable_id);
 end;
 $$ language plpgsql;
 
@@ -293,178 +292,202 @@ create trigger recalc_account_payable_on_payment_trigger
     for each row
     execute function supplies_module.recalc_account_payable_on_payment();
 
-create or replace function create_supplier_invoice()
+create or replace function update_invoice_paid_status()
+returns trigger as $$
+begin
+    if new.account_status = 3 and old.account_status is distinct from 3 then
+        update supplies_module.supplier_invoice
+        set paid = true,
+            updated_at = current_timestamp
+        where supply_order_id = new.supply_order_id;
+    end if;
+    
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists update_invoice_paid_status_trigger on supplies_module.account_payable;
+create trigger update_invoice_paid_status_trigger
+    after update of account_status on supplies_module.account_payable
+    for each row
+    execute function supplies_module.update_invoice_paid_status();
+
+create or replace function create_goods_receipt()
 returns trigger as $$
 declare
-    v_supplier_invoice_id uuid;
-    v_supply_order_id uuid;
-    v_supplier_id uuid;
-    v_branch_id uuid;
-    v_tenant_id uuid;
-    v_region_id int;
-    v_rate_pct numeric;
-    v_tax_rate numeric := 0.13; -- default fallback 13%
+    v_goods_receipt_id uuid;
     v_subtotal numeric(12,3);
     v_tax_amount numeric(12,3);
     v_item record;
 begin
-
-    select supply_order_id into v_supply_order_id
-    from supplies_module.account_payable
-    where account_payable_id = new.account_payable_id;
-
-    if v_supply_order_id is null then
-        raise notice 'No supply_order found for account_payable %', new.account_payable_id;
-        return new;
-    end if;
-
-    select supplier_id into v_supplier_id
-    from supplies_module.supply_order
-    where supply_order_id = v_supply_order_id;
-
-    if v_supplier_id is null then
-        raise notice 'No supplier found for supply_order %', v_supply_order_id;
-        return new;
-    end if;
-
-    select branch_id into v_branch_id
-    from supplies_module.supplier
-    where supplier_id = v_supplier_id;
-
-    if v_branch_id is not null then
-        select tenant_id into v_tenant_id
-        from core.branch
-        where branch_id = v_branch_id;
-    end if;
-
-    if v_tenant_id is not null then
-        select region_id into v_region_id
-        from core.tenant
-        where tenant_id = v_tenant_id;
-    end if;
-
-    if v_region_id is not null then
-        select rate_percentage into v_rate_pct
-        from core.tax_rate
-        where region_id = v_region_id
-        limit 1;
-    end if;
-
-    if v_rate_pct is not null then
-        v_tax_rate := (v_rate_pct::numeric / 100.0);
-    else
-        select rate_percentage into v_rate_pct
-        from core.tax_rate
-        where region_id is null
-        limit 1;
-
-        if v_rate_pct is not null then
-            v_tax_rate := (v_rate_pct::numeric / 100.0);
-        else
-            v_tax_rate := 0.13;
+    if new.supply_order_status_id = 3 and old.supply_order_status_id is distinct from 3 then
+        if exists(
+            select 1 
+            from supplies_module.goods_receipt 
+            where supply_order_id = new.supply_order_id
+        ) then
+            return new;
         end if;
+
+        select subtotal_amount, tax_amount 
+        into v_subtotal, v_tax_amount
+        from supplies_module.account_payable
+        where supply_order_id = new.supply_order_id;
+
+        insert into supplies_module.goods_receipt(
+            supply_order_id,
+            received_date,
+            subtotal_amount,
+            tax_amount
+        ) values (
+            new.supply_order_id,
+            current_timestamp,
+            v_subtotal,
+            v_tax_amount
+        ) returning goods_receipt_id into v_goods_receipt_id;
+
+        for v_item in 
+            select tenant_id, product_id, quantity_ordered
+            from supplies_module.supply_order_item
+            where supply_order_id = new.supply_order_id
+        loop
+            insert into supplies_module.goods_receipt_item(
+                goods_receipt_id,
+                tenant_id,
+                product_id,
+                quantity_received
+            ) values (
+                v_goods_receipt_id,
+                v_item.tenant_id,
+                v_item.product_id,
+                v_item.quantity_ordered
+            );
+        end loop;
+    end if;
+
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists create_goods_receipt_trigger on supplies_module.supply_order;
+create trigger create_goods_receipt_trigger
+    after update of supply_order_status_id on supplies_module.supply_order
+    for each row
+    execute function supplies_module.create_goods_receipt();
+
+create or replace function perform_three_way_matching()
+returns trigger as $$
+declare
+    v_supplier_invoice_id uuid;
+    v_order_subtotal numeric(12,3);
+    v_order_tax numeric(12,3);
+    v_order_total numeric(12,3);
+    v_invoice_subtotal numeric(12,3);
+    v_invoice_tax numeric(12,3);
+    v_invoice_total numeric(12,3);
+    v_receipt_subtotal numeric(12,3);
+    v_receipt_tax numeric(12,3);
+    v_receipt_total numeric(12,3);
+    v_order_qty integer;
+    v_invoice_qty integer;
+    v_receipt_qty integer;
+    v_amounts_matched boolean;
+    v_quantities_matched boolean;
+begin
+    select supplier_invoice_id into v_supplier_invoice_id
+    from supplies_module.supplier_invoice
+    where supply_order_id = new.supply_order_id;
+
+    if v_supplier_invoice_id is null then
+        return new;
     end if;
 
     if exists(
         select 1 
-        from supplies_module.supplier_invoice 
-        where supply_order_id = v_supply_order_id
+        from supplies_module.three_way_matching 
+        where supply_order_id = new.supply_order_id
     ) then
-        raise notice '⚠️  Supplier invoice already exists for supply order %', v_supply_order_id;
         return new;
     end if;
 
-    v_subtotal := new.amount_due / (1 + v_tax_rate);
-    v_tax_amount := new.amount_due - v_subtotal;
-
-    insert into supplies_module.supplier_invoice(
-        supplier_invoice_id,
-        supply_order_id,
-        invoice_number,
-        invoice_date,
-        due_date,
+    select 
         subtotal_amount,
         tax_amount,
-        created_at,
-        updated_at
+        amount_due
+    into 
+        v_order_subtotal,
+        v_order_tax,
+        v_order_total
+    from supplies_module.account_payable
+    where supply_order_id = new.supply_order_id;
+
+    select 
+        subtotal_amount,
+        tax_amount,
+        total_amount
+    into 
+        v_invoice_subtotal,
+        v_invoice_tax,
+        v_invoice_total
+    from supplies_module.supplier_invoice
+    where supplier_invoice_id = v_supplier_invoice_id;
+
+    v_receipt_subtotal := new.subtotal_amount;
+    v_receipt_tax := new.tax_amount;
+    v_receipt_total := new.total_amount;
+
+    select coalesce(sum(quantity_ordered), 0) into v_order_qty
+    from supplies_module.supply_order_item
+    where supply_order_id = new.supply_order_id;
+
+    select coalesce(sum(quantity_billed), 0) into v_invoice_qty
+    from supplies_module.supplier_invoice_item
+    where supplier_invoice_id = v_supplier_invoice_id;
+
+    select coalesce(sum(quantity_received), 0) into v_receipt_qty
+    from supplies_module.goods_receipt_item
+    where goods_receipt_id = new.goods_receipt_id;
+
+    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and 
+                         (abs(v_order_subtotal - v_receipt_subtotal) <= 0.01) and
+                         (abs(v_invoice_subtotal - v_receipt_subtotal) <= 0.01) and
+                         (abs(v_order_tax - v_invoice_tax) <= 0.01) and
+                         (abs(v_order_tax - v_receipt_tax) <= 0.01) and
+                         (abs(v_invoice_tax - v_receipt_tax) <= 0.01) and
+                         (abs(v_order_total - v_invoice_total) <= 0.01) and
+                         (abs(v_order_total - v_receipt_total) <= 0.01) and
+                         (abs(v_invoice_total - v_receipt_total) <= 0.01);
+    
+    v_quantities_matched := (v_order_qty = v_invoice_qty) and 
+                            (v_order_qty = v_receipt_qty);
+
+    insert into supplies_module.three_way_matching(
+        supply_order_id,
+        goods_receipt_id,
+        supplier_invoice_id,
+        amounts_matched,
+        quantities_matched,
+        is_matched,
+        matched_at
     ) values (
-        gen_random_uuid(),
-        v_supply_order_id,
-        'INV-' || to_char(current_timestamp, 'YYYYMMDD-HH24MISS') || '-' || substring(v_supply_order_id::text, 1, 8),
-        current_timestamp,
-        new.due_date,
-        round(v_subtotal, 3),
-        round(v_tax_amount, 3),
-        current_timestamp,
+        new.supply_order_id,
+        new.goods_receipt_id,
+        v_supplier_invoice_id,
+        v_amounts_matched,
+        v_quantities_matched,
+        v_amounts_matched and v_quantities_matched,
         current_timestamp
-    ) returning supplier_invoice_id into v_supplier_invoice_id;
-
-    raise notice '✅ Created supplier invoice % for supply order %', v_supplier_invoice_id, v_supply_order_id;
-
-    for v_item in 
-        select tenant_id, product_id, quantity_ordered, unit_price
-        from supplies_module.supply_order_item
-        where supply_order_id = v_supply_order_id
-    loop
-        insert into supplies_module.supplier_invoice_item(
-            supplier_invoice_item_id,
-            supplier_invoice_id,
-            tenant_id,           
-            product_id,
-            quantity_billed,
-            unit_price,
-            created_at,
-            updated_at
-        ) values (
-            gen_random_uuid(),
-            v_supplier_invoice_id,
-            v_item.tenant_id,    
-            v_item.product_id,
-            v_item.quantity_ordered,
-            v_item.unit_price,
-            current_timestamp,
-            current_timestamp
-        );
-    end loop;
-
-    raise notice '✅ Copied % items to supplier invoice', (
-        select count(*) 
-        from supplies_module.supplier_invoice_item 
-        where supplier_invoice_id = v_supplier_invoice_id
     );
 
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists create_supplier_invoice on supplies_module.account_payable;
-create trigger create_supplier_invoice
-    after update of account_status on supplies_module.account_payable
+drop trigger if exists perform_three_way_matching_trigger on supplies_module.goods_receipt;
+create trigger perform_three_way_matching_trigger
+    after insert on supplies_module.goods_receipt
     for each row
-    when (new.account_status = 3 and old.account_status is distinct from 3)
-    execute function supplies_module.create_supplier_invoice();
-
--- create or replace function create_goods_receipt()
--- returns trigger as $$
--- declare
---     v_goods_receipt_id uuid;
---     v_supply_order_id uuid;
---     v_item record;
--- begin
--- end
--- $$ language plpgsql;
-
--- drop trigger if exists create_goods_receipt on supplies_module.supply_order;
--- create trigger create_goods_receipt
---     after update of supply_order_status_id on supplies_module.supply_order
---     for each row
---     when (new.supply_order_status_id = 4 and old.supply_order_status_id is distinct from 4)
---     execute function supplies_module.create_goods_receipt();
-
--- create or replace function payment_alert_check()
-
-
--- Update timestamp triggers
+    execute function supplies_module.perform_three_way_matching();
 
 drop trigger if exists update_supplier_timestamp on supplies_module.supplier;
 create trigger update_supplier_timestamp before update on supplies_module.supplier
