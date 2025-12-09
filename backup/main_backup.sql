@@ -308,7 +308,8 @@ create table if not exists product_attribute (
 -- ==========================================================================
 --                          FUNCTIONS AND TRIGGERS
 -- ==========================================================================
-create or replace procedure verify_tenant_payment(_payment_id uuid)
+
+create or replace procedure core.verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
 declare
@@ -319,7 +320,7 @@ declare
 begin
     select exists(
         select 1 
-        from tenant_payment 
+        from core.tenant_payment 
         where tenant_payment_id = _payment_id
     ) into _exists;
     
@@ -330,7 +331,7 @@ begin
 
     select coalesce(verified, false), tenant_id 
     into _already_verified, _tenant_id
-    from tenant_payment 
+    from core.tenant_payment 
     where tenant_payment_id = _payment_id;
     
     if _already_verified then
@@ -338,7 +339,7 @@ begin
         return;
     end if;
 
-    update tenant_payment
+    update core.tenant_payment
     set verified = true,
         updated_at = current_timestamp
     where tenant_payment_id = _payment_id
@@ -364,7 +365,10 @@ exception
 end
 $$;
 
-create or replace function create_subscription()
+
+
+
+create or replace function core.create_subscription()
 returns trigger as $$
 declare
     _subscription_type_id int;
@@ -378,9 +382,10 @@ declare
 begin
     _tenant_id := new.tenant_id;
 
+
     select exists(
         select 1 
-        from subscription 
+        from core.subscription 
         where tenant_payment_id = new.tenant_payment_id  
     ) into _exists;
     
@@ -389,8 +394,9 @@ begin
         return new;
     end if;
 
+
     select end_date into _old_end_date
-    from subscription
+    from core.subscription
     where tenant_id = _tenant_id
     and is_active = true
     order by end_date desc
@@ -404,8 +410,9 @@ begin
         else 1 
     end;
     
+
     select (duration_months || ' months')::interval into _plan_duration
-    from subscription_type
+    from core.subscription_type
     where subscription_type_id = _subscription_type_id;
 
     if _old_end_date is not null and _old_end_date > new.payment_date::date then
@@ -417,7 +424,8 @@ begin
         
         raise notice 'Adding remaining time to new subscription. New end date: %', _new_end_date;
         
-        update subscription 
+    
+        update core.subscription 
         set is_active = false,
             updated_at = current_timestamp
         where tenant_id = _tenant_id
@@ -427,7 +435,8 @@ begin
         _new_end_date := _new_start_date + _plan_duration;
     end if;
 
-    insert into subscription (
+
+    insert into core.subscription (
         tenant_id,
         subscription_type_id,
         tenant_payment_id,  
@@ -450,17 +459,11 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_payment_verified on tenant_payment;
-create trigger on_payment_verified
-    after update of verified on tenant_payment  
-    for each row
-    when (old.verified is false and new.verified is true)
-    execute function create_subscription();
-
-create or replace function enable_tenant()
+create or replace function core.enable_tenant()
 returns trigger as $$
 begin
-    update tenant
+
+    update core.tenant
     set is_subscribed = true,
         updated_at = current_timestamp
     where tenant_id = new.tenant_id;
@@ -471,13 +474,20 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_subscription_created on subscription;
-create trigger on_subscription_created
-    after insert on subscription
+drop trigger if exists on_payment_verified on core.tenant_payment;
+create trigger on_payment_verified
+    after update of verified on core.tenant_payment  
     for each row
-    execute function enable_tenant();
+    when (old.verified is false and new.verified is true)
+    execute function core.create_subscription();
 
-create or replace function update_timestamp()
+drop trigger if exists on_subscription_created on core.subscription;
+create trigger on_subscription_created
+    after insert on core.subscription
+    for each row
+    execute function core.enable_tenant();
+
+create or replace function core.update_timestamp()
 returns trigger as $$
 begin
     new.updated_at = current_timestamp;
@@ -485,7 +495,7 @@ begin
 end;
 $$ language plpgsql;
 
-create or replace function update_product_tsv()
+create or replace function core.update_product_tsv()
 returns trigger as $$
 begin
     new.product_name_tsv = to_tsvector('spanish', new.product_name);
@@ -495,43 +505,43 @@ $$ language plpgsql;
 
 drop trigger if exists update_branch_timestamp on core.branch;
 create trigger update_branch_timestamp before update on core.branch
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_category_timestamp on core.product_category;
 create trigger update_product_category_timestamp before update on core.product_category
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_tsv on core.product;
 create trigger update_product_tsv before insert or update on core.product
-for each row execute function update_product_tsv();
+for each row execute function core.update_product_tsv();
 
 drop trigger if exists update_product_timestamp on core.product;
 create trigger update_product_timestamp before update on core.product
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
 drop trigger if exists update_product_attribute_timestamp on core.product_attribute;
 create trigger update_product_attribute_timestamp before update on core.product_attribute
-for each row execute function update_timestamp();
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_timestamp on tenant;
-create trigger update_tenant_timestamp before update on tenant
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_timestamp on core.tenant;
+create trigger update_tenant_timestamp before update on core.tenant
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_customer_timestamp on tenant_customer;
-create trigger update_tenant_customer_timestamp before update on tenant_customer
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_customer_timestamp on core.tenant_customer;
+create trigger update_tenant_customer_timestamp before update on core.tenant_customer
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_users_timestamp on users;
-create trigger update_users_timestamp before update on users
-for each row execute function update_timestamp();
+drop trigger if exists update_users_timestamp on core.users;
+create trigger update_users_timestamp before update on core.users
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_subscription_timestamp on subscription;
-create trigger update_subscription_timestamp before update on subscription
-for each row execute function update_timestamp();
+drop trigger if exists update_subscription_timestamp on core.subscription;
+create trigger update_subscription_timestamp before update on core.subscription
+for each row execute function core.update_timestamp();
 
-drop trigger if exists update_tenant_payment_timestamp on tenant_payment;
-create trigger update_tenant_payment_timestamp before update on tenant_payment
-for each row execute function update_timestamp();
+drop trigger if exists update_tenant_payment_timestamp on core.tenant_payment;
+create trigger update_tenant_payment_timestamp before update on core.tenant_payment
+for each row execute function core.update_timestamp();
 
 -- SCHEMA: pos_module   
 create schema if not exists pos_module;
@@ -863,61 +873,61 @@ declare
     _is_completed boolean;
     _pending_payments int;
 begin
-    select total_amount, is_completed 
-    into _sale_total, _is_completed
-    from pos_module.sale
-    where sale_id = _sale_id;
-    
-    if _sale_total is null then
-        raise exception 'Sale not found: %', _sale_id;
-    end if;
-    
-    if _is_completed then
-        return true;
-    end if;
-    
-    select count(*) into _pending_payments
-    from pos_module.customer_payment
-    where sale_id = _sale_id
-    and verified = false;
-    
-    if _pending_payments > 0 then
-        return false;
-    end if;
-    
-    select coalesce(sum(payment_amount), 0) into _payments_total
-    from pos_module.customer_payment
-    where sale_id = _sale_id
-    and verified = true;
-    
-    raise notice '   💰 Sale total (with tax): $%', _sale_total;
-    raise notice '   💳 Payments total: $%', _payments_total;
-    raise notice '   📊 Difference: $%', (_sale_total - _payments_total);
-    
-    if abs(_payments_total - _sale_total) <= 0.01 then
-        update pos_module.sale
-        set is_completed = true,
-            updated_at = current_timestamp
+        select total_amount, is_completed 
+        into _sale_total, _is_completed
+        from pos_module.sale
         where sale_id = _sale_id;
         
-        raise notice '   ✅ Sale % marked as COMPLETED', _sale_id;
-        return true;
+        if _sale_total is null then
+            raise exception 'Sale not found: %', _sale_id;
+        end if;
         
-    elsif _payments_total > _sale_total then
-        raise warning 'Overpayment detected: Expected $%, Paid $%',
-            _sale_total, _payments_total;
-        return false;
+        if _is_completed then
+            return true;
+        end if;
         
-    else
-        raise notice '   ⏳ Sale % still pending (shortage: $%)', 
-            _sale_id, (_sale_total - _payments_total);
-        return false;
-    end if;
-    
-exception
-    when others then
-        raise notice '   ❌ Error checking sale completion: %', sqlerrm;
-        return false;
+        select count(*) into _pending_payments
+        from pos_module.customer_payment
+        where sale_id = _sale_id
+        and verified = false;
+        
+        if _pending_payments > 0 then
+            return false;
+        end if;
+        
+        select coalesce(sum(payment_amount), 0) into _payments_total
+        from pos_module.customer_payment
+        where sale_id = _sale_id
+        and verified = true;
+        
+        raise notice '   💰 Sale total (with tax): $%', _sale_total;
+        raise notice '   💳 Payments total: $%', _payments_total;
+        raise notice '   📊 Difference: $%', (_sale_total - _payments_total);
+        
+        if abs(_payments_total - _sale_total) <= 0.01 then
+            update pos_module.sale
+            set is_completed = true,
+                updated_at = current_timestamp
+            where sale_id = _sale_id;
+            
+            raise notice '   ✅ Sale % marked as COMPLETED', _sale_id;
+            return true;
+            
+        elsif _payments_total > _sale_total then
+            raise warning 'Overpayment detected: Expected $%, Paid $%',
+                _sale_total, _payments_total;
+            return false;
+            
+        else
+            raise notice '   ⏳ Sale % still pending (shortage: $%)', 
+                _sale_id, (_sale_total - _payments_total);
+            return false;
+        end if;
+        
+    exception
+        when others then
+            raise notice '   ❌ Error checking sale completion: %', sqlerrm;
+            return false;
 end;
 $$ language plpgsql;
 
@@ -1030,81 +1040,81 @@ declare
     _total numeric(10,2);
     _payment_ids uuid[];
 begin
-    raise notice '🧾 Creating bill for sale: %', new.sale_id;
-    
-    if exists(
-        select 1 from pos_module.bill
+        raise notice '🧾 Creating bill for sale: %', new.sale_id;
+        
+        if exists(
+            select 1 from pos_module.bill
+            where sale_id = new.sale_id
+        ) then
+            raise notice '⚠️  Bill already exists for sale: %', new.sale_id;
+            return new;
+        end if;
+        
+        _tenant_customer_id := (
+            select tenant_customer_id 
+            from pos_module.customer_payment 
+            where sale_id = new.sale_id 
+            limit 1
+        );
+        
+        select tenant_id into _tenant_id
+        from core.tenant_customer
+        where tenant_customer_id = _tenant_customer_id;
+        
+        _currency_id := new.currency_id;
+        _subtotal := new.subtotal_amount;  
+        _tax := new.tax_amount;            
+        _total := new.total_amount;        
+        
+        raise notice '   Customer: %', _tenant_customer_id;
+        raise notice '   Tenant: %', _tenant_id;
+        raise notice '   Subtotal: $%', _subtotal;
+        raise notice '   Tax: $%', _tax;
+        raise notice '   Total: $%', _total;
+
+        insert into pos_module.bill (
+            sale_id,              
+            tenant_customer_id,
+            currency_id,
+            subtotal_amount,
+            tax_amount,
+            total_amount
+        ) values (
+            new.sale_id,         
+            _tenant_customer_id,
+            _currency_id,
+            _subtotal,
+            _tax,
+            _total
+        ) returning bill_id into _bill_id;
+        
+        raise notice '   ✅ Bill created: %', _bill_id;
+        
+        select array_agg(customer_payment_id) into _payment_ids
+        from pos_module.customer_payment
         where sale_id = new.sale_id
-    ) then
-        raise notice '⚠️  Bill already exists for sale: %', new.sale_id;
-        return new;
-    end if;
-    
-    _tenant_customer_id := (
-        select tenant_customer_id 
-        from pos_module.customer_payment 
-        where sale_id = new.sale_id 
-        limit 1
-    );
-    
-    select tenant_id into _tenant_id
-    from core.tenant_customer
-    where tenant_customer_id = _tenant_customer_id;
-    
-    _currency_id := new.currency_id;
-    _subtotal := new.subtotal_amount;  
-    _tax := new.tax_amount;            
-    _total := new.total_amount;        
-    
-    raise notice '   Customer: %', _tenant_customer_id;
-    raise notice '   Tenant: %', _tenant_id;
-    raise notice '   Subtotal: $%', _subtotal;
-    raise notice '   Tax: $%', _tax;
-    raise notice '   Total: $%', _total;
+        and verified = true;
+        
+        insert into pos_module.bill_payment(bill_id, customer_payment_id, payment_amount)
+        select 
+            _bill_id,
+            customer_payment_id,
+            payment_amount
+        from pos_module.customer_payment
+        where customer_payment_id = any(_payment_ids);
+        
+        raise notice '   ✅ % payment(s) linked to bill', array_length(_payment_ids, 1);
+        raise notice '';
+        raise notice '🎉 Bill creation completed successfully';
+        raise notice '   Bill ID: %', _bill_id;
+        raise notice '   Sale ID: %', new.sale_id;
 
-    insert into pos_module.bill (
-        sale_id,              
-        tenant_customer_id,
-        currency_id,
-        subtotal_amount,
-        tax_amount,
-        total_amount
-    ) values (
-        new.sale_id,         
-        _tenant_customer_id,
-        _currency_id,
-        _subtotal,
-        _tax,
-        _total
-    ) returning bill_id into _bill_id;
-    
-    raise notice '   ✅ Bill created: %', _bill_id;
-    
-    select array_agg(customer_payment_id) into _payment_ids
-    from pos_module.customer_payment
-    where sale_id = new.sale_id
-    and verified = true;
-    
-    insert into pos_module.bill_payment(bill_id, customer_payment_id, payment_amount)
-    select 
-        _bill_id,
-        customer_payment_id,
-        payment_amount
-    from pos_module.customer_payment
-    where customer_payment_id = any(_payment_ids);
-    
-    raise notice '   ✅ % payment(s) linked to bill', array_length(_payment_ids, 1);
-    raise notice '';
-    raise notice '🎉 Bill creation completed successfully';
-    raise notice '   Bill ID: %', _bill_id;
-    raise notice '   Sale ID: %', new.sale_id;
-
-    return new;
-    
-exception
-    when others then
-        raise notice '❌ Error creating bill: %', sqlerrm;
         return new;
+        
+    exception
+        when others then
+            raise notice '❌ Error creating bill: %', sqlerrm;
+            return new;
 end;
 $$ language plpgsql;
 
@@ -1118,8 +1128,9 @@ create trigger on_sale_completed_create_bill
 create or replace function update_on_return()
 returns trigger as $$
 declare
-    _bill_id uuid;
     _sale_item_record record;
+    _bill_id uuid;
+    _sale_id uuid;
     _total_returned numeric(10,2) := 0;
     _original_subtotal numeric(10,2);
     _original_tax numeric(10,2);
@@ -1129,37 +1140,36 @@ declare
     _new_total numeric(10,2);
     _tax_rate numeric(5,2);
     _quantity_remaining integer;
-    _sale_id uuid;
+    _sale_subtotal_after numeric(10,2);
+    _region_name varchar;
+    _tenant_id uuid;
 begin
     select 
         si.sale_item_id,
         si.sale_id,
         si.quantity,
         si.unit_price,
-        si.total_price
+        si.total_price,
+        si.product_id,
+        si.tenant_id
     into _sale_item_record
     from pos_module.sale_item si
     where si.sale_item_id = new.sale_item_id;
-    
+
     if not found then
         raise exception 'Sale item not found: %', new.sale_item_id;
     end if;
-    
+
     _sale_id := _sale_item_record.sale_id;
-    
-    select bill_id into _bill_id
-    from pos_module.bill
-    where sale_id = _sale_id;
-    
+
+    -- get bill for sale
+    select bill_id into _bill_id from pos_module.bill where sale_id = _sale_id limit 1;
     if _bill_id is null then
         raise exception 'Bill not found for sale: %', _sale_id;
     end if;
 
     raise notice '📄 Bill ID: %', _bill_id;
-    raise notice '📦 Original sale item:';
-    raise notice '   Quantity: %', _sale_item_record.quantity;
-    raise notice '   Unit price: $%', _sale_item_record.unit_price;
-    raise notice '   Total price: $%', _sale_item_record.total_price;
+    raise notice '📦 Original sale item: qty=% unit=$% total=$%', _sale_item_record.quantity, _sale_item_record.unit_price, _sale_item_record.total_price;
 
     if new.quantity > _sale_item_record.quantity then
         raise exception 'Cannot return more items than purchased. Purchased: %, Attempting to return: %',
@@ -1167,66 +1177,45 @@ begin
     end if;
 
     _quantity_remaining := _sale_item_record.quantity - new.quantity;
+    raise notice '🔢 Return quantity: %  Remaining qty: %', new.quantity, _quantity_remaining;
 
-    raise notice '🔢 Return quantity: %', new.quantity;
-    raise notice '🔢 Remaining quantity: %', _quantity_remaining;
-
+    -- Update or remove sale_item to reconcile sale
     if _quantity_remaining = 0 then
-        delete from pos_module.sale_item
-        where sale_item_id = new.sale_item_id;
-
-        raise notice '🗑️  Sale item completely removed (quantity = 0)';
+        delete from pos_module.sale_item where sale_item_id = _sale_item_record.sale_item_id;
+        raise notice '🗑️  Sale item removed (quantity = 0)';
     else
         update pos_module.sale_item
         set quantity = _quantity_remaining,
             total_price = _quantity_remaining * unit_price,
             updated_at = current_timestamp
-        where sale_item_id = new.sale_item_id;
-
-        raise notice '✏️  Sale item quantity updated from % to %', 
-            _sale_item_record.quantity, _quantity_remaining;
+        where sale_item_id = _sale_item_record.sale_item_id;
+        raise notice '✏️  Sale item quantity updated from % to %', _sale_item_record.quantity, _quantity_remaining;
     end if;
 
-    select subtotal_amount, tax_amount, total_amount
-    into _original_subtotal, _original_tax, _original_total
-    from pos_module.bill
-    where bill_id = _bill_id;
-
-    raise notice '';
-    raise notice '📊 Original bill totals:';
-    raise notice '   Subtotal: $%', _original_subtotal;
-    raise notice '   Tax: $%', _original_tax;
-    raise notice '   Total: $%', _original_total;
+    -- Update bill totals
+    select subtotal_amount, tax_amount, total_amount into _original_subtotal, _original_tax, _original_total
+    from pos_module.bill where bill_id = _bill_id;
 
     _total_returned := new.quantity * new.unit_price;
-    raise notice '';
-    raise notice '💰 Amount returned: $%', _total_returned;
+    raise notice '💰 Amount returned (line): $%', _total_returned;
 
     _new_subtotal := _original_subtotal - _total_returned;
+    if _new_subtotal < 0 then _new_subtotal := 0; end if;
 
-    if _new_subtotal < 0 then
-        _new_subtotal := 0;
-        raise warning 'Subtotal became negative, setting to 0';
-    end if;
-
-    select rate_percentage into _tax_rate
-    from core.tax_rate
-    where region = 'US Federal'
+    -- determine tax rate by tenant -> region (fallback to 0 if not found)
+    select t.tenant_id, r.region_name into _tenant_id, _region_name
+    from core.tenant t
+    join core.branch b on b.tenant_id = t.tenant_id
+    join pos_module.sale s on s.branch_id = b.branch_id
+    join core.region r on r.region_id = t.region_id
+    where s.sale_id = _sale_id
     limit 1;
 
-    if _tax_rate is null then
-        _tax_rate := 0;
-        raise warning 'Tax rate not found, using 0%%';
-    end if;
+    select rate_percentage into _tax_rate from core.tax_rate where region = coalesce(_region_name, 'US Federal') limit 1;
+    if _tax_rate is null then _tax_rate := 0; end if;
 
-    _new_tax := _new_subtotal * (_tax_rate / 100);
-    _new_total := _new_subtotal + _new_tax;
-
-    raise notice '';
-    raise notice '📊 New bill totals:';
-    raise notice '   Subtotal: $%', _new_subtotal;
-    raise notice '   Tax: $%', _new_tax;
-    raise notice '   Total: $%', _new_total;
+    _new_tax := round(_new_subtotal * (_tax_rate / 100), 2);
+    _new_total := round(_new_subtotal + _new_tax, 2);
 
     update pos_module.bill
     set subtotal_amount = _new_subtotal,
@@ -1235,8 +1224,20 @@ begin
         updated_at = current_timestamp
     where bill_id = _bill_id;
 
-    raise notice '';
-    raise notice '✅ Bill % updated successfully', _bill_id;
+    raise notice '📊 Bill updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
+
+    select coalesce(sum(si.total_price),0) into _sale_subtotal_after from pos_module.sale_item si where si.sale_id = _sale_id;
+    _new_tax := round(_sale_subtotal_after * (_tax_rate / 100), 2);
+    _new_total := round(_sale_subtotal_after + _new_tax, 2);
+
+    update pos_module.sale
+    set subtotal_amount = _sale_subtotal_after,
+        tax_amount = _new_tax,
+        total_amount = _new_total,
+        updated_at = current_timestamp
+    where sale_id = _sale_id;
+
+    raise notice '🔁 Sale updated: subtotal $% tax $% total $%', _sale_subtotal_after, _new_tax, _new_total;
 
     return new;
 end;
@@ -1713,77 +1714,77 @@ declare
     _session record;
     _rows_updated int;
 begin
-    if _action = 'open' then
-        select cash_register_session_id into _session_id
-        from pos_module.cash_register_session
-        where cash_register_id = _cash_register_id
-        and is_active = true
-        limit 1;
-        
-        if _session_id is not null then
-            raise exception 'Cash register % already has an open session: %', 
-                _cash_register_id, _session_id;
+        if _action = 'open' then
+            select cash_register_session_id into _session_id
+            from pos_module.cash_register_session
+            where cash_register_id = _cash_register_id
+            and is_active = true
+            limit 1;
+            
+            if _session_id is not null then
+                raise exception 'Cash register % already has an open session: %', 
+                    _cash_register_id, _session_id;
+            end if;
+            
+            insert into pos_module.cash_register_session (
+                cash_register_id,
+                opened_at,
+                opening_amount,
+                is_active,
+                created_at,
+                updated_at
+            ) values (
+                _cash_register_id,
+                current_timestamp,
+                _amount,
+                true,
+                current_timestamp,
+                current_timestamp
+            ) returning cash_register_session_id into _session_id;
+            
+            raise notice '✅ Cash register % opened', _cash_register_id;
+            raise notice '   Session ID: %', _session_id;
+            raise notice '   Opening amount: $%', _amount;
+            raise notice '   Opened at: %', current_timestamp;
+            
+        elsif _action = 'close' then
+            update pos_module.cash_register_session
+            set closed_at = current_timestamp,
+                closing_amount = _amount,
+                is_active = false,
+                updated_at = current_timestamp
+            where cash_register_id = _cash_register_id
+            and is_active = true
+            returning 
+                cash_register_session_id,
+                opening_amount,
+                closing_amount,
+                opened_at,
+                closed_at
+            into _session;
+            
+            get diagnostics _rows_updated = row_count;
+            
+            if _rows_updated = 0 then
+                raise exception 'Cash register % is not open or does not exist', 
+                    _cash_register_id;
+            end if;
+            
+            raise notice '✅ Cash register % closed', _cash_register_id;
+            raise notice '   Session ID: %', _session.cash_register_session_id;
+            raise notice '   Opening amount: $%', _session.opening_amount;
+            raise notice '   Closing amount: $%', _session.closing_amount;
+            raise notice '   Difference: $%', (_session.closing_amount - _session.opening_amount);
+            raise notice '   Duration: %', (_session.closed_at - _session.opened_at);
+            
+        else
+            raise exception 'Invalid action: %. Use "open" or "close"', _action;
         end if;
         
-        insert into pos_module.cash_register_session (
-            cash_register_id,
-            opened_at,
-            opening_amount,
-            is_active,
-            created_at,
-            updated_at
-        ) values (
-            _cash_register_id,
-            current_timestamp,
-            _amount,
-            true,
-            current_timestamp,
-            current_timestamp
-        ) returning cash_register_session_id into _session_id;
-        
-        raise notice '✅ Cash register % opened', _cash_register_id;
-        raise notice '   Session ID: %', _session_id;
-        raise notice '   Opening amount: $%', _amount;
-        raise notice '   Opened at: %', current_timestamp;
-        
-    elsif _action = 'close' then
-        update pos_module.cash_register_session
-        set closed_at = current_timestamp,
-            closing_amount = _amount,
-            is_active = false,
-            updated_at = current_timestamp
-        where cash_register_id = _cash_register_id
-        and is_active = true
-        returning 
-            cash_register_session_id,
-            opening_amount,
-            closing_amount,
-            opened_at,
-            closed_at
-        into _session;
-        
-        get diagnostics _rows_updated = row_count;
-        
-        if _rows_updated = 0 then
-            raise exception 'Cash register % is not open or does not exist', 
-                _cash_register_id;
-        end if;
-        
-        raise notice '✅ Cash register % closed', _cash_register_id;
-        raise notice '   Session ID: %', _session.cash_register_session_id;
-        raise notice '   Opening amount: $%', _session.opening_amount;
-        raise notice '   Closing amount: $%', _session.closing_amount;
-        raise notice '   Difference: $%', (_session.closing_amount - _session.opening_amount);
-        raise notice '   Duration: %', (_session.closed_at - _session.opened_at);
-        
-    else
-        raise exception 'Invalid action: %. Use "open" or "close"', _action;
-    end if;
-    
-exception
-    when others then
-        raise notice '❌ Error in cash register session: %', sqlerrm;
-        raise;
+    exception
+        when others then
+            raise notice '❌ Error in cash register session: %', sqlerrm;
+            raise;
 end;
 $$ language plpgsql;
 
@@ -1798,40 +1799,40 @@ declare
     _score integer;
     _program_exists boolean;
 begin
-    select exists(
-        select 1 
+        select exists(
+            select 1 
+            from pos_module.loyalty_program 
+            where tenant_id = _tenant_id 
+            and is_active = true
+        ) into _program_exists;
+        
+        if not _program_exists then
+            raise notice '⚠️  No active loyalty program for tenant %', _tenant_id;
+            return 0;
+        end if;
+        
+        select 
+            minimum_purchase_for_points, 
+            points_earned_per_currency_unit 
+        into 
+            _minimum_purchase, 
+            _points_earned_per_currency_unit 
         from pos_module.loyalty_program 
-        where tenant_id = _tenant_id 
+        where tenant_id = _tenant_id
         and is_active = true
-    ) into _program_exists;
-    
-    if not _program_exists then
-        raise notice '⚠️  No active loyalty program for tenant %', _tenant_id;
-        return 0;
-    end if;
-    
-    select 
-        minimum_purchase_for_points, 
-        points_earned_per_currency_unit 
-    into 
-        _minimum_purchase, 
-        _points_earned_per_currency_unit 
-    from pos_module.loyalty_program 
-    where tenant_id = _tenant_id
-    and is_active = true
-    limit 1;
-    
-    _score := floor(_purchase_amount * _points_earned_per_currency_unit);
-    
-    raise notice '✅ Points: $% × % = % pts',
-        _purchase_amount, _points_earned_per_currency_unit, _score;
-    
-    return _score;
-    
-exception
-    when others then
-        raise notice '❌ Error calculating points: %', sqlerrm;
-        return 0;
+        limit 1;
+        
+        _score := floor(_purchase_amount * _points_earned_per_currency_unit);
+        
+        raise notice '✅ Points: $% × % = % pts',
+            _purchase_amount, _points_earned_per_currency_unit, _score;
+        
+        return _score;
+        
+    exception
+        when others then
+            raise notice '❌ Error calculating points: %', sqlerrm;
+            return 0;
 end;
 $$ language plpgsql;
 
@@ -1846,110 +1847,103 @@ declare
     _cash_payments_total numeric(10,2);
     _points_already_awarded boolean;
 begin
-    _bill_id := new.bill_id;
-    
-    -- ✅ Verificar si ya se otorgaron puntos para esta factura
-    select exists(
-        select 1 
-        from pos_module.score_transaction 
-        where bill_id = _bill_id 
-        and transaction_type_id = 1  -- 'earn'
-    ) into _points_already_awarded;
-    
-    if _points_already_awarded then
-        raise notice '   ℹ️  Points already awarded for bill %', _bill_id;
+        _bill_id := new.bill_id;
+        
+        select exists(
+            select 1 
+            from pos_module.score_transaction 
+            where bill_id = _bill_id 
+            and transaction_type_id = 1  
+        ) into _points_already_awarded;
+        
+        if _points_already_awarded then
+            raise notice '   ℹ️  Points already awarded for bill %', _bill_id;
+            return new;
+        end if;
+        
+        select tenant_customer_id into _tenant_customer_id
+        from pos_module.bill
+        where bill_id = _bill_id;
+        
+        if _tenant_customer_id is null then
+            raise notice '   ⚠️  No customer found for bill %', _bill_id;
+            return new;
+        end if;
+        
+        select tenant_id into _tenant_id
+        from core.tenant_customer
+        where tenant_customer_id = _tenant_customer_id;
+        
+        if _tenant_id is null then
+            raise notice '   ⚠️  Tenant not found for customer %', _tenant_customer_id;
+            return new;
+        end if;
+        
+        select coalesce(sum(cp.payment_amount), 0) into _cash_payments_total
+        from pos_module.bill_payment bp
+        join pos_module.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
+        where bp.bill_id = _bill_id
+        and cp.is_points_redemption = false;
+        
+        raise notice '💵 Cash/card payments total: $%', _cash_payments_total;
+        
+        _points_earned := pos_module.calculate_purchase_score(
+            _tenant_id,
+            _tenant_customer_id,
+            _cash_payments_total
+        );
+        
+        if _points_earned <= 0 then
+            raise notice '   ℹ️  No points earned for this purchase (Bill: %)', _bill_id;
+            return new;
+        end if;
+        
+        insert into pos_module.tenant_customer_score(
+            tenant_id,
+            tenant_customer_id,
+            score,
+            lifetime_score,
+            last_earned_at
+        ) values (
+            _tenant_id,
+            _tenant_customer_id,
+            _points_earned,
+            _points_earned,
+            current_timestamp
+        )
+        on conflict (tenant_customer_id, tenant_id)
+        do update set
+            score = tenant_customer_score.score + _points_earned,
+            lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
+            last_earned_at = current_timestamp
+        returning score into _current_balance;
+        
+        insert into pos_module.score_transaction(
+            tenant_id,
+            tenant_customer_id,
+            transaction_type_id,
+            points,
+            bill_id,
+            created_at
+        ) values (
+            _tenant_id,
+            _tenant_customer_id,
+            1,  
+            _points_earned,
+            _bill_id,
+            current_timestamp
+        );
+        
+        raise notice '   ✅ Awarded % points to customer %', _points_earned, _tenant_customer_id;
+        raise notice '   Bill: %', _bill_id;
+        raise notice '   New balance: % points', _current_balance;
+        
         return new;
-    end if;
-    
-    -- Obtener tenant_customer_id de la factura
-    select tenant_customer_id into _tenant_customer_id
-    from pos_module.bill
-    where bill_id = _bill_id;
-    
-    if _tenant_customer_id is null then
-        raise notice '   ⚠️  No customer found for bill %', _bill_id;
-        return new;
-    end if;
-    
-    -- Obtener tenant_id
-    select tenant_id into _tenant_id
-    from core.tenant_customer
-    where tenant_customer_id = _tenant_customer_id;
-    
-    if _tenant_id is null then
-        raise notice '   ⚠️  Tenant not found for customer %', _tenant_customer_id;
-        return new;
-    end if;
-    
-    -- ✅ AHORA SÍ: Calcular total de pagos en efectivo/tarjeta (los datos YA EXISTEN)
-    select coalesce(sum(cp.payment_amount), 0) into _cash_payments_total
-    from pos_module.bill_payment bp
-    join pos_module.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
-    where bp.bill_id = _bill_id
-    and cp.is_points_redemption = false;
-    
-    raise notice '💵 Cash/card payments total: $%', _cash_payments_total;
-    
-    -- Calcular puntos
-    _points_earned := pos_module.calculate_purchase_score(
-        _tenant_id,
-        _tenant_customer_id,
-        _cash_payments_total
-    );
-    
-    if _points_earned <= 0 then
-        raise notice '   ℹ️  No points earned for this purchase (Bill: %)', _bill_id;
-        return new;
-    end if;
-    
-    -- Otorgar puntos
-    insert into pos_module.tenant_customer_score(
-        tenant_id,
-        tenant_customer_id,
-        score,
-        lifetime_score,
-        last_earned_at
-    ) values (
-        _tenant_id,
-        _tenant_customer_id,
-        _points_earned,
-        _points_earned,
-        current_timestamp
-    )
-    on conflict (tenant_customer_id, tenant_id)
-    do update set
-        score = tenant_customer_score.score + _points_earned,
-        lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
-        last_earned_at = current_timestamp
-    returning score into _current_balance;
-    
-    -- Registrar transacción
-    insert into pos_module.score_transaction(
-        tenant_id,
-        tenant_customer_id,
-        transaction_type_id,
-        points,
-        bill_id,
-        created_at
-    ) values (
-        _tenant_id,
-        _tenant_customer_id,
-        1,  -- 'earn'
-        _points_earned,
-        _bill_id,
-        current_timestamp
-    );
-    
-    raise notice '   ✅ Awarded % points to customer %', _points_earned, _tenant_customer_id;
-    raise notice '   Bill: %', _bill_id;
-    raise notice '   New balance: % points', _current_balance;
-    
-    return new;
-    
-exception
-    when others then
-        raise notice '   ❌ Error awarding points: %', sqlerrm;
-        return new;
+        
+    exception
+        when others then
+            raise notice '   ❌ Error awarding points: %', sqlerrm;
+            return new;
 end;
 $$ language plpgsql;
 
@@ -2049,14 +2043,14 @@ begin
             _points_to_redeem, 
             _points_redeemed_per_currency_unit, 
             round(_cash_equivalent, 2))::text;
-exception
-    when others then
-        raise notice '❌ Error redeeming points: %', sqlerrm;
-        return query select 
-            0.00::numeric(10,2),
-            coalesce(_current_points, 0),
-            false,
-            sqlerrm::text;
+    exception
+        when others then
+            raise notice '❌ Error redeeming points: %', sqlerrm;
+            return query select 
+                0.00::numeric(10,2),
+                coalesce(_current_points, 0),
+                false,
+                sqlerrm::text;
 end;
 $$ language plpgsql;
 
@@ -2167,10 +2161,10 @@ begin
         raise notice '⏳ Sale % is PENDING - Waiting for more payments', _sale_id;
     end if;
     
-exception
-    when others then
-        raise notice '❌ Payment verification failed: %', sqlerrm;
-        raise;
+    exception
+        when others then
+            raise notice '❌ Payment verification failed: %', sqlerrm;
+            raise;
 end;
 $$ language plpgsql;      
 
@@ -2228,4 +2222,986 @@ for each row execute function core.update_timestamp();
 
 drop trigger if exists update_sale_item_timestamp on pos_module.sale_item;
 create trigger update_sale_item_timestamp before update on pos_module.sale_item
+for each row execute function core.update_timestamp();
+
+-- SCHEMA: supplies
+create schema if not exists supplies_module;
+set search_path to supplies_module;
+
+create table if not exists supplier(
+    supplier_id uuid primary key default gen_random_uuid(),
+    supplier_name varchar(255) not null,
+    supplier_contact_info text,
+    supplier_address text,
+    supplier_notes text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create unique index if not exists ux_supplier_name on supplies_module.supplier(supplier_name);
+
+create table if not exists supplier_branch(
+    supplier_branch_id uuid primary key default gen_random_uuid(),
+    supplier_id uuid not null references supplies_module.supplier(supplier_id) on delete cascade,
+    branch_id uuid not null references core.branch(branch_id) on delete cascade,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    unique(supplier_id, branch_id)
+);
+
+create table if not exists supply_order_status(
+    status_id serial primary key,
+    status_name varchar(50) not null,
+    description text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+insert into supply_order_status(status_name, description) values
+('Pending', 'Order is pending'),
+('Shipped', 'Order has been shipped'),
+('Delivered', 'Order has been delivered'),
+('Cancelled', 'Order has been cancelled')
+on conflict do nothing;
+
+create table if not exists supply_order(
+    supply_order_id uuid primary key default gen_random_uuid(),
+    supplier_id uuid not null references supplies_module.supplier(supplier_id) on delete cascade,
+    warehouse_id uuid not null references inventory_module.warehouse(warehouse_id) on delete cascade,
+    supply_order_date date default current_date,
+    expected_delivery_date date,
+    supply_order_status_id integer not null references supplies_module.supply_order_status(status_id) default 1,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists supply_order_item(
+    supply_order_item_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    quantity_ordered integer not null,
+    unit_price numeric(12,3) not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade
+);
+
+create table if not exists supply_order_tracking(
+    supply_order_tracking_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
+    previous_status_id int references supplies_module.supply_order_status(status_id),
+    new_status_id int not null references supplies_module.supply_order_status(status_id),
+    notes text,
+    changed_at timestamp default current_timestamp
+);
+
+create table if not exists supplier_invoice(
+    supplier_invoice_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
+    invoice_number varchar(100) not null,
+    invoice_date timestamp default current_timestamp,
+    payment_condition varchar(10) not null default 'CREDIT', 
+    due_date date,
+    subtotal_amount numeric(12,3) not null,
+    tax_rate numeric(5,2) not null default 13.00,
+    tax_amount numeric(12,3) generated always as (round(subtotal_amount * (tax_rate / 100), 3)) stored,
+    total_amount numeric(12,3) generated always as (
+        subtotal_amount + round(subtotal_amount * (tax_rate / 100), 3)
+    ) stored,    
+    paid boolean default false,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+    
+    check (payment_condition in ('CREDIT', 'IN_FULL'))
+);
+
+create table if not exists supplier_invoice_item(
+    supplier_invoice_item_id uuid primary key default gen_random_uuid(),
+    supplier_invoice_id uuid not null references supplies_module.supplier_invoice(supplier_invoice_id) on delete cascade,
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    quantity_billed integer not null,
+    unit_price numeric(12,3) not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade
+);
+
+create table if not exists goods_receipt(
+    goods_receipt_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
+    received_date timestamp default current_timestamp,
+    subtotal_amount numeric(12,3) default 0,
+    tax_amount numeric(12,3) default 0,
+    total_amount numeric(12,3) generated always as (subtotal_amount + tax_amount) stored,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists goods_receipt_item(
+    goods_receipt_item_id uuid primary key default gen_random_uuid(),
+    goods_receipt_id uuid not null references supplies_module.goods_receipt(goods_receipt_id) on delete cascade,
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    quantity_received integer not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade
+);
+
+create table if not exists account_payable_status(
+    status_id serial primary key,
+    status_name varchar(50) not null,
+    description text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+insert into account_payable_status(status_name, description) values
+('Pending', 'Payment is pending'),
+('Partial Paid', 'Partial payment has been made'),
+('Paid', 'Payment has been made'),
+('Overdue', 'Payment is overdue')
+on conflict do nothing;
+
+create table if not exists account_payable(
+    account_payable_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null unique references supplies_module.supply_order(supply_order_id) on delete cascade,
+    has_invoice boolean default true,
+    subtotal_amount numeric(12,3) default 0,  
+    tax_amount numeric(12,3) default 0,       
+    amount_due numeric(12,3) generated always as (subtotal_amount + tax_amount) stored,  -- ✅ Total con tax
+    amount_paid numeric(12,3) default 0,
+    balance_remaining numeric(12,3) generated always as (subtotal_amount + tax_amount - amount_paid) stored,  -- ✅ Incluye tax
+    due_date date not null,
+    account_status integer not null default 1 references supplies_module.account_payable_status(status_id),
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists supply_order_payment(
+    payment_id uuid primary key default gen_random_uuid(),
+    tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
+    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
+    payment_date timestamp default current_timestamp,
+    amount_paid numeric(12,3) not null,
+    payment_method_id integer not null references core.payment_method(payment_method_id) on delete cascade,
+    payment_reference varchar(100),  
+    verified boolean default false,  
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists supply_order_payment_alert_type(
+    payment_alert_type_id serial primary key,
+    payment_alert_type_name varchar(50) not null,
+    description text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+insert into supply_order_payment_alert_type(payment_alert_type_name, description) values
+('Upcoming Due Date', 'Alert for upcoming payment due date'),
+('Urgent Payment', 'Alert for urgent payments'),
+('Overdue Payment', 'Alert for overdue payments'),
+('Reconciliation Mismatch', 'Alert for payment reconciliation issues')
+on conflict do nothing;
+
+create table if not exists supply_order_payment_alert(
+    payment_alert_id uuid primary key default gen_random_uuid(),
+    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
+    payment_alert_type_id integer not null references supplies_module.supply_order_payment_alert_type(payment_alert_type_id),
+    alert_date timestamp default current_timestamp,
+    is_resolved boolean default false,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists supply_order_payment_alert_config(
+    payment_alert_config_id uuid primary key default gen_random_uuid(),
+    tenant_id uuid unique not null references core.tenant(tenant_id) on delete cascade,
+    warning_days_before_due integer default 7,
+    urgent_days_before_due integer default 3,
+    email_notifications_enabled boolean default true,
+    sms_notifications_enabled boolean default false,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists three_way_matching(
+    matching_id uuid primary key default gen_random_uuid(),
+    supply_order_id uuid not null references supplies_module.supply_order(supply_order_id) on delete cascade,
+    goods_receipt_id uuid not null references supplies_module.goods_receipt(goods_receipt_id) on delete cascade,
+    supplier_invoice_id uuid not null references supplies_module.supplier_invoice(supplier_invoice_id) on delete cascade,
+    amounts_matched boolean default false,
+    quantities_matched boolean default false,
+    is_matched boolean default false,
+    matched_at timestamp,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+-- ==========================================================================
+--                          FUNCTIONS AND TRIGGERS
+-- ==========================================================================
+
+create or replace function calculate_supply_order_total(
+    p_supply_order_id uuid
+) returns numeric as $$
+declare
+    v_total numeric(12,3);
+begin
+    select coalesce(sum(quantity_ordered * unit_price), 0)
+    into v_total
+    from supplies_module.supply_order_item
+    where supply_order_id = p_supply_order_id;
+
+    return round(v_total::numeric, 3);
+end;
+$$ language plpgsql;
+
+create or replace function create_supply_order(
+    p_supplier_id uuid,
+    p_warehouse_id uuid,
+    p_expected_delivery_date date,
+    p_items jsonb default '[]'::jsonb,
+    p_has_invoice boolean default true,
+    p_payment_condition varchar(10) default 'CREDIT'
+) returns uuid as $$
+declare
+    v_supply_order_id uuid;
+    v_supplier_invoice_id uuid;
+    v_item jsonb;
+    v_item_rec record;
+    v_tenant_id uuid;
+    v_product_id uuid;
+    v_qty integer;
+    v_unit numeric(12,3);
+    v_subtotal numeric(12,3);
+    v_tax_rate numeric(5,2);
+    v_tax_amount numeric(12,3);
+begin
+    select b.tenant_id into v_tenant_id
+    from supplies_module.supplier s
+    join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
+    join core.branch b on b.branch_id = sb.branch_id
+    where s.supplier_id = p_supplier_id
+    limit 1;
+
+    if v_tenant_id is null then
+        raise exception 'Cannot determine tenant_id for supplier %', p_supplier_id;
+    end if;
+
+    insert into supplies_module.supply_order(
+        supplier_id,
+        warehouse_id,
+        expected_delivery_date,
+        supply_order_status_id
+    ) values (
+        p_supplier_id,
+        p_warehouse_id,
+        p_expected_delivery_date,
+        1
+    ) returning supply_order_id into v_supply_order_id;
+
+    if p_items is not null and jsonb_typeof(p_items) = 'array' and jsonb_array_length(p_items) > 0 then
+        for v_item in select value from jsonb_array_elements(p_items)
+        loop
+            v_product_id := (v_item ->> 'product_id')::uuid;
+            v_qty := coalesce((v_item ->> 'quantity_ordered')::int, 0);
+            v_unit := coalesce((v_item ->> 'unit_price')::numeric, 0);
+
+            insert into supplies_module.supply_order_item(
+                supply_order_id,
+                tenant_id,
+                product_id,
+                quantity_ordered,
+                unit_price
+            ) values (
+                v_supply_order_id,
+                v_tenant_id,
+                v_product_id,
+                v_qty,
+                v_unit
+            );
+        end loop;
+    end if;
+
+    v_subtotal := coalesce(supplies_module.calculate_supply_order_total(v_supply_order_id), 0);
+
+    select coalesce(tr.rate_percentage, 13.00) into v_tax_rate
+    from core.tenant t
+    left join core.tax_rate tr on tr.region_id = t.region_id
+    where t.tenant_id = v_tenant_id
+    limit 1;
+
+    v_tax_amount := round(v_subtotal * (v_tax_rate / 100.0), 3);
+
+    insert into supplies_module.account_payable(
+        supply_order_id,
+        has_invoice,
+        subtotal_amount,
+        tax_amount,
+        due_date,
+        account_status
+    ) values (
+        v_supply_order_id,
+        p_has_invoice,
+        v_subtotal,
+        v_tax_amount,
+        (current_date + interval '30 days')::date,
+        1
+    );
+
+    if p_has_invoice then
+        insert into supplies_module.supplier_invoice(
+            supply_order_id,
+            invoice_number,
+            invoice_date,
+            payment_condition,
+            due_date,
+            subtotal_amount,
+            tax_rate
+        ) values (
+            v_supply_order_id,
+            'INV-' || to_char(current_timestamp, 'YYYYMMDD-HH24MISS') || '-' || substring(v_supply_order_id::text, 1, 8),
+            current_timestamp,
+            p_payment_condition,
+            (current_date + interval '30 days')::date,
+            v_subtotal,
+            v_tax_rate
+        ) returning supplier_invoice_id into v_supplier_invoice_id;
+
+        for v_item_rec in 
+            select tenant_id, product_id, quantity_ordered, unit_price
+            from supplies_module.supply_order_item
+            where supply_order_id = v_supply_order_id
+        loop
+            insert into supplies_module.supplier_invoice_item(
+                supplier_invoice_id,
+                tenant_id,
+                product_id,
+                quantity_billed,
+                unit_price
+            ) values (
+                v_supplier_invoice_id,
+                v_item_rec.tenant_id,
+                v_item_rec.product_id,
+                v_item_rec.quantity_ordered,
+                v_item_rec.unit_price
+            );
+        end loop;
+    end if;
+
+    return v_supply_order_id;
+end;
+$$ language plpgsql;
+
+create or replace function update_order_status()
+returns trigger as $$
+begin
+    insert into supplies_module.supply_order_tracking(
+        supply_order_id,
+        previous_status_id,
+        new_status_id,
+        notes,
+        changed_at
+    ) values (
+        new.supply_order_id,
+        old.supply_order_status_id,
+        new.supply_order_status_id,
+        'Status updated via trigger',
+        current_timestamp
+    );
+
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists on_order_status_update on supplies_module.supply_order;
+create trigger on_order_status_update
+after update of supply_order_status_id on supplies_module.supply_order
+for each row execute function update_order_status();
+
+create or replace function check_account_payable_completion(
+    _account_payable_id uuid
+) returns boolean as $$
+declare
+    _amount_due numeric(12,3);
+    _payments_total numeric(12,3);
+    _pending_payments int;
+begin
+    select amount_due
+    into _amount_due
+    from supplies_module.account_payable
+    where account_payable_id = _account_payable_id;
+    
+    if _amount_due is null then
+        raise exception 'Account payable not found: %', _account_payable_id;
+    end if;
+    
+    select count(*) into _pending_payments
+    from supplies_module.supply_order_payment
+    where account_payable_id = _account_payable_id
+    and verified = false;
+    
+    if _pending_payments > 0 then
+        return false;
+    end if;
+    
+    select coalesce(sum(amount_paid), 0) into _payments_total
+    from supplies_module.supply_order_payment
+    where account_payable_id = _account_payable_id
+    and verified = true;
+    
+    if abs(_payments_total - _amount_due) <= 0.01 or _payments_total > _amount_due then
+        update supplies_module.account_payable
+        set amount_paid = _payments_total,
+            account_status = 3,
+            updated_at = current_timestamp
+        where account_payable_id = _account_payable_id;
+        
+        return true;
+    elsif _payments_total > 0 then
+        update supplies_module.account_payable
+        set amount_paid = _payments_total,
+            account_status = 2,
+            updated_at = current_timestamp
+        where account_payable_id = _account_payable_id;
+        
+        return false;
+    else
+        return false;
+    end if;
+    
+exception
+    when others then
+        return false;
+end;
+$$ language plpgsql;
+
+create or replace procedure supplies_module.verify_supply_order_payment(
+    _payment_id uuid
+) as $$
+declare
+    _exists boolean;
+    _already_verified boolean;
+    _account_payable_id uuid;
+begin
+    select exists(
+        select 1 
+        from supplies_module.supply_order_payment
+        where payment_id = _payment_id
+    ) into _exists;
+    
+    if not _exists then
+        raise exception 'Payment not found: %', _payment_id;
+    end if;
+    
+    select verified, account_payable_id
+    into _already_verified, _account_payable_id
+    from supplies_module.supply_order_payment
+    where payment_id = _payment_id;
+    
+    if _already_verified then
+        return;
+    end if;
+    
+    update supplies_module.supply_order_payment
+    set verified = true,
+        updated_at = current_timestamp
+    where payment_id = _payment_id;
+    
+    perform supplies_module.check_account_payable_completion(_account_payable_id);
+end;
+$$ language plpgsql;
+
+create or replace function recalc_account_payable_on_payment()
+returns trigger as $$
+declare
+    _account_payable_id uuid;
+begin
+    _account_payable_id := coalesce(new.account_payable_id, old.account_payable_id);
+    
+    perform supplies_module.check_account_payable_completion(_account_payable_id);
+    
+    return coalesce(new, old);
+end;
+$$ language plpgsql;
+
+drop trigger if exists recalc_account_payable_on_payment_trigger on supplies_module.supply_order_payment;
+create trigger recalc_account_payable_on_payment_trigger
+    after insert or update of verified or delete on supplies_module.supply_order_payment
+    for each row
+    execute function supplies_module.recalc_account_payable_on_payment();
+
+create or replace function update_invoice_paid_status()
+returns trigger as $$
+begin
+    if new.account_status = 3 and old.account_status is distinct from 3 then
+        update supplies_module.supplier_invoice
+        set paid = true,
+            updated_at = current_timestamp
+        where supply_order_id = new.supply_order_id;
+    end if;
+    
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists update_invoice_paid_status_trigger on supplies_module.account_payable;
+create trigger update_invoice_paid_status_trigger
+    after update of account_status on supplies_module.account_payable
+    for each row
+    execute function supplies_module.update_invoice_paid_status();
+
+create or replace function create_goods_receipt()
+returns trigger as $$
+declare
+    v_goods_receipt_id uuid;
+    v_subtotal numeric(12,3);
+    v_tax_amount numeric(12,3);
+    v_item record;
+begin
+    if new.supply_order_status_id = 3 and old.supply_order_status_id is distinct from 3 then
+        if exists(
+            select 1 
+            from supplies_module.goods_receipt 
+            where supply_order_id = new.supply_order_id
+        ) then
+            return new;
+        end if;
+
+        select subtotal_amount, tax_amount 
+        into v_subtotal, v_tax_amount
+        from supplies_module.account_payable
+        where supply_order_id = new.supply_order_id;
+
+        insert into supplies_module.goods_receipt(
+            supply_order_id,
+            received_date,
+            subtotal_amount,
+            tax_amount
+        ) values (
+            new.supply_order_id,
+            current_timestamp,
+            v_subtotal,
+            v_tax_amount
+        ) returning goods_receipt_id into v_goods_receipt_id;
+
+        for v_item in 
+            select tenant_id, product_id, quantity_ordered
+            from supplies_module.supply_order_item
+            where supply_order_id = new.supply_order_id
+        loop
+            insert into supplies_module.goods_receipt_item(
+                goods_receipt_id,
+                tenant_id,
+                product_id,
+                quantity_received
+            ) values (
+                v_goods_receipt_id,
+                v_item.tenant_id,
+                v_item.product_id,
+                v_item.quantity_ordered
+            );
+        end loop;
+
+        perform supplies_module.execute_three_way_matching(new.supply_order_id, v_goods_receipt_id);
+    end if;
+
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists create_goods_receipt_trigger on supplies_module.supply_order;
+create trigger create_goods_receipt_trigger
+    after update of supply_order_status_id on supplies_module.supply_order
+    for each row
+    execute function supplies_module.create_goods_receipt();
+
+create or replace function execute_three_way_matching(
+    p_supply_order_id uuid,
+    p_goods_receipt_id uuid
+) returns void as $$
+declare
+    v_supplier_invoice_id uuid;
+    v_order_subtotal numeric(12,3);
+    v_order_tax numeric(12,3);
+    v_order_total numeric(12,3);
+    v_invoice_subtotal numeric(12,3);
+    v_invoice_tax numeric(12,3);
+    v_invoice_total numeric(12,3);
+    v_receipt_subtotal numeric(12,3);
+    v_receipt_tax numeric(12,3);
+    v_receipt_total numeric(12,3);
+    v_order_qty integer;
+    v_invoice_qty integer;
+    v_receipt_qty integer;
+    v_amounts_matched boolean;
+    v_quantities_matched boolean;
+begin
+    select supplier_invoice_id into v_supplier_invoice_id
+    from supplies_module.supplier_invoice
+    where supply_order_id = p_supply_order_id;
+
+    if v_supplier_invoice_id is null then
+        return;
+    end if;
+
+    if exists(
+        select 1 
+        from supplies_module.three_way_matching 
+        where supply_order_id = p_supply_order_id
+    ) then
+        return;
+    end if;
+
+    select 
+        subtotal_amount,
+        tax_amount,
+        amount_due
+    into 
+        v_order_subtotal,
+        v_order_tax,
+        v_order_total
+    from supplies_module.account_payable
+    where supply_order_id = p_supply_order_id;
+
+    select 
+        subtotal_amount,
+        tax_amount,
+        total_amount
+    into 
+        v_invoice_subtotal,
+        v_invoice_tax,
+        v_invoice_total
+    from supplies_module.supplier_invoice
+    where supplier_invoice_id = v_supplier_invoice_id;
+
+    select 
+        subtotal_amount,
+        tax_amount,
+        total_amount
+    into 
+        v_receipt_subtotal,
+        v_receipt_tax,
+        v_receipt_total
+    from supplies_module.goods_receipt
+    where goods_receipt_id = p_goods_receipt_id;
+
+    select coalesce(sum(quantity_ordered), 0) into v_order_qty
+    from supplies_module.supply_order_item
+    where supply_order_id = p_supply_order_id;
+
+    select coalesce(sum(quantity_billed), 0) into v_invoice_qty
+    from supplies_module.supplier_invoice_item
+    where supplier_invoice_id = v_supplier_invoice_id;
+
+    select coalesce(sum(quantity_received), 0) into v_receipt_qty
+    from supplies_module.goods_receipt_item
+    where goods_receipt_id = p_goods_receipt_id;
+
+    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and 
+                         (abs(v_order_subtotal - v_receipt_subtotal) <= 0.01) and
+                         (abs(v_invoice_subtotal - v_receipt_subtotal) <= 0.01) and
+                         (abs(v_order_tax - v_invoice_tax) <= 0.01) and
+                         (abs(v_order_tax - v_receipt_tax) <= 0.01) and
+                         (abs(v_invoice_tax - v_receipt_tax) <= 0.01) and
+                         (abs(v_order_total - v_invoice_total) <= 0.01) and
+                         (abs(v_order_total - v_receipt_total) <= 0.01) and
+                         (abs(v_invoice_total - v_receipt_total) <= 0.01);
+    
+    v_quantities_matched := (v_order_qty = v_invoice_qty) and 
+                            (v_order_qty = v_receipt_qty);
+
+    insert into supplies_module.three_way_matching(
+        supply_order_id,
+        goods_receipt_id,
+        supplier_invoice_id,
+        amounts_matched,
+        quantities_matched,
+        is_matched,
+        matched_at
+    ) values (
+        p_supply_order_id,
+        p_goods_receipt_id,
+        v_supplier_invoice_id,
+        v_amounts_matched,
+        v_quantities_matched,
+        v_amounts_matched and v_quantities_matched,
+        current_timestamp
+    );
+end;
+$$ language plpgsql;
+
+create or replace function generate_payment_alerts()
+returns void as $$
+declare
+    v_config record;
+    v_payable record;
+    v_days_until_due integer;
+    v_alert_type_id integer;
+    v_existing_alert_id uuid;
+begin
+    for v_config in 
+        select 
+            pac.tenant_id,
+            pac.warning_days_before_due,
+            pac.urgent_days_before_due
+        from supplies_module.supply_order_payment_alert_config pac
+    loop
+        for v_payable in
+            select 
+                ap.account_payable_id,
+                ap.due_date,
+                ap.account_status,
+                ap.balance_remaining,
+                so.supply_order_id
+            from supplies_module.account_payable ap
+            join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+            join supplies_module.supplier s on so.supplier_id = s.supplier_id
+            join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
+            join core.branch b on sb.branch_id = b.branch_id
+            where b.tenant_id = v_config.tenant_id
+            and ap.account_status in (1, 2)
+            and ap.balance_remaining > 0
+        loop
+            v_days_until_due := v_payable.due_date - current_date;
+            
+  
+            if v_days_until_due < 0 then
+                v_alert_type_id := 3; 
+            elsif v_days_until_due <= v_config.urgent_days_before_due then
+                v_alert_type_id := 2; 
+            elsif v_days_until_due <= v_config.warning_days_before_due then
+                v_alert_type_id := 1; 
+            else
+                continue; 
+            end if;
+            
+            select payment_alert_id into v_existing_alert_id
+            from supplies_module.supply_order_payment_alert
+            where account_payable_id = v_payable.account_payable_id
+            and payment_alert_type_id = v_alert_type_id
+            and is_resolved = false
+            limit 1;
+            
+            if v_existing_alert_id is null then
+                insert into supplies_module.supply_order_payment_alert(
+                    account_payable_id,
+                    payment_alert_type_id,
+                    alert_date,
+                    is_resolved
+                ) values (
+                    v_payable.account_payable_id,
+                    v_alert_type_id,
+                    current_timestamp,
+                    false
+                );
+            end if;
+        end loop;
+    end loop;
+end;
+$$ language plpgsql;
+
+create or replace function get_pending_payment_alerts(p_tenant_id uuid)
+returns table(
+    payment_alert_id uuid,
+    account_payable_id uuid,
+    supply_order_id uuid,
+    supplier_name varchar,
+    invoice_number varchar,
+    alert_type varchar,
+    alert_type_description text,
+    due_date date,
+    days_until_due integer,
+    balance_remaining numeric,
+    alert_date timestamp,
+    created_at timestamp
+) as $$
+begin
+    return query
+    select 
+        spa.payment_alert_id,
+        ap.account_payable_id,
+        so.supply_order_id,
+        s.supplier_name,
+        si.invoice_number,
+        spat.payment_alert_type_name,
+        spat.description,
+        ap.due_date,
+        (ap.due_date - current_date)::integer as days_until_due,
+        ap.balance_remaining,
+        spa.alert_date,
+        spa.created_at
+    from supplies_module.supply_order_payment_alert spa
+    join supplies_module.supply_order_payment_alert_type spat 
+        on spa.payment_alert_type_id = spat.payment_alert_type_id
+    join supplies_module.account_payable ap 
+        on spa.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so 
+        on ap.supply_order_id = so.supply_order_id
+    join supplies_module.supplier s 
+        on so.supplier_id = s.supplier_id
+    left join supplies_module.supplier_invoice si 
+        on so.supply_order_id = si.supply_order_id
+    join supplies_module.supplier_branch sb 
+        on s.supplier_id = sb.supplier_id
+    join core.branch b 
+        on sb.branch_id = b.branch_id
+    where b.tenant_id = p_tenant_id
+    and spa.is_resolved = false
+    order by ap.due_date asc, spa.alert_date desc;
+end;
+$$ language plpgsql;
+
+create or replace function resolve_payment_alert(p_alert_id uuid)
+returns void as $$
+begin
+    update supplies_module.supply_order_payment_alert
+    set is_resolved = true,
+        updated_at = current_timestamp
+    where payment_alert_id = p_alert_id;
+end;
+$$ language plpgsql;
+
+create or replace function auto_resolve_payment_alerts()
+returns trigger as $$
+begin
+    if new.account_status = 3 and old.account_status is distinct from 3 then
+        update supplies_module.supply_order_payment_alert
+        set is_resolved = true,
+            updated_at = current_timestamp
+        where account_payable_id = new.account_payable_id
+        and is_resolved = false;
+    end if;
+    
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists auto_resolve_payment_alerts_trigger on supplies_module.account_payable;
+create trigger auto_resolve_payment_alerts_trigger
+    after update of account_status on supplies_module.account_payable
+    for each row
+    execute function supplies_module.auto_resolve_payment_alerts();
+
+create or replace function initialize_payment_alert_config(
+    p_tenant_id uuid,
+    p_warning_days integer default 7,
+    p_urgent_days integer default 3,
+    p_email_enabled boolean default true,
+    p_sms_enabled boolean default false
+) returns uuid as $$
+declare
+    v_config_id uuid;
+begin
+    insert into supplies_module.supply_order_payment_alert_config(
+        tenant_id,
+        warning_days_before_due,
+        urgent_days_before_due,
+        email_notifications_enabled,
+        sms_notifications_enabled
+    ) values (
+        p_tenant_id,
+        p_warning_days,
+        p_urgent_days,
+        p_email_enabled,
+        p_sms_enabled
+    )
+    on conflict (tenant_id) do update
+    set warning_days_before_due = excluded.warning_days_before_due,
+        urgent_days_before_due = excluded.urgent_days_before_due,
+        email_notifications_enabled = excluded.email_notifications_enabled,
+        sms_notifications_enabled = excluded.sms_notifications_enabled,
+        updated_at = current_timestamp
+    returning payment_alert_config_id into v_config_id;
+    
+    return v_config_id;
+end;
+$$ language plpgsql;
+
+create or replace function get_payment_alert_stats(p_tenant_id uuid)
+returns table(
+    total_alerts integer,
+    overdue_count integer,
+    urgent_count integer,
+    warning_count integer,
+    total_amount_at_risk numeric
+) as $$
+begin
+    return query
+    select 
+        count(*)::integer as total_alerts,
+        count(*) filter (where spat.payment_alert_type_id = 3)::integer as overdue_count,
+        count(*) filter (where spat.payment_alert_type_id = 2)::integer as urgent_count,
+        count(*) filter (where spat.payment_alert_type_id = 1)::integer as warning_count,
+        coalesce(sum(ap.balance_remaining), 0) as total_amount_at_risk
+    from supplies_module.supply_order_payment_alert spa
+    join supplies_module.supply_order_payment_alert_type spat 
+        on spa.payment_alert_type_id = spat.payment_alert_type_id
+    join supplies_module.account_payable ap 
+        on spa.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so 
+        on ap.supply_order_id = so.supply_order_id
+    join supplies_module.supplier s 
+        on so.supplier_id = s.supplier_id
+    join supplies_module.supplier_branch sb 
+        on s.supplier_id = sb.supplier_id
+    join core.branch b 
+        on sb.branch_id = b.branch_id
+    where b.tenant_id = p_tenant_id
+    and spa.is_resolved = false;
+end;
+$$ language plpgsql;
+
+drop trigger if exists update_supplier_timestamp on supplies_module.supplier;
+create trigger update_supplier_timestamp before update on supplies_module.supplier
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supply_order_timestamp on supplies_module.supply_order;
+create trigger update_supply_order_timestamp before update on supplies_module.supply_order
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supply_order_item_timestamp on supplies_module.supply_order_item;
+create trigger update_supply_order_item_timestamp before update on supplies_module.supply_order_item
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supplier_invoice_timestamp on supplies_module.supplier_invoice;
+create trigger update_supplier_invoice_timestamp before update on supplies_module.supplier_invoice
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supplier_invoice_item_timestamp on supplies_module.supplier_invoice_item;
+create trigger update_supplier_invoice_item_timestamp before update on supplies_module.supplier_invoice_item
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_goods_receipt_timestamp on supplies_module.goods_receipt;
+create trigger update_goods_receipt_timestamp before update on supplies_module.goods_receipt
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_goods_receipt_item_timestamp on supplies_module.goods_receipt_item;
+create trigger update_goods_receipt_item_timestamp before update on supplies_module.goods_receipt_item
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_account_payable_timestamp on supplies_module.account_payable;
+create trigger update_account_payable_timestamp before update on supplies_module.account_payable
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supply_order_payment_timestamp on supplies_module.supply_order_payment;
+create trigger update_supply_order_payment_timestamp before update on supplies_module.supply_order_payment
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supply_order_payment_alert_timestamp on supplies_module.supply_order_payment_alert;
+create trigger update_supply_order_payment_alert_timestamp before update on supplies_module.supply_order_payment_alert
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_supply_order_payment_alert_config_timestamp on supplies_module.supply_order_payment_alert_config;
+create trigger update_supply_order_payment_alert_config_timestamp before update on supplies_module.supply_order_payment_alert_config
+for each row execute function core.update_timestamp();
+
+drop trigger if exists update_three_way_matching_timestamp on supplies_module.three_way_matching;
+create trigger update_three_way_matching_timestamp before update on supplies_module.three_way_matching
 for each row execute function core.update_timestamp();
