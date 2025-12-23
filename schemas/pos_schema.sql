@@ -98,6 +98,8 @@ create table if not exists bill(
     billed_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+alter table pos_module.bill
+    add column if not exists due_date date;
 create index if not exists idx_bill_sale_id on pos_module.bill(sale_id);
 
 create table if not exists bill_payment(
@@ -313,3 +315,10 @@ create table if not exists score_transaction(
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+
+create table if not exists debtor (
+    debtor_id uuid primary key default gen_random_uuid(),
+    tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
+    debt numeric(10, 2) not null default 0.00, -- Add check (debt >= 0) ?
+    missed_payments integer not null default 0
+)

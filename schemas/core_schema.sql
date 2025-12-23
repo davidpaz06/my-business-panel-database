@@ -114,6 +114,9 @@ create table if not exists tenant_customer(
     unique(tenant_id, phone)    
 );
 
+alter table core.tenant_customer
+    add column if not exists is_tenant boolean not null default false;
+
 create table if not exists role(
     role_id serial primary key,
     role_name varchar(50) unique not null,
@@ -197,7 +200,8 @@ insert into payment_method(name, description) values
 ('cash', 'Payment made with cash'),
 ('debit_card', 'Payment made with debit card'),
 ('credit_card', 'Payment made with credit card'),
-('loyalty_points', 'Payment made via loyalty points')
+('loyalty_points', 'Payment made via loyalty points'),
+('credit', 'Payment made through a credit account')
 on conflict do nothing;
 
 create table if not exists tenant_payment(
