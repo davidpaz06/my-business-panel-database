@@ -143,10 +143,10 @@ create table if not exists users(
 
 create table if not exists currency(
     currency_id serial primary key,
-    currency_id_code char(3) unique not null,
+    currency_code char(3) unique not null,
     currency_name varchar(50) not null,
     symbol varchar(10) not null,
-    exchange_rate_to_usd numeric(15,6) not null check (exchange_rate_to_usd > 0),
+    -- exchange_rate_to_usd numeric(15,6) not null check (exchange_rate_to_usd > 0),
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );

@@ -217,10 +217,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS protect_net_salary ON rrhh_module.paysheet_details;
+DROP TRIGGER IF EXISTS protect_net_salary ON rrhh_module.paysheet_detail;
 CREATE TRIGGER protect_net_salary
 BEFORE INSERT OR UPDATE ON rrhh_module.paysheet_detail
 FOR EACH ROW
 EXECUTE FUNCTION rrhh_module.protect_net_salary();
-
--- No mas funciones por el momento por el momento

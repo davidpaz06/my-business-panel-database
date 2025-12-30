@@ -143,15 +143,16 @@ on conflict do nothing;
 
 create table if not exists account_payable(
     account_payable_id uuid primary key default gen_random_uuid(),
-    supply_order_id uuid not null unique references supplies_module.supply_order(supply_order_id) on delete cascade,
+    -- supply_order_id uuid not null unique references supplies_module.supply_order(supply_order_id) on delete cascade,
     has_invoice boolean default true,
+    has_tax boolean default true,
     subtotal_amount numeric(12,3) default 0,  
-    tax_amount numeric(12,3) default 0,       
-    amount_due numeric(12,3) generated always as (subtotal_amount + tax_amount) stored,  -- ✅ Total con tax
+    -- tax_amount numeric(12,3) default 0,       
+    -- amount_due numeric(12,3) generated always as (subtotal_amount + tax_amount) stored,  -- ✅ Total con tax
     amount_paid numeric(12,3) default 0,
-    balance_remaining numeric(12,3) generated always as (subtotal_amount + tax_amount - amount_paid) stored,  -- ✅ Incluye tax
-    due_date date not null,
-    account_status integer not null default 1 references supplies_module.account_payable_status(status_id),
+    -- balance_remaining numeric(12,3) generated always as (subtotal_amount + tax_amount - amount_paid) stored,  -- ✅ Incluye tax
+    -- due_date date not null,
+    -- account_status integer not null default 1 references supplies_module.account_payable_status(status_id),
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
@@ -177,10 +178,10 @@ create table if not exists supply_order_payment_alert_type(
     updated_at timestamp default current_timestamp
 );
 insert into supply_order_payment_alert_type(payment_alert_type_name, description) values
-('Upcoming Due Date', 'Alert for upcoming payment due date'),
-('Urgent Payment', 'Alert for urgent payments'),
-('Overdue Payment', 'Alert for overdue payments'),
-('Reconciliation Mismatch', 'Alert for payment reconciliation issues')
+    ('Upcoming Due Date', 'Alert for upcoming payment due date'),
+    ('Urgent Payment', 'Alert for urgent payments'),
+    ('Overdue Payment', 'Alert for overdue payments'),
+    ('Reconciliation Mismatch', 'Alert for payment reconciliation issues')
 on conflict do nothing;
 
 create table if not exists supply_order_payment_alert(

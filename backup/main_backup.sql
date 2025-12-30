@@ -140,7 +140,7 @@ create table if not exists users(
 
 create table if not exists currency(
     currency_id serial primary key,
-    currency_id_code char(3) unique not null,
+    currency_code char(3) unique not null,
     currency_name varchar(50) not null,
     symbol varchar(10) not null,
     exchange_rate_to_usd numeric(15,6) not null check (exchange_rate_to_usd > 0),
@@ -177,8 +177,7 @@ create table if not exists subscription_type (
     subscription_type_name varchar(25) not null,
     subscription_type_detail text not null,
     duration_months int not null,
-    subscription_type_cost numeric(5,2)
-    -- TODO: corroborar como se gestionarán las suscripciones del SaaS
+    subscription_type_cost numeric(5,2) not null
 );
 insert into subscription_type (subscription_type_name, subscription_type_detail, duration_months, subscription_type_cost) values
 ('Basic', 'Basic subscription plan', 1, 9.99),
@@ -2104,7 +2103,7 @@ begin
         raise exception 'Payment % has no associated sale', _payment_id;
     end if;
     
-    raise notice '💳 Verifying payment: %', _payment_id;
+    raise notice 'Verifying payment: %', _payment_id;
     raise notice '   Sale: %', _sale_id;
     raise notice '   Customer: %', _tenant_customer_id;
     raise notice '   Amount: $%', _payment_amount;
@@ -2118,7 +2117,7 @@ begin
     raise notice '';
     
     if _is_points_redemption then
-        raise notice '🎁 Processing points redemption...';
+        raise notice 'Processing points redemption...';
         raise notice '   Points to redeem: %', _points_redeemed;
         
         select * into _redeem_result
@@ -3205,3 +3204,557 @@ for each row execute function core.update_timestamp();
 drop trigger if exists update_three_way_matching_timestamp on supplies_module.three_way_matching;
 create trigger update_three_way_matching_timestamp before update on supplies_module.three_way_matching
 for each row execute function core.update_timestamp();
+
+create schema if not exists inventory_module;
+set search_path to inventory_module;
+
+create table if not exists warehouse (
+    warehouse_id uuid primary key default gen_random_uuid(),
+    branch_id uuid not null references core.branch(branch_id) on delete cascade,
+    warehouse_name varchar(255) not null,
+    warehouse_address text not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists inventory(
+    inventory_id uuid primary key default gen_random_uuid(),
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    warehouse_id uuid not null references inventory_module.warehouse(warehouse_id) on delete cascade,
+    stock integer not null,
+    expiration_date timestamp check (expiration_date is null or expiration_date > current_timestamp),
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+
+    foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade  
+);
+
+create table if not exists inventory_log_type(
+    inventory_log_type_id serial primary key,
+    inventory_log_type_name varchar(50) not null unique, 
+    inventory_log_type_description text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+insert into inventory_log_type (inventory_log_type_name, inventory_log_type_description) values
+    ('IN', 'inventory added to inventory_module'),
+    ('OUT', 'inventory removed from inventory_module')
+on conflict do nothing;
+
+create table if not exists inventory_log(
+    inventory_log_id uuid primary key default gen_random_uuid(),
+    inventory_log_type_id integer not null references inventory_module.inventory_log_type(inventory_log_type_id) on delete cascade,
+    supply_order_id uuid references supplies_module.supply_order(supply_order_id) on delete set null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists inventory_transfer(
+    inventory_transfer_id uuid primary key default gen_random_uuid(),
+    from_warehouse_id uuid not null references inventory_module.warehouse(warehouse_id) on delete cascade,
+    to_warehouse_id uuid not null references inventory_module.warehouse(warehouse_id) on delete cascade,
+    inventory_transfer_departure_date timestamp default current_timestamp,
+    inventory_transfer_arrival_date timestamp,
+    transfer_date timestamp default current_timestamp,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
+create table if not exists inventory_transfer_product(
+    inventory_transfer_product_id uuid primary key default gen_random_uuid(),
+    inventory_transfer_id uuid not null references inventory_module.inventory_transfer(inventory_transfer_id) on delete cascade,
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    quantity integer not null,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp,
+    
+    foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade  
+);
+
+CREATE TABLE IF NOT EXISTS discrepancy_count(
+    discrepancy_count_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid not null,                                                         
+    product_id uuid not null,
+    warehouse_id uuid NOT NULL REFERENCES inventory_module.warehouse(warehouse_id) ON DELETE CASCADE,
+    stored_quantity integer NOT NULL,
+    physical_quantity integer NOT NULL,
+    discrepancy_reason text,
+    created_at timestamp DEFAULT current_timestamp,
+    updated_at timestamp DEFAULT current_timestamp,
+
+    FOREIGN KEY (tenant_id, product_id) REFERENCES core.product(tenant_id, product_id) ON DELETE CASCADE  
+);
+
+-- ==========================================================================
+--                          FUNCTIONS AND TRIGGERS
+-- ==========================================================================
+
+CREATE OR REPLACE FUNCTION reduce_stock_on_sale()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE inventory_module.inventory
+    SET stock = stock - NEW.quantity_sold
+    WHERE inventory_id = NEW.inventory_id;
+
+    -- Check if stock went negative
+    IF (SELECT stock FROM inventory_module.inventory WHERE inventory_id = NEW.inventory_id) < 0 THEN
+        RAISE EXCEPTION 'Not enough stock for product ID %', NEW.product_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_reduce_stock
+    AFTER INSERT ON pos_module.sale
+FOR EACH ROW
+    EXECUTE FUNCTION reduce_stock_on_sale();
+
+CREATE OR REPLACE FUNCTION increase_stock_on_return()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE products
+    SET stock = stock + NEW.quantity_returned
+    WHERE id = NEW.product_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_increase_stock
+    AFTER INSERT ON pos_module.return_product
+FOR EACH ROW
+    EXECUTE FUNCTION increase_stock_on_return();
+
+CREATE OR REPLACE FUNCTION count_warehouse_inventory_products()
+RETURNS TABLE(warehouse_id uuid, product_name varchar, product_count bigint) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT w.warehouse_id, p.product_name AS product_name, COUNT(i.product_id) AS product_count
+    FROM inventory_module.warehouse w
+    LEFT JOIN inventory_module.inventory i ON w.warehouse_id = i.warehouse_id
+    INNER JOIN core.product p ON i.product_id = p.product_id AND i.tenant_id = p.tenant_id
+    GROUP BY w.warehouse_id, p.product_name;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION log_inventory_movement()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO inventory_module.inventory_log (inventory_log_type_id, supply_order_id)
+    VALUES (NEW.movement_type_id, NEW.supply_order_id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trigger_log_inventory_movement
+    AFTER INSERT ON supplies_module.supply_order_item
+FOR EACH ROW
+    EXECUTE FUNCTION log_inventory_movement();
+
+DROP TRIGGER IF EXISTS update_warehouse_timestamp ON inventory_module.warehouse;
+CREATE TRIGGER update_warehouse_timestamp BEFORE UPDATE ON inventory_module.warehouse
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_inventory_timestamp ON inventory_module.inventory;
+CREATE TRIGGER update_inventory_timestamp BEFORE UPDATE ON inventory_module.inventory
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_inventory_log_type_timestamp ON inventory_module.inventory_log_type;
+CREATE TRIGGER update_inventory_log_type_timestamp BEFORE UPDATE ON inventory_module.inventory_log_type   
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_inventory_log_timestamp ON inventory_module.inventory_log;
+CREATE TRIGGER update_inventory_log_timestamp BEFORE UPDATE ON inventory_module.inventory_log
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_inventory_transfer_timestamp ON inventory_module.inventory_transfer;
+CREATE TRIGGER update_inventory_transfer_timestamp BEFORE UPDATE ON inventory_module.inventory_transfer
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_inventory_transfer_product_timestamp ON inventory_module.inventory_transfer_product;
+CREATE TRIGGER update_inventory_transfer_product_timestamp BEFORE UPDATE ON inventory_module.inventory_transfer_product
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+DROP TRIGGER IF EXISTS update_discrepancy_count_timestamp ON inventory_module.discrepancy_count;
+CREATE TRIGGER update_discrepancy_count_timestamp BEFORE UPDATE ON inventory_module.discrepancy_count
+FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+-- SCHEMA: RRHH MODULE
+CREATE SCHEMA IF NOT EXISTS rrhh_module;
+SET search_path to rrhh_module;
+
+-- MODULO DE EMPLEADO
+
+CREATE TABLE IF NOT EXISTS payment_schedule(
+	payment_schedule_id SERIAL PRIMARY KEY NOT NULL,
+	description VARCHAR(100) NOT NULL,
+	daycount INTEGER NOT NULL
+);
+INSERT INTO rrhh_module.payment_schedule(description, daycount) VALUES
+('Monthly', 30),
+('Fortnight', 15),
+('Weekly', 7),
+('daily', 1)
+ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS contract(
+	contract_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	start_date DATE NOT NULL,
+	end_date DATE NOT NULL,
+	hours INTEGER NOT NULL,
+	base_salary NUMERIC(10, 2) NOT NULL,
+	duties TEXT
+);
+--Indice para filtracion o busqueda por rango de precios
+CREATE INDEX IF NOT EXISTS idx_contract_base_salary ON rrhh_module.contract (base_salary);
+
+CREATE TABLE IF NOT EXISTS employee(
+	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	user_id UUID NOT NULL REFERENCES core.users(user_id) ON DELETE CASCADE,
+	first_name VARCHAR(100) NOT NULL,
+	last_name VARCHAR(100) NOT NULL,
+	doc_number VARCHAR(100) NOT NULL UNIQUE,
+	phone VARCHAR(100) NOT NULL,
+	email VARCHAR(100) NOT NULL UNIQUE,
+	contract_id UUID NOT NULL REFERENCES rrhh_module.contract(contract_id) ON DELETE CASCADE,
+	schedule_id INTEGER NOT NULL REFERENCES rrhh_module.payment_schedule(payment_schedule_id),
+	is_active BOOLEAN DEFAULT true,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+--Indice para que se pueda garantizar que no haya empleados duplicados
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_doc_number ON rrhh_module.employee (doc_number);
+
+--Inidice para la recuperacion de cuentas o autenticacion del empleado
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_email ON rrhh_module.employee (email);
+
+--Indices destinados para la aceleracion de los JOINS
+CREATE INDEX IF NOT EXISTS idx_employee_user_id ON rrhh_module.employee (user_id);
+CREATE INDEX IF NOT EXISTS idx_employee_contract_id ON rrhh_module.employee (contract_id);
+CREATE INDEX IF NOT EXISTS idx_employee_scheduled_id ON rrhh_module.employee (schedule_id);
+
+--Indice que se utilizara unicamente para el proceso de nomina y generacion de reportes
+CREATE INDEX IF NOT EXISTS idx_employee_is_active ON rrhh_module.employee (is_active);
+
+CREATE TABLE IF NOT EXISTS clocking(
+	clocking_id SERIAL PRIMARY KEY NOT NULL,
+	employee_id UUID NOT NULL REFERENCES rrhh_module.employee(employee_id),
+	branch_id UUID NOT NULL REFERENCES core.branch(branch_id),
+	clock_in TIMESTAMP,
+	clock_out TIMESTAMP,
+	turn_hours INTEGER NOT NULL DEFAULT 0
+);
+
+-- Indice para buscar los turnos de un empleado dentro de un rango de fechas
+CREATE INDEX IF NOT EXISTS idx_track_employee_hours_in ON rrhh_module.clocking (employee_id, clock_in DESC);
+-- Indice para ubicar turnos por sucursal
+CREATE INDEX IF NOT EXISTS idx_track_hours_branch_id ON rrhh_module.clocking (branch_id);
+
+-- MODULO DE NOMINA
+
+CREATE TABLE IF NOT EXISTS paysheet_status(
+	status_id SERIAL PRIMARY KEY NOT NULL,
+	status_description VARCHAR(100)
+);
+INSERT INTO rrhh_module.paysheet_status(status_description) VALUES
+('Pending'),
+('Completed'),
+('Canceled')
+ON CONFLICT DO NOTHING;
+
+-- Catalogo de deducciones, este catalogo sera consumido unicamente por el backend
+CREATE TABLE IF NOT EXISTS deduction(
+	deduction_id SERIAL PRIMARY KEY NOT NULL,
+	deduction_name VARCHAR(100) NOT NULL,
+	employee_percentage INTEGER NOT NULL,
+	tenant_percentage INTEGER,
+	is_current BOOLEAN DEFAULT true NOT NULL 
+);
+
+-- Catalogo que ayuda a la uniformidad de los calculos
+CREATE TABLE IF NOT EXISTS income_concept(
+	income_id SERIAL PRIMARY KEY NOT NULL,
+	concept_name VARCHAR(100) NOT NULL,
+	calculation_type VARCHAR(50) NOT NULL, -- Fijo, Variable o Acumulable
+	ccss_apply BOOLEAN,
+	tax_apply BOOLEAN
+);
+
+--Indice para filtracion por conceptos
+CREATE INDEX IF NOT EXISTS idx_income_concept_apply ON rrhh_module.income_concept(ccss_apply, tax_apply);
+
+CREATE TABLE IF NOT EXISTS paysheet(
+	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	branch_id UUID NOT NULL REFERENCES core.branch(branch_id),
+	period_start_date DATE NOT NULL,
+	period_end_date DATE NOT NULL,
+	payment_day TIMESTAMP,
+	payment_amount INTEGER NOT NULL DEFAULT 0,
+	paysheet_status_id INTEGER NOT NULL REFERENCES rrhh_module.paysheet_status(status_id)
+);
+
+--Indice para la consulta de nominas por periodo de pago
+CREATE INDEX IF NOT EXISTS idx_paysheet_period_dates ON rrhh_module.paysheet (period_start_date, period_end_date);
+
+CREATE TABLE IF NOT EXISTS paysheet_detail(
+	detail_id UUID NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
+	paysheet_id UUID NOT NULL REFERENCES rrhh_module.paysheet(paysheet_id),
+	employee_id UUID NOT NULL REFERENCES rrhh_module.employee(employee_id),
+	payment_method_id INTEGER NOT NULL REFERENCES core.payment_method(payment_method_id),
+	gross_salary NUMERIC(10, 2) CHECK (gross_salary >= 0) NOT NULL,
+	ccss_employee_deduction NUMERIC(10, 2) DEFAULT 0,
+	ccss_tenant_deduction NUMERIC(10, 2) DEFAULT 0,
+	income_tax_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+	total_deduction NUMERIC(10, 2) NOT NULL DEFAULT 0,
+	net_salary NUMERIC(12, 3) NOT NULL,
+	pay_date DATE NOT NULL,
+  recalc_needed BOOLEAN DEFAULT TRUE NOT NULL
+);
+
+-- Indice para agilizar la busqueda de todos los detalles bajo un paysheet_id
+CREATE INDEX IF NOT EXISTS idx_paysheet_detail_paysheet_id ON rrhh_module.paysheet_detail(paysheet_id);
+-- Indice compuesto para la consulta del historial de pagos a un empleado
+CREATE INDEX IF NOT EXISTS idx_paysheet_detail_emp_paydate ON rrhh_module.paysheet_detail (employee_id, pay_date DESC);
+
+CREATE TABLE IF NOT EXISTS income_register(
+	income_register_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	detail_id UUID NOT NULL REFERENCES rrhh_module.paysheet_detail(detail_id),
+	concept_id INTEGER NOT NULL REFERENCES rrhh_module.income_concept(income_id),
+	base_quantity NUMERIC(10, 2) NOT NULL,
+	calculated_amount NUMERIC(10, 2) NOT NULL
+);
+
+-- Indice para agilizar Joins
+CREATE INDEX IF NOT EXISTS idx_income_register_detail_id ON rrhh_module.income_register(detail_id);
+CREATE INDEX IF NOT EXISTS idx_income_register_concept_id ON rrhh_module.income_register(concept_id);
+
+-- ==========================================================================
+--                          FUNCTIONS AND TRIGGERS
+-- ==========================================================================
+
+CREATE OR REPLACE FUNCTION rrhh_module.create_new_employee(
+	-- Parametros para la creacion del contrato
+	p_start_date DATE,
+	p_end_date DATE,
+	p_hours INTEGER,
+	p_base_salary DECIMAL(10, 2),
+	p_duties TEXT,
+
+	-- Parametros para la crecaion del empleado
+	p_user_id UUID,
+	p_first_name VARCHAR(100),
+	p_last_name VARCHAR(100),
+	p_doc_number VARCHAR(100),
+	p_phone VARCHAR(100),
+	p_email VARCHAR(100),
+	p_schedule_id INTEGER
+)
+RETURNS UUID AS $$
+DECLARE
+	v_new_contract_id UUID;
+	v_new_employee_id UUID;
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM rrhh_module.payment_schedule WHERE payment_schedule_id = p_schedule_id) THEN
+		RAISE EXCEPTION 'Integrity error: schedule_id (schedule_id: %) doesnt exists', p_schedule_id;
+	END IF;
+
+	v_new_contract_id := gen_random_uuid();
+
+	INSERT INTO rrhh_module.contract (contract_id, start_date, end_date, hours, base_salary, duties)
+	VALUES (v_new_contract_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties);
+
+	v_new_employee_id := gen_random_uuid();
+
+	INSERT INTO rrhh_module.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id)
+	VALUES (
+		v_new_employee_id,
+		p_user_id,
+		p_first_name,
+		p_last_name,
+		p_doc_number,
+		p_phone,
+		p_email,
+		v_new_contract_id,
+		p_schedule_id
+	);
+
+	RETURN v_new_employee_id;
+
+EXCEPTION
+	WHEN unique_violation THEN
+		RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
+	WHEN foreign_key_violation THEN
+		RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent foreign key (user_id or schedule_id).';
+	WHEN others THEN
+		RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
+
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION update_gross_salary()
+RETURNS TRIGGER AS $$
+DECLARE
+	v_detail_id UUID;
+	v_new_gross_salary DECIMAL(10, 2);
+BEGIN
+	IF(TG_OP = 'DELETE') THEN 
+		v_detail_id := OLD.detail_id;
+	ELSE
+		v_detail_id := NEW.detail_id;
+	END IF;
+
+	SELECT COALESCE(SUM(calculated_amount), 0)
+	INTO v_new_gross_salary
+	FROM rrhh_module.income_register
+	WHERE detail_id = v_detail_id;
+
+	UPDATE rrhh_module.paysheet_detail
+	SET gross_salary = v_new_gross_salary,
+  recalc_needed = TRUE
+	WHERE detail_id = v_detail_id;
+
+	RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_gross_salary on rrhh_module.income_register;
+CREATE TRIGGER update_gross_salary
+	AFTER INSERT OR UPDATE OR DELETE ON rrhh_module.income_register
+	FOR EACH ROW
+	EXECUTE FUNCTION update_gross_salary();
+
+CREATE OR REPLACE FUNCTION rrhh_module.update_paysheet_state (
+    p_paysheet_id UUID
+)
+RETURNS VARCHAR AS $$
+DECLARE
+    v_pending_recalculations INTEGER;
+    v_current_status_id INTEGER;
+    v_completed_status_id INTEGER;
+    v_completed_status_name VARCHAR(50) := 'Completed'; 
+BEGIN
+    -- Obtenemos el id del estado completado del catálogo
+    SELECT status_id INTO v_completed_status_id
+    FROM rrhh_module.paysheet_status
+    WHERE status_description = v_completed_status_name;
+
+    IF v_completed_status_id IS NULL THEN
+        RAISE EXCEPTION 'Error: Status with id % not found in db', v_completed_status_name;
+    END IF;
+
+    -- Obtenemos el id de estado actual de la nómina
+    SELECT paysheet_status_id INTO v_current_status_id
+    FROM rrhh_module.paysheet
+    WHERE paysheet_id = p_paysheet_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Error: Paysheet with id % not found.', p_paysheet_id;
+    END IF;
+
+    -- Chequeamos que ya fue completada
+    IF v_current_status_id = v_completed_status_id THEN
+        RETURN 'Paysheet already completed.';
+    END IF;
+
+    -- Revisamos si quedan calculos pendientes
+    SELECT COUNT(*)
+    INTO v_pending_recalculations
+    FROM rrhh_module.paysheet_detail
+    WHERE paysheet_id = p_paysheet_id
+      AND recalc_needed = TRUE;
+
+    IF v_pending_recalculations > 0 THEN
+        -- Si hay calculos pendientes, lanzamos una excepcion que termina el proceso
+        RAISE EXCEPTION 'Integrity Error: Cant finish the paysheet process. % recalculations needed', v_pending_recalculations;
+    END IF;
+
+    --Si no hay pendientes, actualizamos el estado a 'Completed'
+    UPDATE rrhh_module.paysheet
+    SET
+        paysheet_status_id = v_completed_status_id
+    WHERE paysheet_id = p_paysheet_id;
+
+    RETURN 'Paysheet finished ' || p_paysheet_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Funcion para la generacion de reportes ccss mensuales de periodos especificos
+CREATE OR REPLACE FUNCTION rrhh_module.generate_monthly_ccss(
+	p_year INTEGER,
+	p_month INTEGER
+)
+RETURNS TABLE (
+	total_employee NUMERIC(10, 2),
+	total_tenant NUMERIC(10, 2),
+	total NUMERIC(10, 2)
+) AS $$
+DECLARE
+	v_status_completed_id INTEGER;
+	v_completed_status VARCHAR(15) := 'Completed';
+BEGIN
+	SELECT status_id INTO v_status_completed_id
+	FROM rrhh_module.paysheet_status
+	WHERE status_description = v_completed_status;
+
+	IF v_status_completed_id IS NULL THEN
+		RAISE EXCEPTION 'Status Completed not found in db.';
+	END IF;
+
+	RETURN QUERY
+	SELECT
+		COALESCE(SUM(pd.ccss_employee_deduction), 0) AS total_employee,
+		COALESCE(SUM(pd.ccss_tenant_deduction), 0) AS total_tenant,
+		COALESCE(SUM(pd.ccss_employee_deduction + ccss_tenant_deduction), 0) AS total
+	FROM
+		rrhh_module.paysheet_detail pd
+	INNER JOIN
+		rrhh_module.paysheet p ON pd.paysheet_id = p.paysheet_id
+	WHERE
+		EXTRACT(YEAR FROM p.payment_day) = p_year
+		AND EXTRACT(MONTH FROM p.payment_day) = p_month
+		AND p.paysheet_status_id = v_status_completed_id;
+
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION rrhh_module.validate_contract_dates()
+RETURNS TRIGGER AS $$
+BEGIN
+	IF NEW.end_date IS NOT NULL AND NEW.end_date < NEW.start_date THEN
+		RAISE EXCEPTION 'Integrity Error. The end of the contract must happen after it even starts.';
+	END IF;
+
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS validate_contract_dates ON rrhh_module.contract;
+CREATE TRIGGER validate_contract_dates
+BEFORE INSERT OR UPDATE ON rrhh_module.contract
+FOR EACH ROW
+EXECUTE FUNCTION rrhh_module.validate_contract_dates();
+
+CREATE OR REPLACE FUNCTION rrhh_module.protect_net_salary()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.net_salary IS DISTINCT FROM NEW.net_salary THEN
+        PERFORM 1 FROM rrhh_module.paysheet p
+        	INNER JOIN rrhh_module.paysheet_status ps ON p.paysheet_status_id = ps.status_id
+        	WHERE p.paysheet_id = NEW.paysheet_id AND ps.status_description = 'Completed';
+        
+        IF FOUND THEN
+             RAISE EXCEPTION 'Integrity Error: The Net Salary cannot be modified for a paysheet that is already COMPLETED.';
+        END IF;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS protect_net_salary ON rrhh_module.paysheet_detail;
+CREATE TRIGGER protect_net_salary
+BEFORE INSERT OR UPDATE ON rrhh_module.paysheet_detail
+FOR EACH ROW
+EXECUTE FUNCTION rrhh_module.protect_net_salary();

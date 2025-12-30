@@ -1,3 +1,4 @@
+drop schema if exists rrhh_module cascade;
 CREATE SCHEMA IF NOT EXISTS rrhh_module;
 SET search_path to rrhh_module;
 
