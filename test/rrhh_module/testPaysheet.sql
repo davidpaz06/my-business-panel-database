@@ -121,7 +121,7 @@ BEGIN
 
 	BEGIN
 		INSERT INTO rrhh_module.income_register (detail_id, concept_id, base_quantity, calculated_amount)
-		VALUES (v_detail_id, 2, 1.00,-3000.00);
+		VALUES (v_detail_id, 1002, 1.00,-3000.00);
 
 		RAISE EXCEPTION 'Se permitio la creacion de un salario bruto negativo';
 	EXCEPTION
