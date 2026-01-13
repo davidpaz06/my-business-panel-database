@@ -2366,7 +2366,7 @@ insert into account_payable_status(status_name, description) values
 ('Overdue', 'Payment is overdue')
 on conflict do nothing;
 
-create table if not exists account_payable(
+create table if not exists supplies_account_payable(
     account_payable_id uuid primary key default gen_random_uuid(),
     supply_order_id uuid not null unique references supplies_module.supply_order(supply_order_id) on delete cascade,
     has_invoice boolean default true,
@@ -2384,7 +2384,7 @@ create table if not exists account_payable(
 create table if not exists supply_order_payment(
     payment_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
-    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
+    account_payable_id uuid not null references supplies_module.supplies_account_payable(account_payable_id) on delete cascade,
     payment_date timestamp default current_timestamp,
     amount_paid numeric(12,3) not null,
     payment_method_id integer not null references core.payment_method(payment_method_id) on delete cascade,
@@ -2410,7 +2410,7 @@ on conflict do nothing;
 
 create table if not exists supply_order_payment_alert(
     payment_alert_id uuid primary key default gen_random_uuid(),
-    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
+    account_payable_id uuid not null references supplies_module.supplies_account_payable(account_payable_id) on delete cascade,
     payment_alert_type_id integer not null references supplies_module.supply_order_payment_alert_type(payment_alert_type_id),
     alert_date timestamp default current_timestamp,
     is_resolved boolean default false,
@@ -2538,7 +2538,7 @@ begin
 
     v_tax_amount := round(v_subtotal * (v_tax_rate / 100.0), 3);
 
-    insert into supplies_module.account_payable(
+    insert into supplies_module.supplies_account_payable(
         supply_order_id,
         has_invoice,
         subtotal_amount,
@@ -2634,7 +2634,7 @@ declare
 begin
     select amount_due
     into _amount_due
-    from supplies_module.account_payable
+    from supplies_module.supplies_account_payable
     where account_payable_id = _account_payable_id;
     
     if _amount_due is null then
@@ -2656,7 +2656,7 @@ begin
     and verified = true;
     
     if abs(_payments_total - _amount_due) <= 0.01 or _payments_total > _amount_due then
-        update supplies_module.account_payable
+        update supplies_module.supplies_account_payable
         set amount_paid = _payments_total,
             account_status = 3,
             updated_at = current_timestamp
@@ -2664,7 +2664,7 @@ begin
         
         return true;
     elsif _payments_total > 0 then
-        update supplies_module.account_payable
+        update supplies_module.supplies_account_payable
         set amount_paid = _payments_total,
             account_status = 2,
             updated_at = current_timestamp
@@ -2750,9 +2750,9 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists update_invoice_paid_status_trigger on supplies_module.account_payable;
+drop trigger if exists update_invoice_paid_status_trigger on supplies_module.supplies_account_payable;
 create trigger update_invoice_paid_status_trigger
-    after update of account_status on supplies_module.account_payable
+    after update of account_status on supplies_module.supplies_account_payable
     for each row
     execute function supplies_module.update_invoice_paid_status();
 
@@ -2775,7 +2775,7 @@ begin
 
         select subtotal_amount, tax_amount 
         into v_subtotal, v_tax_amount
-        from supplies_module.account_payable
+        from supplies_module.supplies_account_payable
         where supply_order_id = new.supply_order_id;
 
         insert into supplies_module.goods_receipt(
@@ -2866,7 +2866,7 @@ begin
         v_order_subtotal,
         v_order_tax,
         v_order_total
-    from supplies_module.account_payable
+    from supplies_module.supplies_account_payable
     where supply_order_id = p_supply_order_id;
 
     select 
@@ -2959,7 +2959,7 @@ begin
                 ap.account_status,
                 ap.balance_remaining,
                 so.supply_order_id
-            from supplies_module.account_payable ap
+            from supplies_module.supplies_account_payable ap
             join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
             join supplies_module.supplier s on so.supplier_id = s.supplier_id
             join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
@@ -3039,7 +3039,7 @@ begin
     from supplies_module.supply_order_payment_alert spa
     join supplies_module.supply_order_payment_alert_type spat 
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join supplies_module.account_payable ap 
+    join supplies_module.supplies_account_payable ap 
         on spa.account_payable_id = ap.account_payable_id
     join supplies_module.supply_order so 
         on ap.supply_order_id = so.supply_order_id
@@ -3082,9 +3082,9 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists auto_resolve_payment_alerts_trigger on supplies_module.account_payable;
+drop trigger if exists auto_resolve_payment_alerts_trigger on supplies_module.supplies_account_payable;
 create trigger auto_resolve_payment_alerts_trigger
-    after update of account_status on supplies_module.account_payable
+    after update of account_status on supplies_module.supplies_account_payable
     for each row
     execute function supplies_module.auto_resolve_payment_alerts();
 
@@ -3142,7 +3142,7 @@ begin
     from supplies_module.supply_order_payment_alert spa
     join supplies_module.supply_order_payment_alert_type spat 
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join supplies_module.account_payable ap 
+    join supplies_module.supplies_account_payable ap 
         on spa.account_payable_id = ap.account_payable_id
     join supplies_module.supply_order so 
         on ap.supply_order_id = so.supply_order_id
@@ -3185,8 +3185,8 @@ drop trigger if exists update_goods_receipt_item_timestamp on supplies_module.go
 create trigger update_goods_receipt_item_timestamp before update on supplies_module.goods_receipt_item
 for each row execute function core.update_timestamp();
 
-drop trigger if exists update_account_payable_timestamp on supplies_module.account_payable;
-create trigger update_account_payable_timestamp before update on supplies_module.account_payable
+drop trigger if exists update_account_payable_timestamp on supplies_module.supplies_account_payable;
+create trigger update_account_payable_timestamp before update on supplies_module.supplies_account_payable
 for each row execute function core.update_timestamp();
 
 drop trigger if exists update_supply_order_payment_timestamp on supplies_module.supply_order_payment;

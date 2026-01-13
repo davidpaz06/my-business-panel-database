@@ -1365,10 +1365,10 @@ CREATE TABLE pos_module.tenant_customer_score (
 
 
 --
--- Name: account_payable; Type: TABLE; Schema: supplies_module; Owner: -
+-- Name: supplies_account_payable; Type: TABLE; Schema: supplies_module; Owner: -
 --
 
-CREATE TABLE supplies_module.account_payable (
+CREATE TABLE supplies_module.supplies_account_payable (
     account_payable_id uuid DEFAULT gen_random_uuid() NOT NULL,
     supply_order_id uuid NOT NULL,
     has_invoice boolean DEFAULT true,
@@ -2514,10 +2514,10 @@ ALTER TABLE ONLY pos_module.tenant_customer_score
 
 
 --
--- Name: account_payable account_payable_pkey; Type: CONSTRAINT; Schema: supplies_module; Owner: -
+-- Name: supplies_account_payable account_payable_pkey; Type: CONSTRAINT; Schema: supplies_module; Owner: -
 --
 
-ALTER TABLE ONLY supplies_module.account_payable
+ALTER TABLE ONLY supplies_module.supplies_account_payable
     ADD CONSTRAINT account_payable_pkey PRIMARY KEY (account_payable_id);
 
 
@@ -2530,10 +2530,10 @@ ALTER TABLE ONLY supplies_module.account_payable_status
 
 
 --
--- Name: account_payable account_payable_supply_order_id_key; Type: CONSTRAINT; Schema: supplies_module; Owner: -
+-- Name: supplies_account_payable account_payable_supply_order_id_key; Type: CONSTRAINT; Schema: supplies_module; Owner: -
 --
 
-ALTER TABLE ONLY supplies_module.account_payable
+ALTER TABLE ONLY supplies_module.supplies_account_payable
     ADD CONSTRAINT account_payable_supply_order_id_key UNIQUE (supply_order_id);
 
 
@@ -3728,18 +3728,18 @@ ALTER TABLE ONLY pos_module.tenant_customer_score
 
 
 --
--- Name: account_payable account_payable_account_status_fkey; Type: FK CONSTRAINT; Schema: supplies_module; Owner: -
+-- Name: supplies_account_payable account_payable_account_status_fkey; Type: FK CONSTRAINT; Schema: supplies_module; Owner: -
 --
 
-ALTER TABLE ONLY supplies_module.account_payable
+ALTER TABLE ONLY supplies_module.supplies_account_payable
     ADD CONSTRAINT account_payable_account_status_fkey FOREIGN KEY (account_status) REFERENCES supplies_module.account_payable_status(status_id);
 
 
 --
--- Name: account_payable account_payable_supply_order_id_fkey; Type: FK CONSTRAINT; Schema: supplies_module; Owner: -
+-- Name: supplies_account_payable account_payable_supply_order_id_fkey; Type: FK CONSTRAINT; Schema: supplies_module; Owner: -
 --
 
-ALTER TABLE ONLY supplies_module.account_payable
+ALTER TABLE ONLY supplies_module.supplies_account_payable
     ADD CONSTRAINT account_payable_supply_order_id_fkey FOREIGN KEY (supply_order_id) REFERENCES supplies_module.supply_order(supply_order_id) ON DELETE CASCADE;
 
 
@@ -3828,7 +3828,7 @@ ALTER TABLE ONLY supplies_module.supply_order_item
 --
 
 ALTER TABLE ONLY supplies_module.supply_order_payment
-    ADD CONSTRAINT supply_order_payment_account_payable_id_fkey FOREIGN KEY (account_payable_id) REFERENCES supplies_module.account_payable(account_payable_id) ON DELETE CASCADE;
+    ADD CONSTRAINT supply_order_payment_account_payable_id_fkey FOREIGN KEY (account_payable_id) REFERENCES supplies_module.supplies_account_payable(account_payable_id) ON DELETE CASCADE;
 
 
 --
@@ -3836,7 +3836,7 @@ ALTER TABLE ONLY supplies_module.supply_order_payment
 --
 
 ALTER TABLE ONLY supplies_module.supply_order_payment_alert
-    ADD CONSTRAINT supply_order_payment_alert_account_payable_id_fkey FOREIGN KEY (account_payable_id) REFERENCES supplies_module.account_payable(account_payable_id) ON DELETE CASCADE;
+    ADD CONSTRAINT supply_order_payment_alert_account_payable_id_fkey FOREIGN KEY (account_payable_id) REFERENCES supplies_module.supplies_account_payable(account_payable_id) ON DELETE CASCADE;
 
 
 --

@@ -127,48 +127,56 @@ create table if not exists goods_receipt_item(
     foreign key (tenant_id, product_id) references core.product(tenant_id, product_id) on delete cascade
 );
 
-create table if not exists account_payable_status(
-    status_id serial primary key,
-    status_name varchar(50) not null,
-    description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
-);
-insert into account_payable_status(status_name, description) values
-('Pending', 'Payment is pending'),
-('Partial Paid', 'Partial payment has been made'),
-('Paid', 'Payment has been made'),
-('Overdue', 'Payment is overdue')
-on conflict do nothing;
+-- create table if not exists account_payable_status(
+--     status_id serial primary key,
+--     status_name varchar(50) not null,
+--     description text,
+--     created_at timestamp default current_timestamp,
+--     updated_at timestamp default current_timestamp
+-- );
+-- insert into account_payable_status(status_name, description) values
+-- ('Pending', 'Payment is pending'),
+-- ('Partial Paid', 'Partial payment has been made'),
+-- ('Paid', 'Payment has been made'),
+-- ('Overdue', 'Payment is overdue')
+-- on conflict do nothing;
+-- drop table if exists supplies_module.account_payable_status cascade;
 
-create table if not exists account_payable(
-    account_payable_id uuid primary key default gen_random_uuid(),
-    -- supply_order_id uuid not null unique references supplies_module.supply_order(supply_order_id) on delete cascade,
-    has_invoice boolean default true,
-    has_tax boolean default true,
-    subtotal_amount numeric(12,3) default 0,  
-    -- tax_amount numeric(12,3) default 0,       
-    -- amount_due numeric(12,3) generated always as (subtotal_amount + tax_amount) stored,  -- ✅ Total con tax
-    amount_paid numeric(12,3) default 0,
-    -- balance_remaining numeric(12,3) generated always as (subtotal_amount + tax_amount - amount_paid) stored,  -- ✅ Incluye tax
-    -- due_date date not null,
-    -- account_status integer not null default 1 references supplies_module.account_payable_status(status_id),
+-- drop table if exists supplies_module.account_payable cascade;
+
+CREATE TABLE IF NOT EXISTS supplies_account_payable(
+    supplies_account_payable_id uuid primary key default gen_random_uuid(),
+    account_payable_id uuid NOT NULL UNIQUE REFERENCES core.account_payable(account_payable_id) ON DELETE CASCADE,
+    supply_order_id uuid NOT NULL UNIQUE REFERENCES supplies_module.supply_order(supply_order_id) ON DELETE CASCADE,
+    tax_amount numeric(12,3) default 0,
+    account_payable_status INTEGER REFERENCES core.account_payable_status(status_id),
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
 
-create table if not exists supply_order_payment(
-    payment_id uuid primary key default gen_random_uuid(),
-    tenant_id uuid not null references core.tenant(tenant_id) on delete cascade,
-    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
-    payment_date timestamp default current_timestamp,
-    amount_paid numeric(12,3) not null,
-    payment_method_id integer not null references core.payment_method(payment_method_id) on delete cascade,
-    payment_reference varchar(100),  
-    verified boolean default false,  
+-- drop table if exists supplies_module.supply_order_payment cascade;
+
+-- ...existing code...
+
+-- Corrección para recrear la tabla de alertas con la estructura correcta
+DROP TABLE IF EXISTS supplies_module.supply_order_payment_alert CASCADE;
+
+CREATE TABLE supplies_module.supply_order_payment_alert(
+    payment_alert_id uuid primary key default gen_random_uuid(),
+    supplies_account_payable_id uuid not null references supplies_module.supplies_account_payable(supplies_account_payable_id) on delete cascade,
+    payment_alert_type_id integer not null references supplies_module.supply_order_payment_alert_type(payment_alert_type_id),
+    alert_date timestamp default current_timestamp,
+    is_resolved boolean default false,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp
 );
+
+-- Re-aplicar triggers de timestamp si es necesario
+drop trigger if exists update_supply_order_payment_alert_timestamp on supplies_module.supply_order_payment_alert;
+create trigger update_supply_order_payment_alert_timestamp before update on supplies_module.supply_order_payment_alert
+for each row execute function core.update_timestamp();
+
+-- ...existing code...
 
 create table if not exists supply_order_payment_alert_type(
     payment_alert_type_id serial primary key,
@@ -186,7 +194,7 @@ on conflict do nothing;
 
 create table if not exists supply_order_payment_alert(
     payment_alert_id uuid primary key default gen_random_uuid(),
-    account_payable_id uuid not null references supplies_module.account_payable(account_payable_id) on delete cascade,
+    supplies_account_payable_id uuid not null references supplies_module.supplies_account_payable(supplies_account_payable_id) on delete cascade,
     payment_alert_type_id integer not null references supplies_module.supply_order_payment_alert_type(payment_alert_type_id),
     alert_date timestamp default current_timestamp,
     is_resolved boolean default false,

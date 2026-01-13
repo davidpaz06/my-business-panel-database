@@ -12,19 +12,19 @@ set search_path = supplies_module, core;
 do $$
 begin
     delete from supplies_module.supply_order_payment_alert 
-    where account_payable_id in (
-        select ap.account_payable_id
-        from supplies_module.account_payable ap
-        join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    where supplies_account_payable_id in (
+        select sap.supplies_account_payable_id
+        from supplies_module.supplies_account_payable sap
+        join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
         join supplies_module.supplier s on so.supplier_id = s.supplier_id
         where s.supplier_name = 'Alert Test Supplier'
     );
     
     delete from supplies_module.supply_order_payment 
-    where account_payable_id in (
-        select ap.account_payable_id
-        from supplies_module.account_payable ap
-        join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    where supplies_account_payable_id in (
+        select sap.supplies_account_payable_id
+        from supplies_module.supplies_account_payable sap
+        join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
         join supplies_module.supplier s on so.supplier_id = s.supplier_id
         where s.supplier_name = 'Alert Test Supplier'
     );
@@ -189,9 +189,13 @@ begin
         'CREDIT'
     ) into v_order_overdue;
 
-    update supplies_module.account_payable
+    update core.account_payable
     set due_date = current_date - interval '5 days'
-    where supply_order_id = v_order_overdue;
+    where account_payable_id = (
+        select account_payable_id 
+        from supplies_module.supplies_account_payable 
+        where supply_order_id = v_order_overdue
+    );
 
     -- Order 2: Urgent (due in 2 days)
     select supplies_module.create_supply_order(
@@ -205,9 +209,13 @@ begin
         'CREDIT'
     ) into v_order_urgent;
 
-    update supplies_module.account_payable
+    update core.account_payable
     set due_date = current_date + interval '2 days'
-    where supply_order_id = v_order_urgent;
+    where account_payable_id = (
+        select account_payable_id 
+        from supplies_module.supplies_account_payable 
+        where supply_order_id = v_order_urgent
+    );
 
     -- Order 3: Warning (due in 5 days)
     select supplies_module.create_supply_order(
@@ -221,9 +229,13 @@ begin
         'CREDIT'
     ) into v_order_warning;
 
-    update supplies_module.account_payable
+    update core.account_payable
     set due_date = current_date + interval '5 days'
-    where supply_order_id = v_order_warning;
+    where account_payable_id = (
+        select account_payable_id 
+        from supplies_module.supplies_account_payable 
+        where supply_order_id = v_order_warning
+    );
 
     -- Order 4: OK (due in 15 days - no alert needed)
     select supplies_module.create_supply_order(
@@ -332,7 +344,7 @@ end $$;
 do $$
 declare
     v_tenant_id uuid;
-    v_account_payable_id uuid;
+    v_supplies_account_payable_id uuid;
     v_payment_id uuid;
     v_alerts_before integer;
     v_alerts_after integer;
@@ -347,9 +359,10 @@ begin
     where t.tenant_name = 'Alert Test Business';
 
     -- Get overdue account
-    select ap.account_payable_id into v_account_payable_id
-    from supplies_module.account_payable ap
-    join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    select sap.supplies_account_payable_id into v_supplies_account_payable_id
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
     join supplies_module.supplier s on so.supplier_id = s.supplier_id
     join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
     join core.branch b on sb.branch_id = b.branch_id
@@ -359,7 +372,7 @@ begin
 
     select count(*)::integer into v_alerts_before
     from supplies_module.supply_order_payment_alert
-    where account_payable_id = v_account_payable_id
+    where supplies_account_payable_id = v_supplies_account_payable_id
     and is_resolved = false;
 
     raise notice 'Alerts before payment: %', v_alerts_before;
@@ -367,7 +380,7 @@ begin
     -- Make full payment
     insert into supplies_module.supply_order_payment(
         tenant_id,
-        account_payable_id,
+        supplies_account_payable_id,
         amount_paid,
         payment_method_id,
         payment_reference,
@@ -375,20 +388,21 @@ begin
     ) 
     select 
         v_tenant_id,
-        v_account_payable_id,
-        ap.amount_due,
+        v_supplies_account_payable_id,
+        (ap.subtotal + coalesce(sap.tax_amount, 0)),
         1,
         'FULL-PAYMENT-TEST',
         false
-    from supplies_module.account_payable ap
-    where ap.account_payable_id = v_account_payable_id
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    where sap.supplies_account_payable_id = v_supplies_account_payable_id
     returning payment_id into v_payment_id;
 
     call supplies_module.verify_supply_order_payment(v_payment_id);
 
     select count(*)::integer into v_alerts_after
     from supplies_module.supply_order_payment_alert
-    where account_payable_id = v_account_payable_id
+    where supplies_account_payable_id = v_supplies_account_payable_id
     and is_resolved = false;
 
     raise notice '✓ Payment made and verified';

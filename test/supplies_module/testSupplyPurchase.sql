@@ -10,7 +10,6 @@
 --   6. Conciliación automática a tres vías
 --   7. Verificación de resultados
 -- =====================================
-
 set search_path = supplies_module, core;
 
 -- ========================================
@@ -28,9 +27,9 @@ begin
         where s.supplier_name = 'Full Flow Supplier'
     );
 
-    delete from supplies_module.supply_order_payment where account_payable_id in (
-        select ap.account_payable_id from supplies_module.account_payable ap
-        join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    delete from supplies_module.supply_order_payment where supplies_account_payable_id in (
+        select sap.supplies_account_payable_id from supplies_module.supplies_account_payable sap
+        join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
         join supplies_module.supplier s on so.supplier_id = s.supplier_id
         where s.supplier_name = 'Full Flow Supplier'
     );
@@ -67,7 +66,7 @@ begin
         where s.supplier_name = 'Full Flow Supplier'
     );
 
-    delete from supplies_module.account_payable where supply_order_id in (
+    delete from supplies_module.supplies_account_payable where supply_order_id in (
         select so.supply_order_id from supplies_module.supply_order so
         join supplies_module.supplier s on so.supplier_id = s.supplier_id
         where s.supplier_name = 'Full Flow Supplier'
@@ -110,6 +109,7 @@ declare
     v_prod1 uuid;
     v_prod2 uuid;
     v_prod3 uuid;
+    v_warehouse_exists boolean;
 begin
     raise notice '';
     raise notice '========================================';
@@ -128,22 +128,47 @@ begin
     select branch_id into v_branch_id from core.branch where tenant_id = v_tenant_id and branch_name = 'Full Flow Branch' limit 1;
     raise notice '   ✓ Branch creada: %', v_branch_id;
 
-    if to_regclass('inventory_module.warehouse') is null then
+    select exists(
+        select 1 
+        from information_schema.tables 
+        where table_schema = 'inventory_module' 
+        and table_name = 'warehouse'
+    ) into v_warehouse_exists;
+
+    if not v_warehouse_exists then
+        raise notice '   ⚠️ Creando esquema inventory_module y tabla warehouse...';
         execute 'create schema if not exists inventory_module';
         execute '
             create table if not exists inventory_module.warehouse(
                 warehouse_id uuid primary key default gen_random_uuid(),
                 branch_id uuid references core.branch(branch_id) on delete cascade,
-                warehouse_name varchar(255),
+                warehouse_name varchar(255) not null,
                 warehouse_address varchar(255) not null,
-                created_at timestamp default current_timestamp
+                created_at timestamp default current_timestamp,
+                updated_at timestamp default current_timestamp
             )';
     end if;
 
-    insert into inventory_module.warehouse (warehouse_name, branch_id, warehouse_address)
-    values ('Full Flow Warehouse', v_branch_id, 'Bodega Full Flow')
-    on conflict do nothing;
-    select warehouse_id into v_warehouse_id from inventory_module.warehouse where warehouse_name = 'Full Flow Warehouse' limit 1;
+    select warehouse_id into v_warehouse_id 
+    from inventory_module.warehouse 
+    where warehouse_name = 'Full Flow Warehouse' 
+    limit 1;
+    
+    if v_warehouse_id is null then
+        insert into inventory_module.warehouse (warehouse_name, branch_id, warehouse_address)
+        values ('Full Flow Warehouse', v_branch_id, 'Bodega Full Flow')
+        returning warehouse_id into v_warehouse_id;
+    else
+        update inventory_module.warehouse
+        set branch_id = v_branch_id,
+            warehouse_address = 'Bodega Full Flow'
+        where warehouse_id = v_warehouse_id;
+    end if;
+    
+    if v_warehouse_id is null then
+        raise exception 'Failed to create or retrieve warehouse';
+    end if;
+    
     raise notice '   ✓ Warehouse creado: %', v_warehouse_id;
 
     insert into supplies_module.supplier (supplier_name, supplier_contact_info, supplier_address)
@@ -161,7 +186,7 @@ begin
         (v_tenant_id, 'FF-001', 'Producto Flow A', 500.00),
         (v_tenant_id, 'FF-002', 'Producto Flow B', 300.00),
         (v_tenant_id, 'FF-003', 'Producto Flow C', 200.00)
-    on conflict do nothing;
+    on conflict (tenant_id, sku) do nothing;
     
     select product_id into v_prod1 from core.product where tenant_id = v_tenant_id and sku = 'FF-001' limit 1;
     select product_id into v_prod2 from core.product where tenant_id = v_tenant_id and sku = 'FF-002' limit 1;
@@ -172,13 +197,8 @@ begin
     raise notice '========================================';
 end $$;
 
-
 -- ========================================
 -- SECCIÓN 2: Crear orden de compra con factura
--- ========================================
--- Subtotal esperado: 2x500 + 3x300 + 5x200 = 1000 + 900 + 1000 = $2900
--- Tax (13%): $377.00
--- Total con tax: $3277.00
 -- ========================================
 do $$
 declare
@@ -190,7 +210,7 @@ declare
     v_account_payable_id uuid;
     v_subtotal numeric(12,3);
     v_tax_amount numeric(12,3);
-    v_amount_due numeric(12,3);
+    v_total_amount numeric(12,3);
     v_supplier_invoice_id uuid;
     v_invoice_total numeric(12,3);
 begin
@@ -218,10 +238,19 @@ begin
         'CREDIT'
     );
 
-    select account_payable_id, subtotal_amount, tax_amount, amount_due 
-    into v_account_payable_id, v_subtotal, v_tax_amount, v_amount_due
-    from supplies_module.account_payable
-    where supply_order_id = v_supply_order_id;
+    select 
+        ap.account_payable_id,
+        ap.subtotal,
+        sap.tax_amount,
+        (ap.subtotal + sap.tax_amount) as total_amount
+    into 
+        v_account_payable_id,
+        v_subtotal,
+        v_tax_amount,
+        v_total_amount
+    from core.account_payable ap
+    join supplies_module.supplies_account_payable sap on ap.account_payable_id = sap.account_payable_id
+    where sap.supply_order_id = v_supply_order_id;
 
     select supplier_invoice_id, total_amount 
     into v_supplier_invoice_id, v_invoice_total
@@ -235,7 +264,7 @@ begin
     raise notice '   📊 Montos:';
     raise notice '      Subtotal: $%', v_subtotal;
     raise notice '      Tax (13%%): $%', v_tax_amount;
-    raise notice '      Total a pagar: $%', v_amount_due;
+    raise notice '      Total a pagar: $%', v_total_amount;
     raise notice '';
     raise notice '   ✅ Factura generada automáticamente';
     raise notice '   ✅ Account payable creada con impuestos calculados';
@@ -250,10 +279,13 @@ end $$;
 -- ========================================
 do $$
 declare
+    v_supplies_account_payable_id uuid;
     v_account_payable_id uuid;
     v_tenant_id uuid;
     v_payment_id uuid;
-    v_amount_due numeric(12,3);
+    v_subtotal numeric(12,3);
+    v_tax_amount numeric(12,3);
+    v_total_amount numeric(12,3);
     v_pay numeric(12,3);
     v_status int;
     v_status_name varchar;
@@ -265,10 +297,23 @@ begin
     raise notice '💸 SECCIÓN 3: Pago inicial 40%%';
     raise notice '========================================';
 
-    select ap.account_payable_id, ap.amount_due, t.tenant_id
-    into v_account_payable_id, v_amount_due, v_tenant_id
-    from supplies_module.account_payable ap
-    join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    select 
+        sap.supplies_account_payable_id,
+        ap.account_payable_id,
+        ap.subtotal,
+        sap.tax_amount,
+        (ap.subtotal + sap.tax_amount) as total_amount,
+        t.tenant_id
+    into 
+        v_supplies_account_payable_id,
+        v_account_payable_id,
+        v_subtotal,
+        v_tax_amount,
+        v_total_amount,
+        v_tenant_id
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
     join supplies_module.supplier s on so.supplier_id = s.supplier_id
     join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
     join core.branch b on sb.branch_id = b.branch_id
@@ -276,15 +321,15 @@ begin
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
-    v_pay := round(v_amount_due * 0.40, 3);
+    v_pay := round(v_total_amount * 0.40, 3);
 
-    raise notice '   💰 Total a pagar: $%', v_amount_due;
+    raise notice '   💰 Total a pagar: $%', v_total_amount;
     raise notice '   💰 Pago 40%%: $%', v_pay;
 
     insert into supplies_module.supply_order_payment (
-        tenant_id, account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
+        tenant_id, supplies_account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
     ) values (
-        v_tenant_id, v_account_payable_id, current_timestamp, v_pay, 1, 'PAY-40PCT-CASH', false
+        v_tenant_id, v_supplies_account_payable_id, current_timestamp, v_pay, 1, 'PAY-40PCT-CASH', false
     ) returning payment_id into v_payment_id;
 
     raise notice '   ✓ Pago registrado: %', v_payment_id;
@@ -292,11 +337,16 @@ begin
     call supplies_module.verify_supply_order_payment(v_payment_id);
     raise notice '   ✓ Pago verificado';
 
-    select ap.account_status, aps.status_name, ap.amount_paid, ap.balance_remaining 
+    select 
+        sap.account_payable_status,
+        aps.status_name,
+        ap.amount_paid,
+        (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
     into v_status, v_status_name, v_paid, v_balance
-    from supplies_module.account_payable ap
-    join supplies_module.account_payable_status aps on ap.account_status = aps.status_id
-    where ap.account_payable_id = v_account_payable_id;
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join core.account_payable_status aps on sap.account_payable_status = aps.status_id
+    where sap.supplies_account_payable_id = v_supplies_account_payable_id;
     
     raise notice '';
     raise notice '   📊 Estado de cuenta:';
@@ -363,10 +413,13 @@ end $$;
 -- ========================================
 do $$
 declare
+    v_supplies_account_payable_id uuid;
     v_account_payable_id uuid;
     v_tenant_id uuid;
     v_payment_id uuid;
-    v_amount_due numeric(12,3);
+    v_subtotal numeric(12,3);
+    v_tax_amount numeric(12,3);
+    v_total_amount numeric(12,3);
     v_pay numeric(12,3);
     v_status int;
     v_status_name varchar;
@@ -378,10 +431,23 @@ begin
     raise notice '💸 SECCIÓN 5: Pago parcial 30%%';
     raise notice '========================================';
 
-    select ap.account_payable_id, ap.amount_due, t.tenant_id
-    into v_account_payable_id, v_amount_due, v_tenant_id
-    from supplies_module.account_payable ap
-    join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    select 
+        sap.supplies_account_payable_id,
+        ap.account_payable_id,
+        ap.subtotal,
+        sap.tax_amount,
+        (ap.subtotal + sap.tax_amount) as total_amount,
+        t.tenant_id
+    into 
+        v_supplies_account_payable_id,
+        v_account_payable_id,
+        v_subtotal,
+        v_tax_amount,
+        v_total_amount,
+        v_tenant_id
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
     join supplies_module.supplier s on so.supplier_id = s.supplier_id
     join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
     join core.branch b on sb.branch_id = b.branch_id
@@ -389,14 +455,14 @@ begin
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
-    v_pay := round(v_amount_due * 0.30, 3);
+    v_pay := round(v_total_amount * 0.30, 3);
 
     raise notice '   💰 Pago 30%%: $%', v_pay;
 
     insert into supplies_module.supply_order_payment (
-        tenant_id, account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
+        tenant_id, supplies_account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
     ) values (
-        v_tenant_id, v_account_payable_id, current_timestamp, v_pay, 2, 'PAY-30PCT-DEBIT', false
+        v_tenant_id, v_supplies_account_payable_id, current_timestamp, v_pay, 2, 'PAY-30PCT-DEBIT', false
     ) returning payment_id into v_payment_id;
 
     raise notice '   ✓ Pago registrado: %', v_payment_id;
@@ -404,11 +470,16 @@ begin
     call supplies_module.verify_supply_order_payment(v_payment_id);
     raise notice '   ✓ Pago verificado';
 
-    select ap.account_status, aps.status_name, ap.amount_paid, ap.balance_remaining 
+    select 
+        sap.account_payable_status,
+        aps.status_name,
+        ap.amount_paid,
+        (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
     into v_status, v_status_name, v_paid, v_balance
-    from supplies_module.account_payable ap
-    join supplies_module.account_payable_status aps on ap.account_status = aps.status_id
-    where ap.account_payable_id = v_account_payable_id;
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join core.account_payable_status aps on sap.account_payable_status = aps.status_id
+    where sap.supplies_account_payable_id = v_supplies_account_payable_id;
     
     raise notice '';
     raise notice '   📊 Estado de cuenta:';
@@ -426,10 +497,13 @@ end $$;
 -- ========================================
 do $$
 declare
+    v_supplies_account_payable_id uuid;
     v_account_payable_id uuid;
     v_tenant_id uuid;
     v_payment_id uuid;
-    v_amount_due numeric(12,3);
+    v_subtotal numeric(12,3);
+    v_tax_amount numeric(12,3);
+    v_total_amount numeric(12,3);
     v_paid_so_far numeric(12,3);
     v_remaining numeric(12,3);
     v_pay numeric(12,3);
@@ -438,16 +512,32 @@ declare
     v_paid numeric(12,3);
     v_balance numeric(12,3);
     v_invoice_paid boolean;
+    v_is_paid boolean;
 begin
     raise notice '';
     raise notice '========================================';
     raise notice '💸 SECCIÓN 6: Pago final 30%%';
     raise notice '========================================';
 
-    select ap.account_payable_id, ap.amount_due, ap.amount_paid, t.tenant_id
-    into v_account_payable_id, v_amount_due, v_paid_so_far, v_tenant_id
-    from supplies_module.account_payable ap
-    join supplies_module.supply_order so on ap.supply_order_id = so.supply_order_id
+    select 
+        sap.supplies_account_payable_id,
+        ap.account_payable_id,
+        ap.subtotal,
+        sap.tax_amount,
+        (ap.subtotal + sap.tax_amount) as total_amount,
+        ap.amount_paid,
+        t.tenant_id
+    into 
+        v_supplies_account_payable_id,
+        v_account_payable_id,
+        v_subtotal,
+        v_tax_amount,
+        v_total_amount,
+        v_paid_so_far,
+        v_tenant_id
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join supplies_module.supply_order so on sap.supply_order_id = so.supply_order_id
     join supplies_module.supplier s on so.supplier_id = s.supplier_id
     join supplies_module.supplier_branch sb on s.supplier_id = sb.supplier_id
     join core.branch b on sb.branch_id = b.branch_id
@@ -455,16 +545,16 @@ begin
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
-    v_remaining := round(v_amount_due - coalesce(v_paid_so_far, 0), 3);
+    v_remaining := round(v_total_amount - coalesce(v_paid_so_far, 0), 3);
     v_pay := v_remaining;
 
     raise notice '   💰 Total pendiente: $%', v_remaining;
     raise notice '   💰 Pago final: $%', v_pay;
 
     insert into supplies_module.supply_order_payment (
-        tenant_id, account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
+        tenant_id, supplies_account_payable_id, payment_date, amount_paid, payment_method_id, payment_reference, verified
     ) values (
-        v_tenant_id, v_account_payable_id, current_timestamp, v_pay, 3, 'PAY-FINAL-CREDIT', false
+        v_tenant_id, v_supplies_account_payable_id, current_timestamp, v_pay, 3, 'PAY-FINAL-CREDIT', false
     ) returning payment_id into v_payment_id;
 
     raise notice '   ✓ Pago registrado: %', v_payment_id;
@@ -472,26 +562,37 @@ begin
     call supplies_module.verify_supply_order_payment(v_payment_id);
     raise notice '   ✓ Pago verificado';
 
-    select ap.account_status, aps.status_name, ap.amount_paid, ap.balance_remaining 
-    into v_status, v_status_name, v_paid, v_balance
-    from supplies_module.account_payable ap
-    join supplies_module.account_payable_status aps on ap.account_status = aps.status_id
-    where ap.account_payable_id = v_account_payable_id;
+    select 
+        sap.account_payable_status,
+        aps.status_name,
+        ap.amount_paid,
+        ap.is_paid,
+        (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
+    into v_status, v_status_name, v_paid, v_is_paid, v_balance
+    from supplies_module.supplies_account_payable sap
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join core.account_payable_status aps on sap.account_payable_status = aps.status_id
+    where sap.supplies_account_payable_id = v_supplies_account_payable_id;
     
     select si.paid into v_invoice_paid
     from supplies_module.supplier_invoice si
-    join supplies_module.account_payable ap on si.supply_order_id = ap.supply_order_id
-    where ap.account_payable_id = v_account_payable_id;
+    join supplies_module.supplies_account_payable sap on si.supply_order_id = sap.supply_order_id
+    where sap.supplies_account_payable_id = v_supplies_account_payable_id;
 
     raise notice '';
     raise notice '   📊 Estado final de cuenta:';
     raise notice '      Status: % (%)', v_status_name, v_status;
     raise notice '      Pagado total: $%', v_paid;
     raise notice '      Balance: $%', v_balance;
+    raise notice '      Is Paid (core): %', v_is_paid;
     raise notice '      Factura pagada: %', v_invoice_paid;
 
     if v_status <> 3 then
         raise exception '❌ Account payable debería estar en estado "Paid" (3), pero está en: % (%)', v_status_name, v_status;
+    end if;
+
+    if not v_is_paid then
+        raise exception '❌ La cuenta debería estar marcada como is_paid=true en core.account_payable';
     end if;
 
     if not v_invoice_paid then
@@ -721,6 +822,7 @@ declare
     v_supply_order_id uuid;
     v_order_status varchar;
     v_account_status varchar;
+    v_is_paid boolean;
     v_invoice_paid boolean;
     v_goods_receipt_exists boolean;
     v_matching_exists boolean;
@@ -742,17 +844,19 @@ begin
         so.supply_order_id,
         sos.status_name,
         aps.status_name,
+        ap.is_paid,
         si.paid,
-        ap.subtotal_amount,
-        ap.tax_amount,
+        ap.subtotal,
+        sap.tax_amount,
         ap.amount_paid,
-        ap.balance_remaining,
+        (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining,
         si.total_amount,
         gr.total_amount
     into 
         v_supply_order_id,
         v_order_status,
         v_account_status,
+        v_is_paid,
         v_invoice_paid,
         v_subtotal,
         v_tax_amount,
@@ -762,8 +866,9 @@ begin
         v_receipt_total
     from supplies_module.supply_order so
     join supplies_module.supply_order_status sos on so.supply_order_status_id = sos.status_id
-    join supplies_module.account_payable ap on so.supply_order_id = ap.supply_order_id
-    join supplies_module.account_payable_status aps on ap.account_status = aps.status_id
+    join supplies_module.supplies_account_payable sap on so.supply_order_id = sap.supply_order_id
+    join core.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join core.account_payable_status aps on sap.account_payable_status = aps.status_id
     join supplies_module.supplier_invoice si on so.supply_order_id = si.supply_order_id
     join supplies_module.goods_receipt gr on so.supply_order_id = gr.supply_order_id
     join supplies_module.supplier s on so.supplier_id = s.supplier_id
@@ -772,8 +877,8 @@ begin
 
     select count(*) into v_payments_count
     from supplies_module.supply_order_payment sop
-    join supplies_module.account_payable ap on sop.account_payable_id = ap.account_payable_id
-    where ap.supply_order_id = v_supply_order_id
+    join supplies_module.supplies_account_payable sap on sop.supplies_account_payable_id = sap.supplies_account_payable_id
+    where sap.supply_order_id = v_supply_order_id
     and sop.verified = true;
 
     v_goods_receipt_exists := exists(
@@ -808,6 +913,7 @@ begin
     raise notice '   Pagado: $%', v_amount_paid;
     raise notice '   Balance: $%', v_balance;
     raise notice '   Status: %', v_account_status;
+    raise notice '   Is Paid (core): %', v_is_paid;
     raise notice '   Pagos verificados: %', v_payments_count;
     raise notice '';
     raise notice '🧾 FACTURA:';

@@ -308,3 +308,46 @@ create table if not exists product_attribute (
         references core.product(tenant_id, product_id) 
         on delete cascade
 );
+
+create table if not exists account_payable_status(
+    status_id serial primary key,
+    status_name varchar(50) not null,
+    description text,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+insert into account_payable_status(status_name, description) values
+('Pending', 'Payment is pending'),
+('Partial Paid', 'Partial payment has been made'),
+('Paid', 'Payment has been made'),
+('Overdue', 'Payment is overdue')
+on conflict do nothing;
+
+CREATE TABLE IF NOT EXISTS account_payable_type (
+    account_payable_type_id SERIAL PRIMARY KEY,
+    type_name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO account_payable_type (type_name, description) VALUES
+    ('goods_purchase', 'Purchases from suppliers for goods ordered'),
+    ('utility_bill', 'Monthly utility bills such as electricity, water, internet'),
+    ('rent_payment', 'Monthly rent payments for office or retail space'),
+    ('tax_obligation', 'Taxes owed to government authorities'),
+    ('loan_repayment', 'Repayments on business loans or lines of credit');
+
+CREATE TABLE IF NOT EXISTS core.account_payable (
+    account_payable_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_payable_type_id INT REFERENCES core.account_payable_type(account_payable_type_id) ON DELETE SET NULL,
+    account_status integer not null default 1 references core.account_payable_status(status_id),
+    has_invoice BOOLEAN DEFAULT FALSE,
+    has_tax BOOLEAN DEFAULT FALSE,
+    subtotal NUMERIC(12,3) NOT NULL CHECK (subtotal >= 0),
+    amount_paid NUMERIC(12,3) DEFAULT 0 CHECK (amount_paid >= 0),
+    balance_remaining NUMERIC(12,3) GENERATED ALWAYS AS (subtotal - amount_paid) STORED,
+    is_paid BOOLEAN DEFAULT FALSE,
+    due_date DATE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

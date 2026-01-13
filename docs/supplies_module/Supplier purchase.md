@@ -30,7 +30,7 @@ Covers:
 
 - supply_order / supply_order_item
 - supplier_invoice / supplier_invoice_item
-- account_payable
+- supplies_account_payable
 - supply_order_payment
 - goods_receipt / goods_receipt_item
 - three_way_matching
@@ -39,10 +39,10 @@ Covers:
 
 - create_supply_order():
   - inserts supply_order and supply_order_item rows
-  - computes subtotal and tax, inserts account_payable
+  - computes subtotal and tax, inserts supplies_account_payable
   - inserts supplier_invoice and supplier_invoice_item when invoice requested
 - verify_supply_order_payment(payment_id):
-  - marks payment verified and updates account_payable status/amounts
+  - marks payment verified and updates supplies_account_payable status/amounts
   - when fully paid, marks supplier_invoice.paid = true
 - create_goods_receipt() (triggered when supply_order status → Delivered):
   - inserts goods_receipt row (subtotal, tax)
@@ -60,7 +60,7 @@ Covers:
    - Provide supplier, warehouse, expected delivery date, items (product_id, quantity_ordered, unit_price)
    - Example:
      SELECT supplies_module.create_supply_order(... p_items := jsonb_build_array(...))
-   - Result: order + items + account_payable + supplier_invoice + supplier_invoice_item
+   - Result: order + items + supplies_account_payable + supplier_invoice + supplier_invoice_item
 
 2. Validate created records
 
@@ -81,7 +81,7 @@ Covers:
 
    - UPDATE supply_order set supply_order_status_id = 3
    - Trigger create_goods_receipt():
-     - Inserts goods_receipt (stores subtotal & tax from account_payable)
+     - Inserts goods_receipt (stores subtotal & tax from supplies_account_payable)
      - Inserts goods_receipt_item rows (quantity_received from supply_order_item)
      - Calls execute_three_way_matching() only after items exist
 
@@ -99,7 +99,7 @@ Covers:
 
 `````sql
   SELECT _ FROM supplies_module.supplier_invoice WHERE supply_order_id = '<order-uuid>';
-  SELECT _ FROM supplies_module.account_payable WHERE supply_order_id = '<order-uuid>';
+  SELECT _ FROM supplies_module.supplies_account_payable WHERE supply_order_id = '<order-uuid>';
 ```
 
 - Check items detail:
@@ -133,7 +133,7 @@ Covers:
   - inspect per-product SKU detail to detect mis-matched product_id or tenant_id mismatches.
 - amounts_matched false:
   - verify comparison uses subtotals (without tax) and tax amounts separately; check rounding tolerance.
-  - ensure goods_receipt stores correct subtotal and tax (copied from account_payable or computed consistently).
+  - ensure goods_receipt stores correct subtotal and tax (copied from supplies_account_payable or computed consistently).
 
 ## Implementation notes / best practices
 
