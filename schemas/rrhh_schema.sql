@@ -30,6 +30,7 @@ CREATE INDEX idx_contract_base_salary ON rrhh_module.contract (base_salary);
 CREATE TABLE IF NOT EXISTS employee(
 	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	user_id UUID NOT NULL REFERENCES core.users(user_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id),
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,
@@ -42,6 +43,9 @@ CREATE TABLE IF NOT EXISTS employee(
 	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE rrhh_module.employee
+	ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id);
+	
 --Indice para que se pueda garantizar que no haya empleados duplicados
 CREATE UNIQUE INDEX idx_employee_doc_number ON rrhh_module.employee (doc_number);
 
@@ -62,7 +66,7 @@ CREATE TABLE IF NOT EXISTS clocking(
 	branch_id UUID NOT NULL REFERENCES core.branch(branch_id),
 	clock_in TIMESTAMP,
 	clock_out TIMESTAMP,
-	turn_hours INTEGER NOT NULL DEFAULT 0
+	turn_hours NUMERIC NOT NULL DEFAULT 0
 );
 
 -- Indice para buscar los turnos de un empleado dentro de un rango de fechas

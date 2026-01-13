@@ -8,6 +8,7 @@ CREATE OR REPLACE FUNCTION rrhh_module.create_new_employee(
 
 	-- Parametros para la crecaion del empleado
 	p_user_id UUID,
+	p_tenant_id UUID,
 	p_first_name VARCHAR(100),
 	p_last_name VARCHAR(100),
 	p_doc_number VARCHAR(100),
@@ -35,6 +36,7 @@ BEGIN
 	VALUES (
 		v_new_employee_id,
 		p_user_id,
+		p_tenant_id,
 		p_first_name,
 		p_last_name,
 		p_doc_number,
