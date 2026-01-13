@@ -1,1291 +1,862 @@
-# Supply Order Complete Workflow Test
+# Payment Alerts System
 
 ## Purpose
 
-Document the end-to-end workflow for the complete supply order lifecycle, from creation through payment verification, status transitions, goods receipt, and three-way matching validation. This document describes the comprehensive test flow demonstrated in `testSupplyPurchase.sql`.
+Describe the end-to-end process for managing payment alerts in the Supplies module, including automatic alert generation, monitoring, and resolution behaviors. This system helps track upcoming, urgent, and overdue payments to ensure timely payment of supplier invoices.
 
 ## Scope
 
-Covers the complete supply order workflow including:
+Covers:
 
-- Initial data cleanup (idempotent test setup)
-- Master data preparation (tenant, branch, warehouse, supplier, products)
-- Supply order creation with automatic invoice generation
-- Multi-phase payment processing (40%, 30%, 30% split)
-- Automatic account payable status updates
-- Order status transitions (Pending → Shipped → Delivered)
-- Automatic goods receipt generation on delivery
-- Three-way matching reconciliation (order, invoice, receipt)
-- Complete workflow validation and verification
+- Configuring payment alert thresholds per tenant
+- Creating supply orders with varying due dates
+- Automatic alert generation based on due date proximity
+- Viewing and monitoring pending payment alerts
+- Alert statistics and reporting
+- Automatic alert resolution when payments are made
+- Alert type categorization (Warning, Urgent, Overdue)
 
 ## Prerequisites
 
-### Schemas Required
-
-- `supplies_module` - Supply chain management
-- `core` - Core entities (tenant, branch, products, payment methods, tax rates)
-- `inventory_module` - Warehouse management
-
-### Core Data Requirements
-
-- Tax rates configured (13% for Costa Rica in this example)
-- Payment methods configured:
-  - Payment method ID 1: Cash
-  - Payment method ID 2: Debit Card
-  - Payment method ID 3: Credit Card
-
-### Installed Functions and Triggers
-
-- `supplies_module.create_supply_order(...)` - Creates order, items, invoice, and account payable
-- `supplies_module.calculate_supply_order_total(...)` - Calculates order totals
-- `supplies_module.verify_supply_order_payment(...)` - Verifies and processes payments
-- `supplies_module.check_account_payable_completion(...)` - Checks payment completion status
-- `supplies_module.recalc_account_payable_on_payment()` - Trigger to update account payable on payment verification
-- `supplies_module.update_invoice_paid_status()` - Trigger to mark invoice as paid when fully paid
-- `supplies_module.create_goods_receipt()` - Trigger to auto-create goods receipt on delivery status
-- `supplies_module.execute_three_way_matching(...)` - Reconciles order, invoice, and receipt
-- `supplies_module.update_order_status()` - Trigger to track order status changes
+- Schemas: `supplies_module`, `core`, `inventory_module`
+- Core data: tenant, branch, supplier, products, payment methods
+- Installed functions/triggers:
+  - `supplies_module.initialize_payment_alert_config(...)` - Sets up alert configuration per tenant
+  - `supplies_module.generate_payment_alerts()` - Generates alerts based on due dates
+  - `supplies_module.get_pending_payment_alerts(tenant_id)` - Retrieves active alerts
+  - `supplies_module.get_payment_alert_stats(tenant_id)` - Provides alert statistics
+  - `supplies_module.resolve_payment_alert(alert_id)` - Manually resolves an alert
+  - `supplies_module.auto_resolve_payment_alerts()` - Trigger that auto-resolves alerts on payment completion
 
 ## Key Entities
 
-### Supply Order Entities
+### Alert Configuration
 
-- `supply_order` - Main order header
-- `supply_order_item` - Order line items with products and quantities
-- `supply_order_status` - Status catalog (Pending, Shipped, Delivered, Cancelled)
-- `supply_order_tracking` - Audit trail for status changes
+- `supply_order_payment_alert_config` - Tenant-specific alert configuration (warning/urgent thresholds)
 
-### Financial Entities
+### Alert Management
 
-- `supplier_invoice` - Invoice generated from supply order
-- `supplier_invoice_item` - Invoice line items
-- `supplies_account_payable` - Account payable tracking with tax amounts
-- `supply_order_payment` - Individual payment records
+- `supply_order_payment_alert_type` - Alert type catalog (Upcoming, Urgent, Overdue, Reconciliation)
+- `supply_order_payment_alert` - Active payment alert records
+- `supplies_account_payable` - Account payable with due dates
+- `core.account_payable` - Core account payable data
 
-### Receipt and Matching Entities
+### Related Entities
 
-- `goods_receipt` - Receipt of goods with totals
-- `goods_receipt_item` - Received items detail
-- `three_way_matching` - Reconciliation between order, invoice, and receipt
+- `supply_order` - Supply orders linked to payables
+- `supplier_invoice` - Invoices linked to orders
+- `supply_order_payment` - Payment records
 
-## Workflow Steps
+## Expected Automated Behaviors
 
-### Section 0: Initial Cleanup (Idempotent)
+### Alert Configuration
 
-**Purpose**: Ensure test can be run multiple times by cleaning up previous test data.
+- `initialize_payment_alert_config(tenant_id, warning_days, urgent_days, email_enabled, sms_enabled)`:
+  - Creates tenant-specific alert configuration
+  - Sets warning threshold (default: 7 days before due date)
+  - Sets urgent threshold (default: 3 days before due date)
+  - Enables/disables notification channels
+  - Returns `config_id`
 
-**Cleanup Order** (respects foreign key constraints):
+### Alert Generation
 
-1. `three_way_matching` records
-2. `supply_order_payment` records
-3. `goods_receipt_item` records
-4. `goods_receipt` records
-5. `supplier_invoice_item` records
-6. `supplier_invoice` records
-7. `supply_order_tracking` records
-8. `supplies_account_payable` records
-9. `supply_order_item` records
-10. `supply_order` records
-11. `supplier_branch` records
-12. `supplier` records
-13. Warehouse, products, branch, and tenant
+- `generate_payment_alerts()`:
+  - Scans all unpaid accounts payable across all tenants
+  - Calculates days until due date
+  - Generates alerts based on thresholds:
+    - **Overdue**: due_date < current_date (Alert type: Overdue Payment)
+    - **Urgent**: due_date between current_date and (current_date + urgent_days) (Alert type: Urgent Payment)
+    - **Warning**: due_date between (current_date + urgent_days) and (current_date + warning_days) (Alert type: Upcoming Due Date)
+  - Prevents duplicate alerts (idempotent)
+  - Skips already-paid accounts
 
-**Filter**: All deletions filter by supplier name 'Full Flow Supplier'
+### Alert Retrieval
 
-**Expected Result**: Clean database ready for fresh test execution
+- `get_pending_payment_alerts(tenant_id)`:
+  - Returns table with columns:
+    - `payment_alert_id`, `supplies_account_payable_id`, `supply_order_id`
+    - `supplier_name`, `invoice_number`
+    - `alert_type`, `alert_type_description`
+    - `due_date`, `days_until_due`
+    - `balance_remaining`
+    - `alert_date`, `created_at`
+  - Filters by tenant and unresolved alerts only
+  - Orders by due_date ascending (most urgent first)
 
----
+### Alert Statistics
 
-### Section 1: Master Data Preparation
+- `get_payment_alert_stats(tenant_id)`:
+  - Returns aggregated statistics:
+    - `total_alerts` - Total pending alerts
+    - `overdue_count` - Count of overdue payments
+    - `urgent_count` - Count of urgent payments
+    - `warning_count` - Count of warning alerts
+    - `total_amount_at_risk` - Sum of all balances with alerts
 
-**Purpose**: Create all prerequisite data needed for the supply order workflow.
+### Auto-Resolution
 
-**Steps**:
+- `auto_resolve_payment_alerts()` (trigger on supplies_account_payable):
+  - Fires when account_payable_status changes to 3 (Paid)
+  - Automatically marks all related alerts as resolved
+  - Sets `is_resolved = true` and updates `updated_at`
+  - No manual intervention required
 
-1. **Create Tenant**
+## Step-by-Step Flow
 
-   ```sql
-   INSERT INTO core.tenant (tenant_name, region_id, contact_email, is_subscribed)
-   VALUES ('Full Flow Test Shop', 1, 'fullflow@test.local', true)
-   ```
+### 1. Initialize Alert Configuration (One-time per tenant)
 
-   - Name: 'Full Flow Test Shop'
-   - Region ID: 1 (Costa Rica - for 13% tax)
-   - Returns: `tenant_id`
-
-2. **Create Branch**
-
-   ```sql
-   INSERT INTO core.branch (tenant_id, branch_name, branch_address, is_main_branch)
-   VALUES (v_tenant_id, 'Full Flow Branch', 'Calle Full Flow 123', true)
-   ```
-
-   - Main branch flag: `true`
-   - Returns: `branch_id`
-
-3. **Create Warehouse**
-
-   ```sql
-   INSERT INTO inventory_module.warehouse (warehouse_name, branch_id, warehouse_address)
-   VALUES ('Full Flow Warehouse', v_branch_id, 'Bodega Full Flow')
-   ```
-
-   - Checks if `inventory_module` schema exists, creates if needed
-   - Checks if `warehouse` table exists, creates if needed
-   - Returns: `warehouse_id`
-
-4. **Create Supplier**
-
-   ```sql
-   INSERT INTO supplies_module.supplier (supplier_name, supplier_contact_info, supplier_address)
-   VALUES ('Full Flow Supplier', 'contact@fullflow.local', 'Proveedor Full Flow')
-   ```
-
-   - Unique constraint on supplier_name
-   - Returns: `supplier_id`
-
-5. **Link Supplier to Branch**
-
-   ```sql
-   INSERT INTO supplies_module.supplier_branch (supplier_id, branch_id)
-   VALUES (v_supplier_id, v_branch_id)
-   ```
-
-6. **Create Products**
-
-   ```sql
-   INSERT INTO core.product (tenant_id, sku, product_name, unit_price)
-   VALUES
-     (v_tenant_id, 'FF-001', 'Producto Flow A', 500.00),
-     (v_tenant_id, 'FF-002', 'Producto Flow B', 300.00),
-     (v_tenant_id, 'FF-003', 'Producto Flow C', 200.00)
-   ```
-
-   - Creates 3 test products with different unit prices
-   - Returns: `product_id` for each
-
-**Expected Result**: All master data created successfully with valid UUIDs returned.
-
----
-
-### Section 2: Create Supply Order with Invoice
-
-**Purpose**: Create a complete supply order that automatically generates invoice, invoice items, and account payable.
-
-**Input Data**:
-
-- Supplier: 'Full Flow Supplier'
-- Warehouse: 'Full Flow Warehouse'
-- Expected delivery: Current date + 10 days
-- Items:
-  - FF-001: 2 units × $500.00 = $1,000.00
-  - FF-002: 3 units × $300.00 = $900.00
-  - FF-003: 5 units × $200.00 = $1,000.00
-- **Subtotal**: $2,900.00
-- Payment condition: 'CREDIT'
-- Invoice requested: `true`
-
-**Process**:
+**Action**: Set up alert thresholds for a tenant
 
 ```sql
-v_supply_order_id := supplies_module.create_supply_order(
-    v_supplier_id,
-    v_warehouse_id,
-    (current_date + interval '10 days')::date,
-    v_items_jsonb,
-    true,  -- create_invoice
-    'CREDIT'
+SELECT supplies_module.initialize_payment_alert_config(
+    p_tenant_id := '<tenant-uuid>',
+    p_warning_days_before_due := 7,      -- Alert 7 days before due
+    p_urgent_days_before_due := 3,        -- Alert 3 days before due
+    p_email_notifications_enabled := true,
+    p_sms_notifications_enabled := false
 );
 ```
 
-**Automatic Behaviors**:
+**Result**:
 
-1. **Supply Order Created**
-
-   - Status: Pending (status_id = 1)
-   - Returns: `supply_order_id`
-
-2. **Supply Order Items Created**
-
-   - 3 items inserted with quantities and prices
-   - Linked to tenant and products via composite FK
-
-3. **Supplier Invoice Created**
-
-   - Invoice number generated
-   - Subtotal: $2,900.00
-   - Tax (13%): $377.00
-   - Total: $3,277.00
-   - Paid flag: `false`
-   - Payment condition: 'CREDIT'
-
-4. **Supplier Invoice Items Created**
-
-   - 3 items mirroring order quantities
-
-5. **Account Payable Created**
-   - Core account payable entry created
-   - Supplies account payable extension created with:
-     - Subtotal: $2,900.00
-     - Tax amount: $377.00
-     - Total: $3,277.00
-     - Status: 1 (Pending)
-     - Amount paid: $0.00
-     - Due date calculated based on payment terms
-
-**Validation Queries**:
-
-```sql
--- Verify order
-SELECT * FROM supplies_module.supply_order WHERE supply_order_id = '<uuid>';
-
--- Verify invoice
-SELECT * FROM supplies_module.supplier_invoice WHERE supply_order_id = '<uuid>';
-
--- Verify account payable
-SELECT ap.*, sap.*
-FROM supplies_module.supplies_account_payable sap
-JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
-WHERE sap.supply_order_id = '<uuid>';
-
--- Verify items match
-SELECT COUNT(*) FROM supplies_module.supply_order_item WHERE supply_order_id = '<uuid>';
-SELECT COUNT(*) FROM supplies_module.supplier_invoice_item WHERE supplier_invoice_id = '<uuid>';
-```
-
-**Expected Result**:
-
-- Supply order: ✅ Created
-- Invoice: ✅ Generated automatically
-- Account payable: ✅ Created with calculated tax
-- All items: ✅ Recorded in order and invoice
-
----
-
-### Section 3: Initial Payment (40%)
-
-**Purpose**: Record first partial payment covering 40% of total amount.
-
-**Calculation**:
-
-- Total due: $3,277.00
-- Payment amount: $3,277.00 × 0.40 = $1,310.80
-
-**Process**:
-
-1. **Insert Payment Record**
-
-   ```sql
-   INSERT INTO supplies_module.supply_order_payment (
-       tenant_id,
-       supplies_account_payable_id,
-       payment_date,
-       amount_paid,
-       payment_method_id,  -- 1 = Cash
-       payment_reference,
-       verified
-   ) VALUES (
-       v_tenant_id,
-       v_supplies_account_payable_id,
-       current_timestamp,
-       1310.800,  -- 40%
-       1,
-       'PAY-40PCT-CASH',
-       false  -- Not verified yet
-   )
-   RETURNING payment_id
-   ```
-
-2. **Verify Payment**
-
-   ```sql
-   CALL supplies_module.verify_supply_order_payment(v_payment_id);
-   ```
-
-**Automatic Behaviors on Verification**:
-
-1. **Payment marked as verified**
-
-   ```sql
-   UPDATE supply_order_payment SET verified = true
-   ```
-
-2. **Trigger: `recalc_account_payable_on_payment()`**
-
-   - Calls `check_account_payable_completion()`
-   - Updates account payable:
-
-     ```sql
-     UPDATE supplies_module.supplies_account_payable
-     SET account_payable_status = 2,  -- Partial Paid
-         updated_at = current_timestamp
-
-     ```
-
-   - Updates core account payable:
-
-     ```sql
-     UPDATE core.account_payable
-     SET amount_paid = 1310.800,
-         is_paid = false
-     ```
+- Configuration record created in `supply_order_payment_alert_config`
+- Returns `payment_alert_config_id`
+- Configuration is tenant-specific and unique per tenant
 
 **Validation**:
 
 ```sql
-SELECT
-    sap.account_payable_status,
-    aps.status_name,
-    ap.amount_paid,
-    (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
-FROM supplies_module.supplies_account_payable sap
-JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
-JOIN core.account_payable_status aps ON sap.account_payable_status = aps.status_id
+SELECT * FROM supplies_module.supply_order_payment_alert_config
+WHERE tenant_id = '<tenant-uuid>';
 ```
-
-**Expected Result**:
-
-- Payment: ✅ Verified
-- Account payable status: 2 (Partial Paid)
-- Amount paid: $1,310.80
-- Balance remaining: $1,966.20
-- Invoice paid flag: `false` (not fully paid yet)
 
 ---
 
-### Section 4: Change Status to Shipped
+### 2. Create Supply Orders with Due Dates
 
-**Purpose**: Update order status to reflect shipment, demonstrating status transition tracking.
+**Action**: Create orders that will trigger alerts at different times
 
-**Process**:
-
-```sql
-UPDATE supplies_module.supply_order
-SET supply_order_status_id = 2  -- Shipped
-WHERE supply_order_id = v_supply_order_id
-```
-
-**Automatic Behaviors**:
-
-1. **Trigger: `update_order_status()`**
-
-   - Inserts tracking record:
-
-   ```sql
-   INSERT INTO supplies_module.supply_order_tracking (
-       supply_order_id,
-       previous_status_id,  -- 1 (Pending)
-       new_status_id,       -- 2 (Shipped)
-       notes,
-       changed_at
-   )
-   ```
-
-**Validation**:
+**Example Scenarios**:
 
 ```sql
-SELECT
-    so.supply_order_status_id,
-    sos.status_name,
-    sot.previous_status_id,
-    sot.new_status_id,
-    sot.changed_at
-FROM supplies_module.supply_order so
-JOIN supplies_module.supply_order_status sos ON so.supply_order_status_id = sos.status_id
-LEFT JOIN supplies_module.supply_order_tracking sot ON so.supply_order_id = sot.supply_order_id
-WHERE so.supply_order_id = v_supply_order_id
+-- Scenario 1: Overdue payment (due 5 days ago)
+SELECT supplies_module.create_supply_order(
+    p_supplier_id := '<supplier-uuid>',
+    p_warehouse_id := '<warehouse-uuid>',
+    p_expected_delivery_date := current_date,
+    p_items := jsonb_build_array(
+        jsonb_build_object('product_id', '<product-uuid>', 'quantity_ordered', 10, 'unit_price', 100.00)
+    ),
+    p_has_invoice := true,
+    p_payment_condition := 'CREDIT'
+);
+
+-- Manually adjust due date to simulate overdue
+UPDATE core.account_payable
+SET due_date = current_date - interval '5 days'
+WHERE account_payable_id = (
+    SELECT account_payable_id
+    FROM supplies_module.supplies_account_payable
+    WHERE supply_order_id = '<order-uuid>'
+);
 ```
 
-**Expected Result**:
+**Alert Trigger Conditions**:
 
-- Order status: 2 (Shipped)
-- Tracking record: ✅ Created
-- Previous status: 1 (Pending)
-- New status: 2 (Shipped)
+| Scenario | Due Date   | Days Until Due | Alert Type        | Generated? |
+| -------- | ---------- | -------------- | ----------------- | ---------- |
+| Overdue  | 5 days ago | -5             | Overdue Payment   | ✅ Yes     |
+| Urgent   | In 2 days  | 2              | Urgent Payment    | ✅ Yes     |
+| Warning  | In 5 days  | 5              | Upcoming Due Date | ✅ Yes     |
+| OK       | In 15 days | 15             | N/A               | ❌ No      |
+
+**Key Points**:
+
+- Orders with `due_date < current_date` trigger overdue alerts
+- Orders with `due_date` within urgent threshold trigger urgent alerts
+- Orders with `due_date` within warning threshold trigger warning alerts
+- Orders beyond warning threshold do not generate alerts (yet)
 
 ---
 
-### Section 5: Second Payment (30%)
+### 3. Generate Payment Alerts
 
-**Purpose**: Record second partial payment covering 30% of total amount.
-
-**Calculation**:
-
-- Total due: $3,277.00
-- Payment amount: $3,277.00 × 0.30 = $983.10
-
-**Process**:
-
-1. **Insert Payment Record**
-
-   ```sql
-   INSERT INTO supplies_module.supply_order_payment (
-       tenant_id,
-       supplies_account_payable_id,
-       payment_date,
-       amount_paid,
-       payment_method_id,  -- 2 = Debit Card
-       payment_reference,
-       verified
-   ) VALUES (
-       v_tenant_id,
-       v_supplies_account_payable_id,
-       current_timestamp,
-       983.100,  -- 30%
-       2,
-       'PAY-30PCT-DEBIT',
-       false
-   )
-   RETURNING payment_id
-   ```
-
-2. **Verify Payment**
-
-   ```sql
-   CALL supplies_module.verify_supply_order_payment(v_payment_id);
-   ```
-
-**Automatic Behaviors**:
-
-- Payment verified
-- Account payable updated:
-  - Status remains: 2 (Partial Paid)
-  - Amount paid: $1,310.80 + $983.10 = $2,293.90
-  - Balance: $3,277.00 - $2,293.90 = $983.10
-
-**Expected Result**:
-
-- Cumulative paid: $2,293.90
-- Remaining: $983.10
-- Status: Still 2 (Partial Paid)
-- Invoice paid: Still `false`
-
----
-
-### Section 6: Final Payment (30% - Remaining Balance)
-
-**Purpose**: Complete payment of remaining balance, triggering full payment status updates.
-
-**Calculation**:
-
-- Remaining balance: $983.10
-- Final payment: $983.10 (exactly the remaining amount)
-
-**Process**:
-
-1. **Calculate Exact Remaining Balance**
-
-   ```sql
-   v_remaining := round(v_total_amount - coalesce(v_paid_so_far, 0), 3);
-   v_pay := v_remaining;  -- Pay exactly what's left
-   ```
-
-2. **Insert Payment Record**
-
-   ```sql
-   INSERT INTO supplies_module.supply_order_payment (
-       tenant_id,
-       supplies_account_payable_id,
-       payment_date,
-       amount_paid,
-       payment_method_id,  -- 3 = Credit Card
-       payment_reference,
-       verified
-   ) VALUES (
-       v_tenant_id,
-       v_supplies_account_payable_id,
-       current_timestamp,
-       983.100,  -- Final 30%
-       3,
-       'PAY-FINAL-CREDIT',
-       false
-   )
-   RETURNING payment_id
-   ```
-
-3. **Verify Payment**
-
-   ```sql
-   CALL supplies_module.verify_supply_order_payment(v_payment_id);
-   ```
-
-**Automatic Behaviors - Critical Payment Completion Flow**:
-
-1. **Payment marked verified**
-
-2. **Trigger: `recalc_account_payable_on_payment()`**
-
-   - Calculates total paid: $3,277.00
-   - Detects full payment condition
-   - Calls `check_account_payable_completion()`
-
-3. **Function: `check_account_payable_completion()`**
-
-   - Validates: `amount_paid >= (subtotal + tax)`
-   - Updates supplies account payable:
-
-   ```sql
-   UPDATE supplies_module.supplies_account_payable
-   SET account_payable_status = 3,  -- Paid
-       updated_at = current_timestamp
-   WHERE account_payable_id = _account_payable_id
-   ```
-
-   - Updates core account payable:
-
-   ```sql
-   UPDATE core.account_payable
-   SET amount_paid = 3277.000,
-       is_paid = true
-   WHERE account_payable_id = _account_payable_id
-   ```
-
-4. **Trigger: `update_invoice_paid_status()`**
-
-   - Fired when account_payable_status changes to 3
-   - Updates supplier invoice:
-
-   ```sql
-   UPDATE supplies_module.supplier_invoice
-   SET paid = true
-   WHERE supply_order_id = (
-       SELECT supply_order_id
-       FROM supplies_account_payable
-       WHERE account_payable_id = new.account_payable_id
-   )
-   ```
-
-5. **Trigger: `auto_resolve_payment_alerts()`** (if alerts exist)
-   - Resolves any pending payment alerts
-   - Marks alerts as resolved for this account payable
-
-**Validation - Critical Checks**:
+**Action**: Run alert generation to scan all accounts payable
 
 ```sql
--- Check account payable status
-SELECT
-    sap.account_payable_status,  -- Should be 3 (Paid)
-    aps.status_name,             -- Should be 'Paid'
-    ap.amount_paid,              -- Should be 3277.000
-    ap.is_paid,                  -- Should be true
-    (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance  -- Should be 0
-FROM supplies_module.supplies_account_payable sap
-JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
-JOIN core.account_payable_status aps ON sap.account_payable_status = aps.status_id
-
--- Check invoice paid status
-SELECT paid  -- Should be true
-FROM supplies_module.supplier_invoice
-WHERE supply_order_id = v_supply_order_id
+PERFORM supplies_module.generate_payment_alerts();
 ```
-
-**Expected Result**:
-
-- Account payable status: 3 (Paid) ✅
-- Amount paid: $3,277.00 ✅
-- Balance: $0.00 ✅
-- `is_paid` flag (core): `true` ✅
-- Invoice `paid` flag: `true` ✅
-- Payment count: 3 verified payments ✅
-
-**Error Conditions**:
-
-- If status ≠ 3: Raise exception "Account payable should be Paid"
-- If `is_paid` ≠ true: Raise exception "Should be marked as paid in core.account_payable"
-- If invoice `paid` ≠ true: Raise exception "Invoice should be marked as paid"
-
----
-
-### Section 7: Change Status to Delivered - Auto Goods Receipt
-
-**Purpose**: Update order status to Delivered, triggering automatic goods receipt creation.
-
-**Process**:
-
-```sql
-UPDATE supplies_module.supply_order
-SET supply_order_status_id = 3  -- Delivered
-WHERE supply_order_id = v_supply_order_id
-```
-
-**Automatic Behaviors - Goods Receipt Creation Flow**:
-
-1. **Trigger: `create_goods_receipt()`**
-
-   - Fires when supply_order_status_id changes to 3 (Delivered)
-   - Condition: `new.supply_order_status_id = 3 AND old.supply_order_status_id IS DISTINCT FROM 3`
-
-2. **Goods Receipt Creation**:
-
-   ```sql
-   INSERT INTO supplies_module.goods_receipt (
-       supply_order_id,
-       receipt_date,
-       subtotal_amount,  -- Copied from supplies_account_payable
-       tax_amount,       -- Copied from supplies_account_payable
-       total_amount,     -- Calculated: subtotal + tax
-       notes
-   )
-   RETURNING goods_receipt_id
-   ```
-
-   - Retrieves subtotal and tax from `supplies_account_payable`
-   - Calculates total amount
-
-3. **Goods Receipt Items Creation**:
-
-   ```sql
-   INSERT INTO supplies_module.goods_receipt_item (
-       goods_receipt_id,
-       tenant_id,
-       product_id,
-       quantity_received,  -- Copied from supply_order_item.quantity_ordered
-       unit_price,         -- Copied from supply_order_item.unit_price
-       notes
-   )
-   SELECT
-       v_goods_receipt_id,
-       tenant_id,
-       product_id,
-       quantity_ordered as quantity_received,
-       unit_price,
-       'Auto-generated from supply order'
-   FROM supplies_module.supply_order_item
-   WHERE supply_order_id = new.supply_order_id
-   ```
-
-   - Creates one goods_receipt_item per supply_order_item
-   - Copies quantities directly (assuming full delivery)
-
-4. **Three-Way Matching Invocation**:
-
-   ```sql
-   PERFORM supplies_module.execute_three_way_matching(
-       new.supply_order_id,
-       v_goods_receipt_id
-   );
-   ```
-
-   - Called **after** all goods_receipt_items are inserted
-   - Ensures items exist for quantity comparison
-
-**Validation**:
-
-```sql
--- Verify goods receipt created
-SELECT * FROM supplies_module.goods_receipt
-WHERE supply_order_id = v_supply_order_id;
-
--- Verify items count matches
-SELECT COUNT(*) FROM supplies_module.goods_receipt_item
-WHERE goods_receipt_id = v_goods_receipt_id;
-
-SELECT COUNT(*) FROM supplies_module.supply_order_item
-WHERE supply_order_id = v_supply_order_id;
-
--- Verify amounts
-SELECT
-    gr.subtotal_amount,
-    gr.tax_amount,
-    gr.total_amount,
-    (SELECT subtotal FROM core.account_payable ap
-     JOIN supplies_module.supplies_account_payable sap
-         ON ap.account_payable_id = sap.account_payable_id
-     WHERE sap.supply_order_id = gr.supply_order_id) as ap_subtotal,
-    (SELECT tax_amount FROM supplies_module.supplies_account_payable
-     WHERE supply_order_id = gr.supply_order_id) as ap_tax
-FROM supplies_module.goods_receipt gr
-WHERE supply_order_id = v_supply_order_id
-```
-
-**Expected Result**:
-
-- Order status: 3 (Delivered) ✅
-- Goods receipt: ✅ Created automatically
-- Goods receipt items: 3 items (matching order items) ✅
-- Subtotal matches account payable: $2,900.00 ✅
-- Tax matches account payable: $377.00 ✅
-- Total: $3,277.00 ✅
-- Three-way matching: ✅ Executed (see Section 8)
-
----
-
-### Section 8: Three-Way Matching Verification
-
-**Purpose**: Verify that automatic three-way matching reconciliation was successful.
-
-**What is Three-Way Matching?**
-
-A control process that compares three documents to ensure consistency:
-
-1. **Supply Order** - What was ordered
-2. **Supplier Invoice** - What the supplier billed
-3. **Goods Receipt** - What was actually received
-
-**Comparison Criteria**:
-
-1. **Amount Matching**:
-
-   - Order subtotal (sum of item quantities × unit prices)
-   - Invoice subtotal
-   - Receipt subtotal
-   - Tolerance: ±0.01 (accounting for rounding)
-
-2. **Quantity Matching**:
-   - Order total quantity (sum of quantities_ordered)
-   - Invoice total quantity (sum of quantities_billed)
-   - Receipt total quantity (sum of quantities_received)
-   - Must match exactly
 
 **Process Flow**:
 
-The matching is executed automatically at the end of `create_goods_receipt()` trigger:
+1. **Retrieve Active Configurations**:
+
+   ```sql
+   SELECT * FROM supply_order_payment_alert_config WHERE tenant_id IS NOT NULL
+   ```
+
+2. **For Each Tenant Configuration**:
+
+   - Calculate threshold dates:
+     - `warning_date = current_date + warning_days`
+     - `urgent_date = current_date + urgent_days`
+
+3. **Scan Unpaid Accounts**:
+
+   ```sql
+   SELECT sap.supplies_account_payable_id, ap.due_date
+   FROM supplies_account_payable sap
+   JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   WHERE sap.account_payable_status != 3  -- Not paid
+   AND ap.due_date IS NOT NULL
+   ```
+
+4. **Determine Alert Type**:
+
+   - If `due_date < current_date`: **Overdue Payment** (type_id = 3)
+   - Else if `due_date <= urgent_date`: **Urgent Payment** (type_id = 2)
+   - Else if `due_date <= warning_date`: **Upcoming Due Date** (type_id = 1)
+   - Else: No alert
+
+5. **Insert Alert** (if not exists):
+
+   ```sql
+   INSERT INTO supply_order_payment_alert (
+       supplies_account_payable_id,
+       payment_alert_type_id,
+       alert_date,
+       is_resolved
+   ) VALUES (
+       sap_id,
+       alert_type_id,
+       current_timestamp,
+       false
+   )
+   ON CONFLICT DO NOTHING;  -- Prevents duplicates
+   ```
+
+**Expected Results**:
+
+- Overdue order: Alert created with type "Overdue Payment"
+- Urgent order: Alert created with type "Urgent Payment"
+- Warning order: Alert created with type "Upcoming Due Date"
+- OK order: No alert created
+
+**Idempotency**:
+
+- Running `generate_payment_alerts()` multiple times does not create duplicate alerts
+- Existing unresolved alerts are not recreated
+- Only new qualifying accounts trigger new alerts
+
+---
+
+### 4. View Pending Payment Alerts
+
+**Action**: Retrieve all active alerts for a tenant
 
 ```sql
-PERFORM supplies_module.execute_three_way_matching(
-    p_supply_order_id := new.supply_order_id,
-    p_goods_receipt_id := v_goods_receipt_id
+SELECT * FROM supplies_module.get_pending_payment_alerts('<tenant-uuid>');
+```
+
+**Returned Columns**:
+
+| Column                        | Description                          | Example                      |
+| ----------------------------- | ------------------------------------ | ---------------------------- |
+| `payment_alert_id`            | Alert UUID                           | uuid                         |
+| `supplies_account_payable_id` | Related account payable              | uuid                         |
+| `supply_order_id`             | Related supply order                 | uuid                         |
+| `supplier_name`               | Supplier name                        | 'Alert Test Supplier'        |
+| `invoice_number`              | Invoice number                       | 'INV-2026-001'               |
+| `alert_type`                  | Alert type name                      | 'Overdue Payment'            |
+| `alert_type_description`      | Type description                     | 'Alert for overdue payments' |
+| `due_date`                    | Payment due date                     | 2026-01-08                   |
+| `days_until_due`              | Days until due (negative if overdue) | -5                           |
+| `balance_remaining`           | Amount still owed                    | 1130.00                      |
+| `alert_date`                  | When alert was created               | 2026-01-13 10:30:00          |
+| `created_at`                  | Alert creation timestamp             | 2026-01-13 10:30:00          |
+
+**Sorting**: Results are ordered by:
+
+1. `due_date ASC` (most urgent first)
+2. `alert_date DESC` (newest first within same due date)
+
+**Filtering**:
+
+- Only returns alerts where `is_resolved = false`
+- Only returns alerts for the specified tenant
+- Only returns alerts for unpaid accounts
+
+**Example Output**:
+
+```sql
+Alert #1:
+  Type: Overdue Payment (Alert for overdue payments)
+  Supplier: Alert Test Supplier
+  Invoice: INV-2026-001
+  Due date: 2026-01-08
+  Days until due: -5
+  Balance: $1,130.00
+  Alert created: 2026-01-13 10:30:00
+
+Alert #2:
+  Type: Urgent Payment (Alert for urgent payments)
+  Supplier: Alert Test Supplier
+  Invoice: INV-2026-002
+  Due date: 2026-01-15
+  Days until due: 2
+  Balance: $1,060.00
+  Alert created: 2026-01-13 10:30:00
+```
+
+---
+
+### 5. View Alert Statistics
+
+**Action**: Get aggregated statistics for all alerts
+
+```sql
+SELECT * FROM supplies_module.get_payment_alert_stats('<tenant-uuid>');
+```
+
+**Returned Columns**:
+
+| Column                 | Description                     | Example  |
+| ---------------------- | ------------------------------- | -------- |
+| `total_alerts`         | Total pending alerts            | 3        |
+| `overdue_count`        | Count of overdue payments       | 1        |
+| `urgent_count`         | Count of urgent payments        | 1        |
+| `warning_count`        | Count of warning alerts         | 1        |
+| `total_amount_at_risk` | Sum of all outstanding balances | 3,490.00 |
+
+**Calculation Logic**:
+
+```sql
+-- Total alerts
+COUNT(*) WHERE is_resolved = false
+
+-- Overdue count
+COUNT(*) WHERE payment_alert_type_id = 3 AND is_resolved = false
+
+-- Urgent count
+COUNT(*) WHERE payment_alert_type_id = 2 AND is_resolved = false
+
+-- Warning count
+COUNT(*) WHERE payment_alert_type_id = 1 AND is_resolved = false
+
+-- Total amount at risk
+SUM(ap.subtotal + sap.tax_amount - ap.amount_paid)
+WHERE is_resolved = false
+```
+
+**Use Cases**:
+
+- Dashboard widgets showing alert counts
+- Financial risk assessment
+- KPI tracking for accounts payable management
+- Identifying payment bottlenecks
+
+---
+
+### 6. Automatic Alert Resolution on Payment
+
+**Action**: Make a payment and observe automatic alert resolution
+
+**Process**:
+
+1. **Check Alerts Before Payment**:
+
+   ```sql
+   SELECT COUNT(*)
+   FROM supply_order_payment_alert
+   WHERE supplies_account_payable_id = '<sap-uuid>'
+   AND is_resolved = false;
+   -- Returns: 1 (alert exists)
+   ```
+
+2. **Make Payment**:
+
+   ```sql
+   INSERT INTO supply_order_payment (
+       tenant_id,
+       supplies_account_payable_id,
+       amount_paid,
+       payment_method_id,
+       payment_reference,
+       verified
+   ) VALUES (
+       '<tenant-uuid>',
+       '<sap-uuid>',
+       1130.00,  -- Full amount
+       1,  -- Cash
+       'FULL-PAYMENT-TEST',
+       false
+   )
+   RETURNING payment_id;
+   ```
+
+3. **Verify Payment**:
+
+   ```sql
+   CALL supplies_module.verify_supply_order_payment('<payment-uuid>');
+   ```
+
+4. **Automatic Trigger Execution**:
+
+   **a) Payment Verification Updates Account Payable**:
+
+   - `recalc_account_payable_on_payment()` trigger fires
+   - Calls `check_account_payable_completion()`
+   - Updates `supplies_account_payable.account_payable_status` to 3 (Paid)
+   - Updates `core.account_payable.is_paid` to true
+
+   **b) Auto-Resolve Trigger Fires**:
+
+   - `auto_resolve_payment_alerts()` trigger fires on account_payable_status change
+   - Detects status changed to 3 (Paid)
+   - Executes:
+
+     ```sql
+     UPDATE supply_order_payment_alert
+     SET is_resolved = true,
+         updated_at = current_timestamp
+     WHERE supplies_account_payable_id = '<sap-uuid>'
+     AND is_resolved = false;
+     ```
+
+5. **Check Alerts After Payment**:
+
+   ```sql
+   SELECT COUNT(*)
+   FROM supply_order_payment_alert
+   WHERE supplies_account_payable_id = '<sap-uuid>'
+   AND is_resolved = false;
+   -- Returns: 0 (alert auto-resolved)
+   ```
+
+**Expected Behavior**:
+
+- Alert count decreases from 1 to 0
+- Alert is marked as `is_resolved = true`
+- No manual intervention required
+- Works for partial payments too (status changes to 2, no resolution)
+- Only resolves when fully paid (status = 3)
+
+**Validation**:
+
+```sql
+-- Check resolved alerts
+SELECT *
+FROM supply_order_payment_alert
+WHERE supplies_account_payable_id = '<sap-uuid>';
+-- Shows: is_resolved = true, updated_at = payment timestamp
+```
+
+---
+
+## Validation Queries
+
+### Check Alert Configuration
+
+```sql
+-- View tenant alert configuration
+SELECT * FROM supplies_module.supply_order_payment_alert_config
+WHERE tenant_id = '<tenant-uuid>';
+
+-- Expected columns: warning_days_before_due, urgent_days_before_due, email_notifications_enabled, sms_notifications_enabled
+```
+
+### Check Alert Types
+
+```sql
+-- View available alert types
+SELECT * FROM supplies_module.supply_order_payment_alert_type
+ORDER BY payment_alert_type_id;
+
+-- Expected types: Upcoming Due Date, Urgent Payment, Overdue Payment, Reconciliation Mismatch
+```
+
+### Check Active Alerts
+
+```sql
+-- All pending alerts for a tenant
+SELECT
+    spa.payment_alert_id,
+    s.supplier_name,
+    si.invoice_number,
+    spat.payment_alert_type_name,
+    ap.due_date,
+    (ap.due_date - current_date) as days_until_due,
+    (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance,
+    spa.is_resolved,
+    spa.alert_date
+FROM supplies_module.supply_order_payment_alert spa
+JOIN supplies_module.supplies_account_payable sap ON spa.supplies_account_payable_id = sap.supplies_account_payable_id
+JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+JOIN supplies_module.supply_order so ON sap.supply_order_id = so.supply_order_id
+JOIN supplies_module.supplier s ON so.supplier_id = s.supplier_id
+JOIN supplies_module.supplier_invoice si ON so.supply_order_id = si.supply_order_id
+JOIN supplies_module.supply_order_payment_alert_type spat ON spa.payment_alert_type_id = spat.payment_alert_type_id
+JOIN supplies_module.supplier_branch sb ON s.supplier_id = sb.supplier_id
+JOIN core.branch b ON sb.branch_id = b.branch_id
+WHERE b.tenant_id = '<tenant-uuid>'
+AND spa.is_resolved = false
+ORDER BY ap.due_date ASC;
+```
+
+### Check Alert History
+
+```sql
+-- All alerts (including resolved) for an account payable
+SELECT
+    payment_alert_id,
+    payment_alert_type_id,
+    alert_date,
+    is_resolved,
+    created_at,
+    updated_at
+FROM supplies_module.supply_order_payment_alert
+WHERE supplies_account_payable_id = '<sap-uuid>'
+ORDER BY created_at DESC;
+```
+
+### Check Accounts Needing Alerts
+
+```sql
+-- Accounts that should have alerts but don't
+SELECT
+    sap.supplies_account_payable_id,
+    ap.due_date,
+    (ap.due_date - current_date) as days_until_due,
+    sap.account_payable_status,
+    (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance
+FROM supplies_module.supplies_account_payable sap
+JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+WHERE sap.account_payable_status != 3  -- Not paid
+AND ap.due_date IS NOT NULL
+AND ap.due_date < (current_date + interval '7 days')  -- Within warning period
+AND NOT EXISTS (
+    SELECT 1 FROM supply_order_payment_alert spa
+    WHERE spa.supplies_account_payable_id = sap.supplies_account_payable_id
+    AND spa.is_resolved = false
 );
 ```
 
-**Matching Algorithm**:
-
-1. **Retrieve IDs**:
-
-   ```sql
-   SELECT supplier_invoice_id INTO v_supplier_invoice_id
-   FROM supplies_module.supplier_invoice
-   WHERE supply_order_id = p_supply_order_id
-   ```
-
-2. **Calculate Subtotals**:
-
-   ```sql
-   -- Order subtotal
-   SELECT COALESCE(SUM(quantity_ordered * unit_price), 0)
-   FROM supply_order_item
-
-   -- Invoice subtotal
-   SELECT subtotal_amount
-   FROM supplier_invoice
-
-   -- Receipt subtotal
-   SELECT subtotal_amount
-   FROM goods_receipt
-   ```
-
-3. **Calculate Total Quantities**:
-
-   ```sql
-   -- Order quantity
-   SELECT COALESCE(SUM(quantity_ordered), 0)
-   FROM supply_order_item
-
-   -- Invoice quantity
-   SELECT COALESCE(SUM(quantity_billed), 0)
-   FROM supplier_invoice_item
-
-   -- Receipt quantity
-   SELECT COALESCE(SUM(quantity_received), 0)
-   FROM goods_receipt_item
-   ```
-
-4. **Compare with Tolerance**:
-
-   ```sql
-   v_amounts_matched := (
-       ABS(v_order_subtotal - v_invoice_subtotal) <= 0.01 AND
-       ABS(v_invoice_subtotal - v_receipt_subtotal) <= 0.01 AND
-       ABS(v_order_subtotal - v_receipt_subtotal) <= 0.01
-   );
-
-   v_quantities_matched := (
-       v_order_quantity = v_invoice_quantity AND
-       v_invoice_quantity = v_receipt_quantity
-   );
-
-   v_is_matched := (v_amounts_matched AND v_quantities_matched);
-   ```
-
-5. **Insert Matching Record**:
-
-   ```sql
-   INSERT INTO supplies_module.three_way_matching (
-       supply_order_id,
-       goods_receipt_id,
-       supplier_invoice_id,
-       order_subtotal,
-       invoice_subtotal,
-       receipt_subtotal,
-       order_quantity,
-       invoice_quantity,
-       receipt_quantity,
-       amounts_matched,
-       quantities_matched,
-       is_matched,
-       matched_at,
-       tolerance_used
-   ) VALUES (
-       p_supply_order_id,
-       p_goods_receipt_id,
-       v_supplier_invoice_id,
-       v_order_subtotal,
-       v_invoice_subtotal,
-       v_receipt_subtotal,
-       v_order_quantity,
-       v_invoice_quantity,
-       v_receipt_quantity,
-       v_amounts_matched,
-       v_quantities_matched,
-       v_is_matched,
-       CURRENT_TIMESTAMP,
-       0.01
-   )
-   ```
-
-**Validation Queries**:
+### Verify Alert Resolution
 
 ```sql
--- Check matching result
+-- Check if alerts were auto-resolved after payment
 SELECT
-    matching_id,
-    amounts_matched,
-    quantities_matched,
-    is_matched,
-    matched_at
-FROM supplies_module.three_way_matching
-WHERE supply_order_id = v_supply_order_id;
-
--- Compare subtotals
-SELECT
-    'Order' as source,
-    COALESCE(SUM(quantity_ordered * unit_price), 0) as subtotal
-FROM supplies_module.supply_order_item
-WHERE supply_order_id = v_supply_order_id
-
-UNION ALL
-
-SELECT
-    'Invoice' as source,
-    subtotal_amount
-FROM supplies_module.supplier_invoice
-WHERE supply_order_id = v_supply_order_id
-
-UNION ALL
-
-SELECT
-    'Receipt' as source,
-    subtotal_amount
-FROM supplies_module.goods_receipt
-WHERE supply_order_id = v_supply_order_id;
-
--- Compare quantities
-SELECT
-    'Order' as source,
-    COALESCE(SUM(quantity_ordered), 0) as total_quantity
-FROM supplies_module.supply_order_item
-WHERE supply_order_id = v_supply_order_id
-
-UNION ALL
-
-SELECT
-    'Invoice' as source,
-    COALESCE(SUM(quantity_billed), 0)
-FROM supplies_module.supplier_invoice_item
-WHERE supplier_invoice_id = v_supplier_invoice_id
-
-UNION ALL
-
-SELECT
-    'Receipt' as source,
-    COALESCE(SUM(quantity_received), 0)
-FROM supplies_module.goods_receipt_item
-WHERE goods_receipt_id = v_goods_receipt_id;
-
--- Per-product detail comparison
-SELECT
-    p.sku,
-    soi.quantity_ordered as order_qty,
-    sii.quantity_billed as invoice_qty,
-    gri.quantity_received as receipt_qty
-FROM supplies_module.supply_order_item soi
-JOIN supplies_module.supplier_invoice_item sii ON soi.product_id = sii.product_id
-JOIN supplies_module.goods_receipt_item gri ON soi.product_id = gri.product_id
-JOIN core.product p ON soi.product_id = p.product_id
-WHERE soi.supply_order_id = v_supply_order_id
-  AND sii.supplier_invoice_id = v_supplier_invoice_id
-  AND gri.goods_receipt_id = v_goods_receipt_id
-ORDER BY p.sku;
-```
-
-**Expected Results - Successful Matching**:
-
-| Comparison         | Expected Value |
-| ------------------ | -------------- |
-| Order Subtotal     | $2,900.00      |
-| Invoice Subtotal   | $2,900.00      |
-| Receipt Subtotal   | $2,900.00      |
-| Amounts Matched    | `true` ✅      |
-| Order Quantity     | 10 units       |
-| Invoice Quantity   | 10 units       |
-| Receipt Quantity   | 10 units       |
-| Quantities Matched | `true` ✅      |
-| **Overall Match**  | `true` ✅      |
-
-**Per-Product Breakdown**:
-
-| SKU    | Order Qty | Invoice Qty | Receipt Qty | Match |
-| ------ | --------- | ----------- | ----------- | ----- |
-| FF-001 | 2         | 2           | 2           | ✅    |
-| FF-002 | 3         | 3           | 3           | ✅    |
-| FF-003 | 5         | 5           | 5           | ✅    |
-
-**Failure Scenarios**:
-
-1. **Amounts Don't Match**:
-
-   - `amounts_matched = false`
-   - Check for:
-     - Incorrect unit prices in invoice
-     - Calculation errors
-     - Rounding issues beyond tolerance
-
-2. **Quantities Don't Match**:
-
-   - `quantities_matched = false`
-   - Check for:
-     - Missing items in invoice or receipt
-     - Partial deliveries
-     - Data entry errors
-     - Wrong product_id mappings
-
-3. **Items Missing**:
-   - If matching was not called, check that:
-     - `create_goods_receipt()` trigger executed
-     - Goods receipt items were inserted before matching call
-     - No exceptions occurred during receipt creation
-
-**Troubleshooting**:
-
-- Always inspect per-product SKU detail to identify specific mismatches
-- Verify tenant_id consistency across all items
-- Check that matching is called after all items are inserted
-- Ensure rounding is applied consistently (3 decimal places)
-
----
-
-### Section 9: Final Workflow Summary
-
-**Purpose**: Provide comprehensive validation of entire workflow completion.
-
-**Summary Report Includes**:
-
-1. **Supply Order**:
-
-   - Order ID
-   - Current status (should be: Delivered)
-
-2. **Account Payable**:
-
-   - Subtotal amount
-   - Tax amount
-   - Total amount
-   - Amount paid (should equal total)
-   - Balance (should be 0)
-   - Status (should be: Paid)
-   - Core `is_paid` flag (should be: true)
-   - Number of verified payments (should be: 3)
-
-3. **Supplier Invoice**:
-
-   - Total amount (with tax)
-   - Paid flag (should be: true)
-
-4. **Goods Receipt**:
-
-   - Exists (should be: true)
-   - Total received amount
-   - Number of items received
-
-5. **Three-Way Matching**:
-   - Exists (should be: true)
-   - Match result (should be: true - SUCCESS)
-
-**Final Validation Query**:
-
-```sql
-SELECT
-    so.supply_order_id,
-    sos.status_name as order_status,
-    aps.status_name as account_status,
-    ap.is_paid,
-    si.paid as invoice_paid,
-    ap.subtotal,
-    sap.tax_amount,
-    ap.amount_paid,
-    (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance,
-    si.total_amount as invoice_total,
-    gr.total_amount as receipt_total,
-    (SELECT COUNT(*) FROM supply_order_payment sop
-     WHERE sop.supplies_account_payable_id = sap.supplies_account_payable_id
-       AND sop.verified = true) as verified_payments,
-    (SELECT is_matched FROM three_way_matching
-     WHERE supply_order_id = so.supply_order_id) as matching_result
-FROM supplies_module.supply_order so
-JOIN supplies_module.supply_order_status sos ON so.supply_order_status_id = sos.status_id
-JOIN supplies_module.supplies_account_payable sap ON so.supply_order_id = sap.supply_order_id
+    spa.payment_alert_id,
+    spa.is_resolved,
+    spa.updated_at,
+    sap.account_payable_status,
+    ap.is_paid
+FROM supplies_module.supply_order_payment_alert spa
+JOIN supplies_module.supplies_account_payable sap ON spa.supplies_account_payable_id = sap.supplies_account_payable_id
 JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
-JOIN core.account_payable_status aps ON sap.account_payable_status = aps.status_id
-JOIN supplies_module.supplier_invoice si ON so.supply_order_id = si.supply_order_id
-JOIN supplies_module.goods_receipt gr ON so.supply_order_id = gr.supply_order_id
-WHERE so.supply_order_id = v_supply_order_id
-```
+WHERE spa.supplies_account_payable_id = '<sap-uuid>';
 
-**Expected Complete Workflow State**:
-
-```sql
-┌─────────────────────────────────────────────────────┐
-│           COMPLETE WORKFLOW STATUS                  │
-└─────────────────────────────────────────────────────┘
-
-📦 SUPPLY ORDER:
-   Status: Delivered ✅
-
-💰 ACCOUNT PAYABLE:
-   Subtotal: $2,900.00
-   Tax (13%): $377.00
-   Total: $3,277.00
-   Paid: $3,277.00 ✅
-   Balance: $0.00 ✅
-   Status: Paid ✅
-   Is Paid (core): true ✅
-   Verified Payments: 3 ✅
-
-🧾 SUPPLIER INVOICE:
-   Total (with tax): $3,277.00
-   Paid: true ✅
-
-📦 GOODS RECEIPT:
-   Exists: true ✅
-   Total Received: $3,277.00
-   Items: 3 ✅
-
-🔍 THREE-WAY MATCHING:
-   Exists: true ✅
-   Result: SUCCESS ✅
-   Amounts Matched: true ✅
-   Quantities Matched: true ✅
+-- Expected: is_resolved = true, account_payable_status = 3, is_paid = true
 ```
 
 ---
 
-## Complete Workflow Diagram
+## Common Failure Modes & Troubleshooting
 
-```sql
-┌──────────────────────────────────────────────────────────────┐
-│                    SUPPLY ORDER LIFECYCLE                    │
-└──────────────────────────────────────────────────────────────┘
+### Issue 1: Alerts Not Generated
 
-1. CREATION
-   ├─► create_supply_order()
-   ├─► supply_order (status: Pending)
-   ├─► supply_order_item (3 items)
-   ├─► supplier_invoice (auto-generated)
-   ├─► supplier_invoice_item (auto-generated)
-   └─► supplies_account_payable (status: Pending)
+**Symptom**: `generate_payment_alerts()` runs but no alerts are created
 
-2. PAYMENT PHASE 1 (40%)
-   ├─► Insert payment record (verified: false)
-   ├─► verify_supply_order_payment()
-   ├─► TRIGGER: recalc_account_payable_on_payment()
-   └─► Account status → Partial Paid
+**Troubleshooting**:
 
-3. STATUS UPDATE: SHIPPED
-   ├─► Update status to Shipped
-   └─► TRIGGER: update_order_status() → tracking record
+1. **Check if configuration exists**:
 
-4. PAYMENT PHASE 2 (30%)
-   ├─► Insert payment record
-   ├─► verify_supply_order_payment()
-   └─► Account status → Still Partial Paid
+   ```sql
+   SELECT * FROM supply_order_payment_alert_config WHERE tenant_id = '<tenant-uuid>';
+   ```
 
-5. PAYMENT PHASE 3 (30% - Final)
-   ├─► Insert payment record
-   ├─► verify_supply_order_payment()
-   ├─► TRIGGER: recalc_account_payable_on_payment()
-   ├─► FUNCTION: check_account_payable_completion()
-   ├─► Account status → Paid
-   ├─► Core is_paid → true
-   ├─► TRIGGER: update_invoice_paid_status()
-   └─► Invoice paid → true
+   - If no config: Run `initialize_payment_alert_config()`
 
-6. STATUS UPDATE: DELIVERED
-   ├─► Update status to Delivered
-   ├─► TRIGGER: create_goods_receipt()
-   ├─► goods_receipt (auto-generated)
-   ├─► goods_receipt_item (auto-generated, 3 items)
-   └─► FUNCTION: execute_three_way_matching()
-       ├─► Compare subtotals (±0.01 tolerance)
-       ├─► Compare quantities (exact match)
-       └─► three_way_matching record (is_matched: true)
+2. **Check if accounts qualify for alerts**:
 
-7. VERIFICATION
-   └─► Complete workflow validated ✅
-```
+   ```sql
+   -- Check unpaid accounts with due dates
+   SELECT
+       sap.supplies_account_payable_id,
+       ap.due_date,
+       (ap.due_date - current_date) as days_until_due,
+       sap.account_payable_status
+   FROM supplies_account_payable sap
+   JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   WHERE sap.account_payable_status != 3
+   AND ap.due_date < (current_date + interval '7 days');
+   ```
+
+   - If empty: No accounts qualify for alerts
+
+3. **Check if alerts already exist**:
+
+   ```sql
+   SELECT COUNT(*) FROM supply_order_payment_alert WHERE is_resolved = false;
+   ```
+
+   - If count > 0: Alerts may already exist (idempotent function)
+
+4. **Check tenant_id linkage**:
+   - Ensure supply_order → supplier → supplier_branch → branch → tenant linkage is intact
+   - Verify tenant_id in configuration matches tenant_id in supply chain
+
+**Common Causes**:
+
+- No alert configuration initialized
+- All accounts already paid
+- Due dates are far in the future (beyond warning threshold)
+- Duplicate alert prevention (alerts already exist)
 
 ---
 
-## Key Success Criteria
+### Issue 2: Alerts Not Showing in get_pending_payment_alerts()
 
-✅ **Order Creation**
+**Symptom**: Alerts exist in table but don't appear in query results
 
-- Supply order created with status Pending
-- All items recorded correctly
-- Invoice generated automatically
-- Account payable created with tax calculated
+**Troubleshooting**:
 
-✅ **Payment Processing**
+1. **Check if alerts are resolved**:
 
-- Multiple partial payments accepted
-- Status transitions: Pending → Partial Paid → Paid
-- Core account payable synchronized
-- Invoice marked as paid when complete
+   ```sql
+   SELECT is_resolved FROM supply_order_payment_alert WHERE payment_alert_id = '<alert-uuid>';
+   ```
 
-✅ **Status Transitions**
+   - If `true`: Alert was already resolved
 
-- Status change tracking working
-- Delivered status triggers goods receipt
+2. **Check tenant_id filter**:
 
-✅ **Goods Receipt**
+   ```sql
+   -- Get tenant for an alert
+   SELECT b.tenant_id
+   FROM supply_order_payment_alert spa
+   JOIN supplies_account_payable sap ON spa.supplies_account_payable_id = sap.supplies_account_payable_id
+   JOIN supply_order so ON sap.supply_order_id = so.supply_order_id
+   JOIN supplier s ON so.supplier_id = s.supplier_id
+   JOIN supplier_branch sb ON s.supplier_id = sb.supplier_id
+   JOIN branch b ON sb.branch_id = b.branch_id
+   WHERE spa.payment_alert_id = '<alert-uuid>';
+   ```
 
-- Auto-generated on delivery
-- All items copied from order
-- Amounts match account payable
+   - Verify this matches the tenant_id used in query
 
-✅ **Three-Way Matching**
+3. **Check for data integrity issues**:
 
-- Executed automatically after receipt
-- Amounts match within tolerance
-- Quantities match exactly
-- Overall match result: true
+   ```sql
+   -- Check for orphaned alerts
+   SELECT spa.payment_alert_id
+   FROM supply_order_payment_alert spa
+   LEFT JOIN supplies_account_payable sap ON spa.supplies_account_payable_id = sap.supplies_account_payable_id
+   WHERE sap.supplies_account_payable_id IS NULL;
+   ```
+
+   - If results exist: Data integrity issue, cleanup needed
+
+**Common Causes**:
+
+- Wrong tenant_id passed to function
+- Alerts were auto-resolved
+- Foreign key relationships broken
 
 ---
 
-## Common Issues and Solutions
+### Issue 3: Alerts Not Auto-Resolving
 
-### Issue 1: Quantities Don't Match
-
-**Symptom**: `quantities_matched = false`
+**Symptom**: Payment made but alerts still show as unresolved
 
 **Troubleshooting**:
 
-```sql
--- Check per-product quantities
-SELECT
-    p.sku,
-    soi.quantity_ordered,
-    sii.quantity_billed,
-    gri.quantity_received
-FROM supply_order_item soi
-JOIN supplier_invoice_item sii USING (product_id)
-JOIN goods_receipt_item gri USING (product_id)
-JOIN product p USING (product_id)
-WHERE soi.supply_order_id = '<uuid>';
-```
+1. **Check payment verification status**:
+
+   ```sql
+   SELECT verified FROM supply_order_payment WHERE payment_id = '<payment-uuid>';
+   ```
+
+   - If `false`: Payment not verified, call `verify_supply_order_payment()`
+
+2. **Check account payable status**:
+
+   ```sql
+   SELECT account_payable_status
+   FROM supplies_account_payable
+   WHERE supplies_account_payable_id = '<sap-uuid>';
+   ```
+
+   - If not `3`: Not fully paid, alerts won't resolve
+
+3. **Check if trigger exists**:
+
+   ```sql
+   SELECT * FROM pg_trigger WHERE tgname = 'auto_resolve_payment_alerts_trigger';
+   ```
+
+   - If empty: Trigger not installed, reinstall from supplies_functions.sql
+
+4. **Check trigger execution**:
+
+   - Look for errors in PostgreSQL logs
+   - Test trigger manually:
+
+     ```sql
+     UPDATE supplies_account_payable
+     SET account_payable_status = 3
+     WHERE supplies_account_payable_id = '<sap-uuid>';
+
+     -- Check if alerts resolved
+     SELECT is_resolved FROM supply_order_payment_alert
+     WHERE supplies_account_payable_id = '<sap-uuid>';
+     ```
 
 **Common Causes**:
 
-- Missing items in invoice or receipt
-- Wrong product_id in items
-- Partial delivery not reflected
-- Data entry errors
-
-### Issue 2: Three-Way Matching Not Created
-
-**Symptom**: No record in `three_way_matching` table
-
-**Troubleshooting**:
-
-```sql
--- Check if goods receipt was created
-SELECT * FROM goods_receipt WHERE supply_order_id = '<uuid>';
-
--- Check if items exist
-SELECT COUNT(*) FROM goods_receipt_item WHERE goods_receipt_id = '<uuid>';
-```
-
-**Common Causes**:
-
-- `create_goods_receipt()` trigger didn't fire
-- Order status wasn't changed to Delivered
-- Exception occurred during receipt creation
-- Matching called before items were inserted
-
-### Issue 3: Invoice Not Marked as Paid
-
-**Symptom**: `supplier_invoice.paid = false` even though fully paid
-
-**Troubleshooting**:
-
-```sql
--- Check account payable status
-SELECT account_payable_status
-FROM supplies_account_payable
-WHERE supply_order_id = '<uuid>';
-
--- Check if trigger exists
-SELECT * FROM pg_trigger
-WHERE tgname = 'update_invoice_paid_status_trigger';
-```
-
-**Common Causes**:
-
-- Account payable status not updated to 3 (Paid)
-- `update_invoice_paid_status()` trigger not installed
-- Trigger disabled
-- Exception during trigger execution
-
-### Issue 4: Amounts Don't Match
-
-**Symptom**: `amounts_matched = false`
-
-**Troubleshooting**:
-
-```sql
--- Compare subtotals
-SELECT 'Order' as source,
-       SUM(quantity_ordered * unit_price) as subtotal
-FROM supply_order_item
-WHERE supply_order_id = '<uuid>'
-
-UNION ALL
-
-SELECT 'Invoice', subtotal_amount
-FROM supplier_invoice
-WHERE supply_order_id = '<uuid>'
-
-UNION ALL
-
-SELECT 'Receipt', subtotal_amount
-FROM goods_receipt
-WHERE supply_order_id = '<uuid>';
-```
-
-**Common Causes**:
-
-- Price discrepancies between order and invoice
-- Goods receipt copied wrong amounts
-- Rounding errors beyond tolerance
-- Tax included in subtotal incorrectly
+- Payment not verified
+- Partial payment (status not fully paid)
+- Trigger not installed or disabled
+- Transaction rolled back
+- Error in trigger code
 
 ---
 
-## Performance Considerations
+### Issue 4: Duplicate Alerts Created
 
-- **Batch Operations**: Order creation with multiple items uses JSONB for efficiency
-- **Trigger Efficiency**: Triggers only fire on specific status changes
-- **Indexing**: Ensure foreign keys are indexed for fast lookups
-- **Transaction Scope**: All operations within sections are atomic
+**Symptom**: Multiple alerts for the same account payable
+
+**Troubleshooting**:
+
+1. **Check for duplicate alerts**:
+
+   ```sql
+   SELECT
+       supplies_account_payable_id,
+       payment_alert_type_id,
+       COUNT(*) as count
+   FROM supply_order_payment_alert
+   WHERE is_resolved = false
+   GROUP BY supplies_account_payable_id, payment_alert_type_id
+   HAVING COUNT(*) > 1;
+   ```
+
+2. **Check alert generation logic**:
+
+   - `generate_payment_alerts()` should use `ON CONFLICT DO NOTHING` or check for existence
+   - Review function code for idempotency
+
+3. **Clean up duplicates** (if needed):
+
+   ```sql
+   -- Keep only the most recent alert per account payable
+   DELETE FROM supply_order_payment_alert
+   WHERE payment_alert_id NOT IN (
+       SELECT DISTINCT ON (supplies_account_payable_id, payment_alert_type_id)
+       payment_alert_id
+       FROM supply_order_payment_alert
+       ORDER BY supplies_account_payable_id, payment_alert_type_id, created_at DESC
+   );
+   ```
+
+**Common Causes**:
+
+- Function called multiple times without idempotency check
+- Race condition in concurrent execution
+- Bug in alert generation logic
+
+---
+
+### Issue 5: Alert Statistics Incorrect
+
+**Symptom**: `get_payment_alert_stats()` returns wrong counts or amounts
+
+**Troubleshooting**:
+
+1. **Verify manual count matches**:
+
+   ```sql
+   -- Manual count of overdue
+   SELECT COUNT(*)
+   FROM supply_order_payment_alert spa
+   WHERE spa.payment_alert_type_id = 3 AND spa.is_resolved = false;
+
+   -- Compare with function result
+   SELECT overdue_count FROM get_payment_alert_stats('<tenant-uuid>');
+   ```
+
+2. **Check amount calculation**:
+
+   ```sql
+   -- Manual calculation of total at risk
+   SELECT SUM(ap.subtotal + sap.tax_amount - ap.amount_paid) as manual_total
+   FROM supply_order_payment_alert spa
+   JOIN supplies_account_payable sap ON spa.supplies_account_payable_id = sap.supplies_account_payable_id
+   JOIN core.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   WHERE spa.is_resolved = false;
+   ```
+
+3. **Check for data type issues**:
+   - Ensure numeric columns use proper precision
+   - Check for NULL values affecting aggregations
+
+**Common Causes**:
+
+- JOIN logic in function excludes some records
+- Incorrect WHERE clause filtering
+- NULL values not handled with COALESCE
+- Rounding errors in numeric calculations
+
+---
+
+## Implementation Notes / Best Practices
+
+### Alert Configuration
+
+- **One config per tenant**: Use unique constraint on tenant_id
+- **Reasonable thresholds**: Warning 7 days, Urgent 3 days are good defaults
+- **Allow customization**: Different businesses have different payment cycles
+- **Document notification channels**: Even if not implemented, config tracks preferences
+
+### Alert Generation
+
+- **Run periodically**: Schedule `generate_payment_alerts()` to run daily (e.g., via cron or pg_cron)
+- **Idempotent design**: Function can be called multiple times safely
+- **Performance optimization**: Add indexes on `due_date`, `account_payable_status`
+- **Batch processing**: Function processes all tenants in one call
+
+### Alert Monitoring
+
+- **Dashboard integration**: Use `get_payment_alert_stats()` for real-time dashboards
+- **Prioritize by type**: Show overdue first, then urgent, then warnings
+- **Color coding**: Red (overdue), Orange (urgent), Yellow (warning)
+- **Email notifications**: Use alert_date to send daily digest emails
+
+### Alert Resolution
+
+- **Trust auto-resolution**: Trigger handles resolution automatically
+- **Manual resolution option**: Provide `resolve_payment_alert(alert_id)` for special cases
+- **Audit trail**: Keep resolved alerts for historical analysis
+- **Don't delete**: Use `is_resolved` flag instead of deleting records
+
+### Data Integrity
+
+- **Foreign key constraints**: Ensure ON DELETE CASCADE for cleanup
+- **Consistent tenant linkage**: Verify supplier → branch → tenant path
+- **Regular cleanup**: Archive old resolved alerts periodically
+- **Test scenarios**: Use test data with various due date scenarios
+
+---
+
+## Quick Example Sequence
+
+1. **Initialize config** → Set warning (7 days) and urgent (3 days) thresholds
+2. **Create orders** → 4 orders with different due dates (overdue, urgent, warning, OK)
+3. **Generate alerts** → Run `generate_payment_alerts()` → 3 alerts created
+4. **View alerts** → Call `get_pending_payment_alerts()` → See 3 active alerts
+5. **Check stats** → Call `get_payment_alert_stats()` → See counts by type
+6. **Make payment** → Pay overdue order → Alert auto-resolves
+7. **Verify resolution** → Check alerts again → Only 2 alerts remain
 
 ---
 
@@ -1293,21 +864,35 @@ WHERE supply_order_id = '<uuid>';
 
 ### Related Documentation
 
-- [Supplier Purchase.md](Supplier%20purchase.md) - Detailed supplier purchase process
-- Schema: `supplies_module` - All supply chain tables
-- Schema: `core` - Core entities and payment tracking
-- Schema: `inventory_module` - Warehouse management
+- [Supplier Purchase.md](Supplier%20purchase.md) - Supply order creation and payment process
 
 ### Database Objects
 
-- Functions: `supplies_functions.sql`
-- Schemas: `supplies_schema.sql`, `core_schema.sql`
-- Test: `testSupplyPurchase.sql`
+- Schema: `supplies_module` - Payment alert tables and functions
+- Schema: `core` - Account payable base tables
+- Functions: `supplies_functions.sql` - All alert-related functions
+- Test: `testPaymentAlerts.sql` - Complete alert system test
 
 ### Key Functions
 
-- `create_supply_order()` - Main order creation
-- `verify_supply_order_payment()` - Payment processing
-- `check_account_payable_completion()` - Payment completion check
-- `execute_three_way_matching()` - Reconciliation logic
-- `create_goods_receipt()` - Receipt generation trigger
+- `initialize_payment_alert_config()` - Setup alert configuration
+- `generate_payment_alerts()` - Generate alerts for all tenants
+- `get_pending_payment_alerts()` - Retrieve active alerts
+- `get_payment_alert_stats()` - Get alert statistics
+- `auto_resolve_payment_alerts()` - Auto-resolution trigger
+- `resolve_payment_alert()` - Manual alert resolution
+
+### Alert Types
+
+1. **Upcoming Due Date** (ID: 1) - Warning threshold (default 7 days)
+2. **Urgent Payment** (ID: 2) - Urgent threshold (default 3 days)
+3. **Overdue Payment** (ID: 3) - Past due date
+4. **Reconciliation Mismatch** (ID: 4) - Payment reconciliation issues
+
+### Integration Points
+
+- **Dashboard**: Display alert counts and statistics
+- **Email Service**: Send alert notifications
+- **SMS Service**: Send urgent payment reminders
+- **Reporting**: Include alerts in financial reports
+- **API**: Expose alert data to frontend applications
