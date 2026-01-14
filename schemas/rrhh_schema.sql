@@ -13,15 +13,16 @@ INSERT INTO rrhh_module.payment_schedule(description, daycount) VALUES
 ('Monthly', 30),
 ('Fortnight', 15),
 ('Weekly', 7),
-('daily', 1)
+('Daily', 1)
 ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS contract(
 	contract_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id),
 	start_date DATE NOT NULL,
 	end_date DATE NOT NULL,
 	hours INTEGER NOT NULL,
-	base_salary NUMERIC(10, 2) NOT NULL,
+	base_salary NUMERIC(19, 4) NOT NULL,
 	duties TEXT
 );
 --Indice para filtracion o busqueda por rango de precios
@@ -86,51 +87,47 @@ INSERT INTO rrhh_module.paysheet_status(status_description) VALUES
 ('Canceled')
 ON CONFLICT DO NOTHING;
 
--- Catalogo de deducciones, este catalogo sera consumido unicamente por el backend
-CREATE TABLE IF NOT EXISTS deduction(
-	deduction_id SERIAL PRIMARY KEY NOT NULL,
-	deduction_name VARCHAR(100) NOT NULL,
-	employee_percentage INTEGER NOT NULL,
-	tenant_percentage INTEGER,
-	is_current BOOLEAN DEFAULT true NOT NULL 
-);
-
--- Catalogo que ayuda a la uniformidad de los calculos
-CREATE TABLE IF NOT EXISTS income_concept(
-	income_id SERIAL PRIMARY KEY NOT NULL,
-	concept_name VARCHAR(100) NOT NULL,
-	calculation_type VARCHAR(50) NOT NULL, -- Fijo, Variable o Acumulable
-	ccss_apply BOOLEAN,
-	tax_apply BOOLEAN
-);
+CREATE TABLE IF NOT EXISTS payroll_concept(
+	concept_id SERIAL PRIMARY KEY NOT NULL,
+	tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id),
+	name VARCHAR(100) NOT NULL,
+	type VARCHAR(20) NOT NULL, -- 'earning' o 'deduction'
+	calculation_method VARCHAR(30) NOT NULL, -- 'fixed', 'percentage', 'fromula', 'manual'
+	is_taxable BOOLEAN DEFAULT TRUE,
+	is_active BOOLEAN DEFAULT TRUE
+)
 
 --Indice para filtracion por conceptos
 CREATE INDEX idx_income_concept_apply ON rrhh_module.income_concept(ccss_apply, tax_apply);
 
 CREATE TABLE IF NOT EXISTS paysheet(
 	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id),
 	branch_id UUID NOT NULL REFERENCES core.branch(branch_id),
-	period_start_date DATE NOT NULL,
-	period_end_date DATE NOT NULL,
-	payment_day TIMESTAMP,
-	payment_amount INTEGER NOT NULL DEFAULT 0,
+	period_start DATE NOT NULL,
+	period_end DATE NOT NULL,
+	payment_date TIMESTAMP,
+	total_earnings NUMERIC(19, 4) NOT NULL DEFAULT 0,
+	total_deductions NUMERIC(19, 4) NOT NULL DEFAULT 0,
+	net_total NUMERIC(19, 4) NOT NULL DEFAULT 0,
 	paysheet_status_id INTEGER NOT NULL REFERENCES rrhh_module.paysheet_status(status_id)
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 );
 
 --Indice para la consulta de nominas por periodo de pago
-CREATE INDEX idx_paysheet_period_dates ON rrhh_module.paysheet (period_start_date, period_end_date);
+CREATE INDEX idx_paysheet_period_dates ON rrhh_module.paysheet (tenant_id, period_start, period_end);
 
 CREATE TABLE IF NOT EXISTS paysheet_detail(
 	detail_id UUID NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
-	paysheet_id UUID NOT NULL REFERENCES rrhh_module.paysheet(paysheet_id),
+	paysheet_id UUID NOT NULL REFERENCES rrhh_module.paysheet(paysheet_id) ON DELETE CASCADE,
 	employee_id UUID NOT NULL REFERENCES rrhh_module.employee(employee_id),
+	contract_id UUID NOT NULL REFERENCES rrhh_module.contract(contract_id),
 	payment_method_id INTEGER NOT NULL REFERENCES core.payment_method(payment_method_id),
-	gross_salary NUMERIC(10, 2) CHECK (gross_salary >= 0) NOT NULL,
-	ccss_employee_deduction NUMERIC(10, 2) DEFAULT 0,
-	ccss_tenant_deduction NUMERIC(10, 2) DEFAULT 0,
-	income_tax_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
-	total_deduction NUMERIC(10, 2) NOT NULL DEFAULT 0,
-	net_salary NUMERIC(12, 3) NOT NULL,
+	gross_salary NUMERIC(19, 4) NOT NULL,
+	total_earnings NUMERIC(19, 4) NOT NULL DEFAULT 0,
+	total_deduction NUMERIC(19, 4) NOT NULL DEFAULT 0,
+	net_salary NUMERIC(19, 4) NOT NULL,
+	status VARCHAR(20) NOT NULL DEFAULT 'Pending',
 	pay_date DATE NOT NULL,
   recalc_needed BOOLEAN DEFAULT TRUE NOT NULL
 );
@@ -140,15 +137,14 @@ CREATE INDEX idx_paysheet_detail_paysheet_id ON rrhh_module.paysheet_detail(pays
 -- Indice compuesto para la consulta del historial de pagos a un empleado
 CREATE INDEX idx_paysheet_detail_emp_paydate ON rrhh_module.paysheet_detail (employee_id, pay_date DESC);
 
-CREATE TABLE IF NOT EXISTS income_register(
-	income_register_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
-	detail_id UUID NOT NULL REFERENCES rrhh_module.paysheet_detail(detail_id),
-	concept_id INTEGER NOT NULL REFERENCES rrhh_module.income_concept(income_id),
-	base_quantity NUMERIC(10, 2) NOT NULL,
-	calculated_amount NUMERIC(10, 2) NOT NULL
+CREATE TABLE IF NOT EXISTS payroll_movement (
+	movement_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	detail_id UUID NOT NULL REFERENCES rrhh_module.paysheet_detail(detail_id) ON DELETE CASCADE,
+	concept_id INTEGER NOT NULL REFERENCES rrhh_module.payroll_concept(concept_id),
+	base_amount NUMERIC(19, 4) NOT NULL,
+	calculated_amount NUMERIC(19, 4) NOT NULL,
+	description TEXT
 );
 
--- Indice para agilizar Joins
-CREATE INDEX idx_income_register_detail_id ON rrhh_module.income_register(detail_id);
-CREATE INDEX idx_income_register_concept_id ON rrhh_module.income_register(concept_id);
-
+-- Indice para agilizar la busqueda de todos los movimientos bajo un detail_id
+CREATE INDEX idx_payroll_movement_detail_id ON rrhh_module.payroll_movement(detail_id);
