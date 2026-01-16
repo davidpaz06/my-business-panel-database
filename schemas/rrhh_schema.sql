@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS employee(
 	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	user_id UUID NOT NULL REFERENCES core.users(user_id) ON DELETE CASCADE,
 	tenant_id UUID NOT NULL REFERENCES core.tenant(tenant_id),
+	branch_id UUID REFERENCES core.branch(branch_id),
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,

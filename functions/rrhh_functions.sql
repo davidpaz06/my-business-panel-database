@@ -9,6 +9,7 @@ CREATE OR REPLACE FUNCTION rrhh_module.create_new_employee(
   -- Parametros para la crecaion del empleado
   p_user_id UUID,
   p_tenant_id UUID,
+  p_branch_id UUID,
   p_first_name VARCHAR(100),
   p_last_name VARCHAR(100),
   p_doc_number VARCHAR(100),
@@ -33,7 +34,7 @@ BEGIN
 
   v_new_employee_id := gen_random_uuid();
 
-  INSERT INTO rrhh_module.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id)
+  INSERT INTO rrhh_module.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id, branch_id)
   VALUES (
     v_new_employee_id,
     p_user_id,
@@ -44,7 +45,8 @@ BEGIN
     p_email,
     v_new_contract_id,
     p_schedule_id,
-    p_tenant_id
+    p_tenant_id,
+    p_branch_id
   );
 
   RETURN v_new_employee_id;
