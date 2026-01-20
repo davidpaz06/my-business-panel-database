@@ -108,12 +108,14 @@ CREATE TABLE IF NOT EXISTS paysheet(
 	total_earnings NUMERIC(19, 4) NOT NULL DEFAULT 0,
 	total_deductions NUMERIC(19, 4) NOT NULL DEFAULT 0,
 	net_total NUMERIC(19, 4) NOT NULL DEFAULT 0,
-	paysheet_status_id INTEGER NOT NULL REFERENCES rrhh_module.paysheet_status(status_id),
+	status_id INTEGER NOT NULL REFERENCES rrhh_module.paysheet_status(status_id),
 	created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 --Indice para la consulta de nominas por periodo de pago
 CREATE INDEX idx_paysheet_period_dates ON rrhh_module.paysheet (tenant_id, period_start, period_end);
+CREATE INDEX idx_paysheet_tenant_branch_date 
+ON rrhh_module.paysheet (tenant_id, branch_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS paysheet_detail(
 	detail_id UUID NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
