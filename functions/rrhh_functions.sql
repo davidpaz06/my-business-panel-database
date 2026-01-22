@@ -81,7 +81,7 @@ BEGIN
     END IF;
 
     -- Obtenemos el id de estado actual de la nómina
-    SELECT paysheet_status_id INTO v_current_status_id
+    SELECT status_id INTO v_current_status_id
     FROM rrhh_module.paysheet
     WHERE paysheet_id = p_paysheet_id;
 
@@ -109,7 +109,7 @@ BEGIN
     --Si no hay pendientes, actualizamos el estado a 'Completed'
     UPDATE rrhh_module.paysheet
     SET
-        paysheet_status_id = v_completed_status_id
+        status_id = v_completed_status_id
     WHERE paysheet_id = p_paysheet_id;
 
     RETURN 'Paysheet finished ' || p_paysheet_id;
@@ -177,7 +177,7 @@ RETURNS TRIGGER AS $$
 BEGIN
     IF OLD.net_salary IS DISTINCT FROM NEW.net_salary THEN
         PERFORM 1 FROM rrhh_module.paysheet p
-        	INNER JOIN rrhh_module.paysheet_status ps ON p.paysheet_status_id = ps.status_id
+        	INNER JOIN rrhh_module.paysheet_status ps ON p.status_id = ps.status_id
         	WHERE p.paysheet_id = NEW.paysheet_id AND ps.status_description = 'Completed';
         
         IF FOUND THEN
