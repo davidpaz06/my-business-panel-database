@@ -790,6 +790,7 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql;
 
+
 drop trigger if exists update_supplier_timestamp on supplies_module.supplier;
 create trigger update_supplier_timestamp before update on supplies_module.supplier
 for each row execute function core.update_timestamp();
