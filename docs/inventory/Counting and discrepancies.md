@@ -20,7 +20,7 @@ SELECT
     SUM(i.stock) AS total_stock,
     COUNT(*) AS inventory_rows
 FROM inventory_schema.inventory i
-JOIN general.product p
+JOIN general_schema.product p
     ON i.tenant_id = p.tenant_id
     AND i.product_id = p.product_id
 WHERE i.warehouse_id = '<warehouse_id>'

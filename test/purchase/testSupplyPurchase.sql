@@ -10,12 +10,12 @@
 --   6. Conciliación automática a tres vías
 --   7. Verificación de resultados
 -- =====================================
-set search_path = purchase, general;
+set search_path = purchase, general_schema;
 
 -- ========================================
 -- SECCIÓN 0: Limpieza inicial (idempotente)
 -- ========================================
-do $$
+DO $$
 BEGIN
     raise notice '========================================';
     raise notice '🧹 SECCIÓN 0: Limpieza inicial';
@@ -88,9 +88,9 @@ BEGIN
 
     delete from purchase.supplier where supplier_name = 'Full Flow Supplier';
     delete from inventory_schema.warehouse where warehouse_name = 'Full Flow Warehouse';
-    delete from general.product where sku in ('FF-001', 'FF-002', 'FF-003');
-    delete from general.branch where branch_name = 'Full Flow Branch';
-    delete from general.tenant where tenant_name = 'Full Flow Test Shop';
+    delete from general_schema.product where sku in ('FF-001', 'FF-002', 'FF-003');
+    delete from general_schema.branch where branch_name = 'Full Flow Branch';
+    delete from general_schema.tenant where tenant_name = 'Full Flow Test Shop';
 
     raise notice '✅ Limpieza completada';
     raise notice '========================================';
@@ -100,7 +100,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 1: Preparación de datos maestros
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
@@ -109,23 +109,23 @@ declare
     v_prod1 uuid;
     v_prod2 uuid;
     v_prod3 uuid;
-    v_warehouse_exists boolean;
+    v_warehouse_exists BOOLEAN;
 BEGIN
     raise notice '';
     raise notice '========================================';
     raise notice '🏪 SECCIÓN 1: Preparación de datos maestros';
     raise notice '========================================';
 
-    INSERT INTO general.tenant (tenant_name, region_id, contact_email, is_subscribed)
+    INSERT INTO general_schema.tenant (tenant_name, region_id, contact_email, is_subscribed)
     VALUES ('Full Flow Test Shop', 1, 'fullflow@test.local', true)
     ON CONFLICT DO NOTHING;
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Full Flow Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Full Flow Test Shop' limit 1;
     raise notice '   ✓ Tenant creado: %', v_tenant_id;
 
-    INSERT INTO general.branch (tenant_id, branch_name, branch_address, is_main_branch)
+    INSERT INTO general_schema.branch (tenant_id, branch_name, branch_address, is_main_branch)
     VALUES (v_tenant_id, 'Full Flow Branch', 'Calle Full Flow 123', true)
     ON CONFLICT DO NOTHING;
-    select branch_id into v_branch_id from general.branch where tenant_id = v_tenant_id and branch_name = 'Full Flow Branch' limit 1;
+    select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Full Flow Branch' limit 1;
     raise notice '   ✓ Branch creada: %', v_branch_id;
 
     select exists(
@@ -140,12 +140,12 @@ BEGIN
         execute 'CREATE SCHEMA IF NOT EXISTS inventory_schema';
         execute '
             CREATE TABLE IF NOT EXISTS inventory_schema.warehouse(
-                warehouse_id uuid primary key default gen_random_uuid(),
-                branch_id uuid REFERENCES general.branch(branch_id) on delete cascade,
-                warehouse_name varchar(255) not null,
-                warehouse_address varchar(255) not null,
-                created_at timestamp default current_timestamp,
-                updated_at timestamp default current_timestamp
+                warehouse_id uuid PRIMARY KEY default gen_random_uuid(),
+                branch_id uuid REFERENCES general_schema.branch(branch_id) on delete cascade,
+                warehouse_name VARCHAR(255) not null,
+                warehouse_address VARCHAR(255) not null,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )';
     end if;
 
@@ -173,7 +173,7 @@ BEGIN
 
     INSERT INTO purchase.supplier (supplier_name, supplier_contact_info, supplier_address)
     VALUES ('Full Flow Supplier', 'contact@fullflow.local', 'Proveedor Full Flow')
-    on conflict (supplier_name) do nothing;
+    on conflict (supplier_name) DO nothing;
     select supplier_id into v_supplier_id from purchase.supplier where supplier_name = 'Full Flow Supplier' limit 1;
 
     INSERT INTO purchase.supplier_branch (supplier_id, branch_id)
@@ -181,16 +181,16 @@ BEGIN
     ON CONFLICT DO NOTHING;
     raise notice '   ✓ Supplier creado: %', v_supplier_id;
 
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
     VALUES 
         (v_tenant_id, 'FF-001', 'Producto Flow A', 500.00),
         (v_tenant_id, 'FF-002', 'Producto Flow B', 300.00),
         (v_tenant_id, 'FF-003', 'Producto Flow C', 200.00)
-    on conflict (tenant_id, sku) do nothing;
+    on conflict (tenant_id, sku) DO nothing;
     
-    select product_id into v_prod1 from general.product where tenant_id = v_tenant_id and sku = 'FF-001' limit 1;
-    select product_id into v_prod2 from general.product where tenant_id = v_tenant_id and sku = 'FF-002' limit 1;
-    select product_id into v_prod3 from general.product where tenant_id = v_tenant_id and sku = 'FF-003' limit 1;
+    select product_id into v_prod1 from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-001' limit 1;
+    select product_id into v_prod2 from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-002' limit 1;
+    select product_id into v_prod3 from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-003' limit 1;
     raise notice '   ✓ Productos creados: 3 items (FF-001, FF-002, FF-003)';
 
     raise notice '✅ SECCIÓN 1 COMPLETADA';
@@ -200,7 +200,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 2: Crear orden de compra con factura
 -- ========================================
-do $$
+DO $$
 declare
     v_supplier_id uuid;
     v_warehouse_id uuid;
@@ -221,12 +221,12 @@ BEGIN
 
     select supplier_id into v_supplier_id from purchase.supplier where supplier_name = 'Full Flow Supplier' limit 1;
     select warehouse_id into v_warehouse_id from inventory_schema.warehouse where warehouse_name = 'Full Flow Warehouse' limit 1;
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Full Flow Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Full Flow Test Shop' limit 1;
 
     v_items := jsonb_build_array(
-        jsonb_build_object('product_id', (select product_id::text from general.product where tenant_id = v_tenant_id and sku = 'FF-001'), 'quantity_ordered', 2, 'unit_price', 500.00),
-        jsonb_build_object('product_id', (select product_id::text from general.product where tenant_id = v_tenant_id and sku = 'FF-002'), 'quantity_ordered', 3, 'unit_price', 300.00),
-        jsonb_build_object('product_id', (select product_id::text from general.product where tenant_id = v_tenant_id and sku = 'FF-003'), 'quantity_ordered', 5, 'unit_price', 200.00)
+        jsonb_build_object('product_id', (select product_id::text from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-001'), 'quantity_ordered', 2, 'unit_price', 500.00),
+        jsonb_build_object('product_id', (select product_id::text from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-002'), 'quantity_ordered', 3, 'unit_price', 300.00),
+        jsonb_build_object('product_id', (select product_id::text from general_schema.product where tenant_id = v_tenant_id and sku = 'FF-003'), 'quantity_ordered', 5, 'unit_price', 200.00)
     );
 
     v_purchase_order_id := purchase.create_purchase_order(
@@ -248,7 +248,7 @@ BEGIN
         v_subtotal,
         v_tax_amount,
         v_total_amount
-    from general.account_payable ap
+    from general_schema.account_payable ap
     join purchase.purchase_account_payable sap on ap.account_payable_id = sap.account_payable_id
     where sap.purchase_order_id = v_purchase_order_id;
 
@@ -277,7 +277,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 3: Pago inicial 40%
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_account_payable_id uuid;
     v_account_payable_id uuid;
@@ -288,7 +288,7 @@ declare
     v_total_amount numeric(12,3);
     v_pay numeric(12,3);
     v_status int;
-    v_status_name varchar;
+    v_status_name VARCHAR;
     v_paid numeric(12,3);
     v_balance numeric(12,3);
 BEGIN
@@ -312,12 +312,12 @@ BEGIN
         v_total_amount,
         v_tenant_id
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
     join purchase.purchase_order so on sap.purchase_order_id = so.purchase_order_id
     join purchase.supplier s on so.supplier_id = s.supplier_id
     join purchase.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general.branch b on sb.branch_id = b.branch_id
-    join general.tenant t on b.tenant_id = t.tenant_id
+    join general_schema.branch b on sb.branch_id = b.branch_id
+    join general_schema.tenant t on b.tenant_id = t.tenant_id
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
@@ -344,8 +344,8 @@ BEGIN
         (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
     into v_status, v_status_name, v_paid, v_balance
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
-    join general.account_payable_status aps on sap.account_payable_status = aps.status_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable_status aps on sap.account_payable_status = aps.status_id
     where sap.purchase_account_payable_id = v_purchase_account_payable_id;
     
     raise notice '';
@@ -366,13 +366,13 @@ end $$;
 -- ========================================
 -- SECCIÓN 4: Envío de mercancía (Shipped)
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_order_id uuid;
     v_old_status int;
     v_new_status int;
-    v_old_status_name varchar;
-    v_new_status_name varchar;
+    v_old_status_name VARCHAR;
+    v_new_status_name VARCHAR;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -411,7 +411,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 5: Pago parcial 30%
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_account_payable_id uuid;
     v_account_payable_id uuid;
@@ -422,7 +422,7 @@ declare
     v_total_amount numeric(12,3);
     v_pay numeric(12,3);
     v_status int;
-    v_status_name varchar;
+    v_status_name VARCHAR;
     v_paid numeric(12,3);
     v_balance numeric(12,3);
 BEGIN
@@ -446,12 +446,12 @@ BEGIN
         v_total_amount,
         v_tenant_id
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
     join purchase.purchase_order so on sap.purchase_order_id = so.purchase_order_id
     join purchase.supplier s on so.supplier_id = s.supplier_id
     join purchase.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general.branch b on sb.branch_id = b.branch_id
-    join general.tenant t on b.tenant_id = t.tenant_id
+    join general_schema.branch b on sb.branch_id = b.branch_id
+    join general_schema.tenant t on b.tenant_id = t.tenant_id
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
@@ -477,8 +477,8 @@ BEGIN
         (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
     into v_status, v_status_name, v_paid, v_balance
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
-    join general.account_payable_status aps on sap.account_payable_status = aps.status_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable_status aps on sap.account_payable_status = aps.status_id
     where sap.purchase_account_payable_id = v_purchase_account_payable_id;
     
     raise notice '';
@@ -495,7 +495,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 6: Pago final 30%
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_account_payable_id uuid;
     v_account_payable_id uuid;
@@ -508,11 +508,11 @@ declare
     v_remaining numeric(12,3);
     v_pay numeric(12,3);
     v_status int;
-    v_status_name varchar;
+    v_status_name VARCHAR;
     v_paid numeric(12,3);
     v_balance numeric(12,3);
-    v_invoice_paid boolean;
-    v_is_paid boolean;
+    v_invoice_paid BOOLEAN;
+    v_is_paid BOOLEAN;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -536,12 +536,12 @@ BEGIN
         v_paid_so_far,
         v_tenant_id
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
     join purchase.purchase_order so on sap.purchase_order_id = so.purchase_order_id
     join purchase.supplier s on so.supplier_id = s.supplier_id
     join purchase.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general.branch b on sb.branch_id = b.branch_id
-    join general.tenant t on b.tenant_id = t.tenant_id
+    join general_schema.branch b on sb.branch_id = b.branch_id
+    join general_schema.tenant t on b.tenant_id = t.tenant_id
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
@@ -570,8 +570,8 @@ BEGIN
         (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance_remaining
     into v_status, v_status_name, v_paid, v_is_paid, v_balance
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
-    join general.account_payable_status aps on sap.account_payable_status = aps.status_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable_status aps on sap.account_payable_status = aps.status_id
     where sap.purchase_account_payable_id = v_purchase_account_payable_id;
     
     select si.paid into v_invoice_paid
@@ -584,7 +584,7 @@ BEGIN
     raise notice '      Status: % (%)', v_status_name, v_status;
     raise notice '      Pagado total: $%', v_paid;
     raise notice '      Balance: $%', v_balance;
-    raise notice '      Is Paid (general): %', v_is_paid;
+    raise notice '      Is Paid (general_schema): %', v_is_paid;
     raise notice '      Factura pagada: %', v_invoice_paid;
 
     if v_status <> 3 then
@@ -592,7 +592,7 @@ BEGIN
     end if;
 
     if not v_is_paid then
-        raise exception '❌ La cuenta debería estar marcada como is_paid=true en general.account_payable';
+        raise exception '❌ La cuenta debería estar marcada como is_paid=true en general_schema.account_payable';
     end if;
 
     if not v_invoice_paid then
@@ -611,13 +611,13 @@ end $$;
 -- ========================================
 -- SECCIÓN 7: Marcar como Delivered → genera goods_receipt
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_order_id uuid;
     v_old_status int;
-    v_old_status_name varchar;
+    v_old_status_name VARCHAR;
     v_new_status int;
-    v_new_status_name varchar;
+    v_new_status_name VARCHAR;
     v_goods_receipt_id uuid;
     v_goods_receipt_total numeric(12,3);
     v_items_count int;
@@ -677,22 +677,22 @@ end $$;
 -- ========================================
 -- SECCIÓN 8: Verificar conciliación a tres vías
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_order_id uuid;
     v_matching_id uuid;
-    v_amounts_matched boolean;
-    v_quantities_matched boolean;
-    v_is_matched boolean;
+    v_amounts_matched BOOLEAN;
+    v_quantities_matched BOOLEAN;
+    v_is_matched BOOLEAN;
     v_matched_at timestamp;
     v_goods_receipt_id uuid;
     v_supplier_invoice_id uuid;
     v_order_total numeric(12,3);
     v_invoice_total numeric(12,3);
     v_receipt_total numeric(12,3);
-    v_order_qty integer;
-    v_invoice_qty integer;
-    v_receipt_qty integer;
+    v_order_qty INTEGER;
+    v_invoice_qty INTEGER;
+    v_receipt_qty INTEGER;
     v_rec record;
 BEGIN
     raise notice '';
@@ -765,7 +765,7 @@ BEGIN
     for v_rec in 
         select p.sku, soi.quantity_ordered
         from purchase.purchase_order_item soi
-        join general.product p on soi.product_id = p.product_id
+        join general_schema.product p on soi.product_id = p.product_id
         where soi.purchase_order_id = v_purchase_order_id
         order by p.sku
     loop
@@ -776,7 +776,7 @@ BEGIN
     for v_rec in 
         select p.sku, sii.quantity_billed
         from purchase.supplier_invoice_item sii
-        join general.product p on sii.product_id = p.product_id
+        join general_schema.product p on sii.product_id = p.product_id
         where sii.supplier_invoice_id = v_supplier_invoice_id
         order by p.sku
     loop
@@ -787,7 +787,7 @@ BEGIN
     for v_rec in 
         select p.sku, gri.quantity_received
         from purchase.goods_receipt_item gri
-        join general.product p on gri.product_id = p.product_id
+        join general_schema.product p on gri.product_id = p.product_id
         where gri.goods_receipt_id = v_goods_receipt_id
         order by p.sku
     loop
@@ -817,15 +817,15 @@ end $$;
 -- ========================================
 -- SECCIÓN 9: Resumen final
 -- ========================================
-do $$
+DO $$
 declare
     v_purchase_order_id uuid;
-    v_order_status varchar;
-    v_account_status varchar;
-    v_is_paid boolean;
-    v_invoice_paid boolean;
-    v_goods_receipt_exists boolean;
-    v_matching_exists boolean;
+    v_order_status VARCHAR;
+    v_account_status VARCHAR;
+    v_is_paid BOOLEAN;
+    v_invoice_paid BOOLEAN;
+    v_goods_receipt_exists BOOLEAN;
+    v_matching_exists BOOLEAN;
     v_subtotal numeric(12,3);
     v_tax_amount numeric(12,3);
     v_amount_paid numeric(12,3);
@@ -833,7 +833,7 @@ declare
     v_invoice_total numeric(12,3);
     v_receipt_total numeric(12,3);
     v_payments_count int;
-    v_is_matched boolean;
+    v_is_matched BOOLEAN;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -867,8 +867,8 @@ BEGIN
     from purchase.purchase_order so
     join purchase.purchase_order_status sos on so.purchase_order_status_id = sos.status_id
     join purchase.purchase_account_payable sap on so.purchase_order_id = sap.purchase_order_id
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
-    join general.account_payable_status aps on sap.account_payable_status = aps.status_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable_status aps on sap.account_payable_status = aps.status_id
     join purchase.supplier_invoice si on so.purchase_order_id = si.purchase_order_id
     join purchase.goods_receipt gr on so.purchase_order_id = gr.purchase_order_id
     join purchase.supplier s on so.supplier_id = s.supplier_id
@@ -913,7 +913,7 @@ BEGIN
     raise notice '   Pagado: $%', v_amount_paid;
     raise notice '   Balance: $%', v_balance;
     raise notice '   Status: %', v_account_status;
-    raise notice '   Is Paid (general): %', v_is_paid;
+    raise notice '   Is Paid (general_schema): %', v_is_paid;
     raise notice '   Pagos verificados: %', v_payments_count;
     raise notice '';
     raise notice '🧾 FACTURA:';

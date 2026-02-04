@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-01-28 10:49:32
+-- Generated: 2026-02-04 14:07:35
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -31,63 +31,63 @@ CREATE SCHEMA IF NOT EXISTS general_schema;
 SET SEARCH_PATH TO general_schema;
 
 CREATE TABLE IF NOT EXISTS region(
-    region_id serial primary key,
-    region_name varchar(100) unique not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    region_id SERIAL PRIMARY KEY,
+    region_name VARCHAR(100) unique not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tenant(
-    tenant_id uuid primary key default gen_random_uuid(),
-    tenant_name varchar(100) unique not null,
-    region_id integer REFERENCES general_schema.region(region_id) on delete set null,
-    contact_email varchar(100) not null,
-    is_subscribed boolean default false,
-    stripe_id varchar(255) unique default null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    tenant_id uuid PRIMARY KEY default gen_random_uuid(),
+    tenant_name VARCHAR(100) unique not null,
+    region_id INTEGER REFERENCES general_schema.region(region_id) on delete set null,
+    contact_email VARCHAR(100) not null,
+    is_subscribed BOOLEAN default false,
+    stripe_id VARCHAR(255) unique default null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS branch(
-    branch_id uuid primary key default gen_random_uuid(),
+    branch_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    branch_name varchar(100) not null,
+    branch_name VARCHAR(100) not null,
     branch_address text,
-    contact_email varchar(100),
-    is_main_branch boolean default false,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    contact_email VARCHAR(100),
+    is_main_branch BOOLEAN default false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX IF NOT EXISTS unique_main_branch_per_tenant 
     on general_schema.branch (tenant_id) 
     where is_main_branch = true;
 
 CREATE TABLE IF NOT EXISTS document_type(
-    document_type_id serial primary key, 
-    type_name varchar(50) unique not null,
+    document_type_id SERIAL PRIMARY KEY, 
+    type_name VARCHAR(50) unique not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS customer_segment(
-    customer_segment_id serial primary key,
-    segment_name varchar(100) unique not null,
-    segment_hierarchy integer not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    customer_segment_id SERIAL PRIMARY KEY,
+    segment_name VARCHAR(100) unique not null,
+    segment_hierarchy INTEGER not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
 CREATE TABLE IF NOT EXISTS customer_segment_margin_type(
-    customer_segment_margin_type_id serial primary key,
-    type_name varchar(50) unique not null,
+    customer_segment_margin_type_id SERIAL PRIMARY KEY,
+    type_name VARCHAR(50) unique not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS customer_segment_margin(
-    customer_segment_margin_id uuid primary key not null default gen_random_uuid(),
+    customer_segment_margin_id uuid PRIMARY KEY not null default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     customer_segment_id int not null REFERENCES general_schema.customer_segment(customer_segment_id) on delete cascade,
     customer_segment_margin_type_id int REFERENCES general_schema.customer_segment_margin_type(customer_segment_margin_type_id) on delete set null,
@@ -97,20 +97,20 @@ CREATE TABLE IF NOT EXISTS customer_segment_margin(
 );
 
 CREATE TABLE IF NOT EXISTS tenant_customer(
-    tenant_customer_id uuid primary key default gen_random_uuid(),
+    tenant_customer_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,  
-    first_name varchar(100) not null,
-    last_name varchar(100) not null,
-    document_type_id integer REFERENCES general_schema.document_type(document_type_id) on delete set null,  
-    document_number varchar(50) not null,
-    email varchar(255) not null,
-    phone varchar(50) not null,
+    first_name VARCHAR(100) not null,
+    last_name VARCHAR(100) not null,
+    document_type_id INTEGER REFERENCES general_schema.document_type(document_type_id) on delete set null,  
+    document_number VARCHAR(50) not null,
+    email VARCHAR(255) not null,
+    phone VARCHAR(50) not null,
     birthdate date,
     address text,
-    is_tenant boolean default false,
+    is_tenant BOOLEAN default false,
     customer_segment_id int default 4 REFERENCES general_schema.customer_segment(customer_segment_id) on delete set null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     unique(tenant_id, document_number),   
     unique(tenant_id, email),             
@@ -118,44 +118,44 @@ CREATE TABLE IF NOT EXISTS tenant_customer(
 );
 
 CREATE TABLE IF NOT EXISTS role(
-    role_id serial primary key,
-    role_name varchar(50) unique not null,
-    role_hierarchy integer not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    role_id SERIAL PRIMARY KEY,
+    role_name VARCHAR(50) unique not null,
+    role_hierarchy INTEGER not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS users( 
-    user_id uuid primary key default gen_random_uuid(),
+    user_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    email varchar(100) unique not null,
-    password_hash varchar(255) not null,
-    role_id integer REFERENCES general_schema.role(role_id) on delete set null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    email VARCHAR(100) unique not null,
+    password_hash VARCHAR(255) not null,
+    role_id INTEGER REFERENCES general_schema.role(role_id) on delete set null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS currency(
-    currency_id serial primary key,
+    currency_id SERIAL PRIMARY KEY,
     currency_code char(3) unique not null,
-    currency_name varchar(50) not null,
-    symbol varchar(10) not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    currency_name VARCHAR(50) not null,
+    symbol VARCHAR(10) not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tax_rate(
-    tax_rate_id serial primary key,
-    region varchar(100) unique not null,
-    region_id integer REFERENCES general_schema.region(region_id) on delete set null,
+    tax_rate_id SERIAL PRIMARY KEY,
+    region VARCHAR(100) unique not null,
+    region_id INTEGER REFERENCES general_schema.region(region_id) on delete set null,
     rate_percentage numeric(5,2) not null check (rate_percentage >= 0 and rate_percentage <= 100),
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS subscription_type ( 
-    subscription_type_id serial primary key,
-    subscription_type_name varchar(25) not null,
+    subscription_type_id SERIAL PRIMARY KEY,
+    subscription_type_name VARCHAR(25) not null,
     subscription_type_detail text not null,
     duration_months int not null,
     subscription_type_cost numeric(5,2)
@@ -163,61 +163,75 @@ CREATE TABLE IF NOT EXISTS subscription_type (
 );
 
 CREATE TABLE IF NOT EXISTS payment_method(
-    payment_method_id serial primary key,
-    name varchar(50) unique not null,
+    payment_method_id SERIAL PRIMARY KEY,
+    name VARCHAR(50) unique not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tenant_payment(
-    tenant_payment_id uuid primary key default gen_random_uuid(),
+    tenant_payment_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    payment_method_id integer REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
+    payment_method_id INTEGER REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     payment_amount numeric(10,2) not null check (payment_amount >= 0),
-    payment_date timestamp default current_timestamp,
-    details varchar(255),
-    verified boolean default false,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    details VARCHAR(255),
+    verified BOOLEAN default false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS subscription(
-    subscription_id uuid primary key default gen_random_uuid(),
+    subscription_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    subscription_type_id integer REFERENCES general_schema.subscription_type(subscription_type_id) on delete set null,
+    subscription_type_id INTEGER REFERENCES general_schema.subscription_type(subscription_type_id) on delete set null,
     tenant_payment_id uuid REFERENCES general_schema.tenant_payment(tenant_payment_id) on delete set null,
     start_date date not null,
     end_date date not null,
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    is_active BOOLEAN default true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     check (end_date > start_date)
 );
 
 CREATE TABLE IF NOT EXISTS product_category(
-    product_category_id serial primary key,
-    category_name varchar(100) unique not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    product_category_id SERIAL PRIMARY KEY,
+    category_name VARCHAR(100) unique not null,
+    parent_category_id INTEGER                                    
+        REFERENCES general_schema.product_category(product_category_id)
+        ON DELETE CASCADE,
+    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),  
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT chk_no_self_reference                              
+        CHECK (product_category_id != parent_category_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_product_category_parent 
+    ON general_schema.product_category(parent_category_id) 
+    WHERE parent_category_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_product_category_hierarchy 
+    ON general_schema.product_category(parent_category_id, hierarchy_level);
 
 CREATE TABLE IF NOT EXISTS product(
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     product_id uuid not null default gen_random_uuid(),
-    sku varchar(50) not null,
-    product_name varchar(100) not null,
+    sku VARCHAR(50) not null,
+    product_name VARCHAR(100) not null,
     product_name_tsv tsvector generated always as (to_tsvector('spanish', product_name)) stored,
     product_description text,
     product_category_id int REFERENCES general_schema.product_category(product_category_id) on delete set null,
     unit_price numeric(10,2) not null check (unit_price >= 0),
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    primary key (tenant_id, product_id)   
+    PRIMARY KEY (tenant_id, product_id)   
 ) partition by hash (tenant_id);
-do $$
+DO $$
 declare
     i int;
 BEGIN
@@ -233,23 +247,23 @@ CREATE INDEX IF NOT EXISTS idx_product_tenant_btree on general_schema.product(te
 CREATE INDEX IF NOT EXISTS idx_product_name_fts on general_schema.product using gin ( product_name_tsv );
 
 CREATE TABLE IF NOT EXISTS global_attribute (
-    global_attribute_id serial primary key,
-    attribute_name varchar(100) not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    global_attribute_id SERIAL PRIMARY KEY,
+    attribute_name VARCHAR(100) not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS unique_attribute_name 
     on general_schema.global_attribute (lower(attribute_name));
 
 CREATE TABLE IF NOT EXISTS tenant_attribute (
-    tenant_attribute_id uuid primary key default gen_random_uuid(),
+    tenant_attribute_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     global_attribute_id int REFERENCES general_schema.global_attribute(global_attribute_id) on delete set null,
-    attribute_name varchar(100) not null,
-    is_custom boolean default false,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    attribute_name VARCHAR(100) not null,
+    is_custom BOOLEAN default false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     check (
         (global_attribute_id is not null and is_custom = false) or
@@ -260,27 +274,113 @@ CREATE TABLE IF NOT EXISTS tenant_attribute (
 CREATE UNIQUE INDEX IF NOT EXISTS unique_tenant_attribute_name 
     on general_schema.tenant_attribute (tenant_id, lower(attribute_name));
 
-CREATE TABLE IF NOT EXISTS product_attribute (
-    tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    product_id uuid not null,
-    tenant_attribute_id uuid not null REFERENCES general_schema.tenant_attribute(tenant_attribute_id) on delete cascade,
-    value text not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+CREATE TABLE IF NOT EXISTS attribute_value (
+    attribute_value_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    tenant_attribute_id uuid NOT NULL REFERENCES general_schema.tenant_attribute(tenant_attribute_id) ON DELETE CASCADE,
+    value_name VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+COMMENT ON COLUMN general_schema.attribute_value.value_name IS 
+    'Value for the attribute (e.g., Color: Red, Size: Medium)';
 
-    primary key (tenant_id, product_id, tenant_attribute_id),
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attribute_value_unique 
+    ON general_schema.attribute_value(tenant_id, tenant_attribute_id, lower(value_name));
+CREATE INDEX IF NOT EXISTS idx_attribute_value_by_attribute 
+    ON general_schema.attribute_value(tenant_attribute_id);
+CREATE INDEX IF NOT EXISTS idx_attribute_value_tenant 
+    ON general_schema.attribute_value(tenant_id);
 
+CREATE TABLE IF NOT EXISTS product_variant (
+    tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    product_variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    product_id uuid NOT NULL,
+    sku VARCHAR(100) NOT NULL,
+    variant_name VARCHAR(255),
+    unit_price numeric(10,2) CHECK (unit_price >= 0),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (tenant_id, product_variant_id),
+    
     FOREIGN KEY (tenant_id, product_id) 
         REFERENCES general_schema.product(tenant_id, product_id) 
-        on delete cascade
-);
+        ON DELETE CASCADE
+) PARTITION BY HASH (tenant_id);
+
+DO $$
+DECLARE
+    i INT;
+BEGIN
+    FOR i IN 0..7 LOOP
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS general_schema.product_variant_p%s 
+             PARTITION OF general_schema.product_variant 
+             FOR VALUES WITH (MODULUS 8, REMAINDER %s);',
+            i, i
+        );
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variant_tenant_sku 
+    ON general_schema.product_variant(tenant_id, sku);
+CREATE INDEX IF NOT EXISTS idx_product_variant_product 
+    ON general_schema.product_variant(tenant_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
+    ON general_schema.product_variant(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_product_variant_active 
+    ON general_schema.product_variant(tenant_id, is_active) 
+    WHERE is_active = true;
+
+COMMENT ON TABLE general_schema.product_variant IS 
+    'Specific sellable product variants linked to a base product. 
+    Variants can have unique SKUs and prices.';
+
+CREATE TABLE IF NOT EXISTS attribute_assignation (
+    tenant_id uuid NOT NULL,
+    product_variant_id uuid NOT NULL,
+    attribute_value_id uuid NOT NULL REFERENCES general_schema.attribute_value(attribute_value_id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (tenant_id, product_variant_id, attribute_value_id),
+    
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) 
+        ON DELETE CASCADE
+) PARTITION BY HASH (tenant_id);
+
+DO $$
+DECLARE
+    i INT;
+BEGIN
+    FOR i IN 0..7 LOOP
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS general_schema.attribute_assignation_p%s 
+             PARTITION OF general_schema.attribute_assignation 
+             FOR VALUES WITH (MODULUS 8, REMAINDER %s);',
+            i, i
+        );
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE INDEX IF NOT EXISTS idx_attr_assignation_variant 
+    ON general_schema.attribute_assignation(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_attr_assignation_value 
+    ON general_schema.attribute_assignation(attribute_value_id);
+
+COMMENT ON TABLE general_schema.attribute_assignation IS 
+    'Links product variants to their attribute values (e.g., Color: Red, Size: Medium).';
 
 CREATE TABLE IF NOT EXISTS account_payable_status(
-    status_id serial primary key,
-    status_name varchar(50) not null,
+    status_id SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS account_payable_type (
@@ -294,7 +394,7 @@ CREATE TABLE IF NOT EXISTS account_payable_type (
 CREATE TABLE IF NOT EXISTS general_schema.account_payable (
     account_payable_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_payable_type_id INT REFERENCES general_schema.account_payable_type(account_payable_type_id) ON DELETE SET NULL,
-    account_status integer not null default 1 REFERENCES general_schema.account_payable_status(status_id),
+    account_status INTEGER not null default 1 REFERENCES general_schema.account_payable_status(status_id),
     has_invoice BOOLEAN DEFAULT FALSE,
     has_tax BOOLEAN DEFAULT FALSE,
     subtotal NUMERIC(12,3) NOT NULL CHECK (subtotal >= 0),
@@ -316,83 +416,86 @@ CREATE SCHEMA IF NOT EXISTS pos_schema;
 SET SEARCH_PATH TO pos_schema;
 
 CREATE TABLE IF NOT EXISTS sale(
-    sale_id uuid primary key default gen_random_uuid(),
+    sale_id uuid PRIMARY KEY default gen_random_uuid(),
     branch_id uuid not null REFERENCES general_schema.branch(branch_id) on delete cascade,  
     sale_date timestamp not null default current_timestamp,
-    currency_id integer REFERENCES general_schema.currency(currency_id) on delete set null,
+    currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
     subtotal_amount numeric(10,2) not null default 0 check (subtotal_amount >= 0),
     tax_amount numeric(10,2) not null default 0 check (tax_amount >= 0),
     total_amount numeric(10,2) not null,
-    is_completed boolean default false,
+    is_completed BOOLEAN default false,
     created_at timestamp not null default current_timestamp,
-    updated_at timestamp default current_timestamp
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sale_branch_id on pos_schema.sale(branch_id);
 CREATE INDEX IF NOT EXISTS idx_sale_sale_date on pos_schema.sale(sale_date);
 
 CREATE TABLE IF NOT EXISTS sale_item(
-    sale_item_id uuid primary key default gen_random_uuid(),
+    sale_item_id uuid PRIMARY KEY default gen_random_uuid(),
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     tenant_id uuid not null, 
-    product_id uuid not null,  
-    quantity integer not null check (quantity > 0),
+    product_variant_id uuid not null,  
+    quantity INTEGER not null check (quantity > 0),
     unit_price numeric(10,2) not null check (unit_price >= 0),
     total_price numeric(10,2) not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-    FOREIGN KEY (tenant_id, product_id) 
-        REFERENCES general_schema.product(tenant_id, product_id) 
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) 
         on delete restrict
 );
-CREATE INDEX IF NOT EXISTS idx_sale_item_product_id on pos_schema.sale_item(product_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id on pos_schema.sale_item(sale_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_tenant_product on pos_schema.sale_item(tenant_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_product_variant 
+    ON pos_schema.sale_item(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id 
+    ON pos_schema.sale_item(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_variant 
+    ON pos_schema.sale_item(sale_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS cash_register(
-    cash_register_id uuid primary key default gen_random_uuid(),
+    cash_register_id uuid PRIMARY KEY default gen_random_uuid(),
     branch_id uuid not null REFERENCES general_schema.branch(branch_id) on delete cascade,
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    is_active BOOLEAN default true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS cash_register_session(
-    cash_register_session_id uuid primary key default gen_random_uuid(),
+    cash_register_session_id uuid PRIMARY KEY default gen_random_uuid(),
     cash_register_id uuid not null REFERENCES pos_schema.cash_register(cash_register_id) on delete cascade,
     user_id uuid not null REFERENCES general_schema.users(user_id) on delete set null,
     opened_at timestamp not null default current_timestamp,
     closed_at timestamp,
     opening_amount numeric(10,2) not null check (opening_amount >= 0),
     closing_amount numeric(10,2) check (closing_amount >= 0),
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    is_active BOOLEAN default true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS cash_register_sale(
-    cash_register_sale_id uuid primary key default gen_random_uuid(),
+    cash_register_sale_id uuid PRIMARY KEY default gen_random_uuid(),
     cash_register_session_id uuid not null REFERENCES pos_schema.cash_register_session(cash_register_session_id) on delete cascade,
     sale_id uuid not null unique REFERENCES pos_schema.sale(sale_id) on delete cascade, 
     transaction_time timestamp not null default current_timestamp,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS customer_payment(
-    customer_payment_id uuid primary key not null default gen_random_uuid(),
+    customer_payment_id uuid PRIMARY KEY not null default gen_random_uuid(),
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,   
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
-    payment_method_id integer REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
-    is_points_redemption boolean default false,
-    points_redeemed integer default 0 check (points_redeemed >= 0),
+    payment_method_id INTEGER REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
+    is_points_redemption BOOLEAN default false,
+    points_redeemed INTEGER default 0 check (points_redeemed >= 0),
     points_to_currency_rate numeric(10,4) default 0 check (points_to_currency_rate >= 0),
     payment_amount numeric(10,2) not null check (payment_amount > 0),
     payment_date timestamp not null default current_timestamp,
-    currency_id integer REFERENCES general_schema.currency(currency_id) on delete set null,
-    verified boolean default false,
+    currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
+    verified BOOLEAN default false,
     created_at timestamp not null default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     constraint check_points_redemption
     check (
@@ -402,98 +505,98 @@ CREATE TABLE IF NOT EXISTS customer_payment(
 );
 
 CREATE TABLE IF NOT EXISTS bill(
-    bill_id uuid primary key default gen_random_uuid(),
+    bill_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
-    currency_id integer REFERENCES general_schema.currency(currency_id) on delete set null,
+    currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
     subtotal_amount numeric(10,2) not null check (subtotal_amount >= 0),
     tax_amount numeric(10,2) not null check (tax_amount >= 0),
     total_amount numeric(10,2) not null,    
-    billed_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    billed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 alter table pos_schema.bill
     add column if not exists due_date date;
 CREATE INDEX IF NOT EXISTS idx_bill_sale_id on pos_schema.bill(sale_id);
 
 CREATE TABLE IF NOT EXISTS bill_payment(
-    bill_payment_id uuid primary key default gen_random_uuid(),
+    bill_payment_id uuid PRIMARY KEY default gen_random_uuid(),
     bill_id uuid not null REFERENCES pos_schema.bill(bill_id) on delete cascade,
     customer_payment_id uuid not null REFERENCES pos_schema.customer_payment(customer_payment_id) on delete cascade,
     payment_amount numeric(10,2) not null check (payment_amount > 0),
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     unique (bill_id, customer_payment_id)
 );
 
 CREATE TABLE IF NOT EXISTS return_reason(
-    return_reason_id serial primary key,
-    reason_code varchar(50) unique not null,
-    reason_name varchar(100) not null,
+    return_reason_id SERIAL PRIMARY KEY,
+    reason_code VARCHAR(50) unique not null,
+    reason_name VARCHAR(100) not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS return_status(
-    return_status_id serial primary key,
-    status_name varchar(50) unique not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    return_status_id SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) unique not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS return_transaction(
-    return_transaction_id uuid primary key default gen_random_uuid(),
+    return_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
     bill_id uuid not null REFERENCES pos_schema.bill(bill_id) on delete cascade,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
-    return_status_id integer REFERENCES pos_schema.return_status(return_status_id) on delete set null,
-    return_date timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    return_status_id INTEGER REFERENCES pos_schema.return_status(return_status_id) on delete set null,
+    return_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_return_transaction_bill_id on pos_schema.return_transaction(bill_id);
 CREATE INDEX IF NOT EXISTS idx_return_transaction_date on pos_schema.return_transaction(return_date);
 
 CREATE TABLE IF NOT EXISTS return_product(
-    return_product_id uuid primary key default gen_random_uuid(),
+    return_product_id uuid PRIMARY KEY default gen_random_uuid(),
     return_transaction_id uuid not null REFERENCES pos_schema.return_transaction(return_transaction_id) on delete cascade,
     sale_item_id uuid not null REFERENCES pos_schema.sale_item(sale_item_id) on delete cascade,
-    quantity integer not null check (quantity > 0),
+    quantity INTEGER not null check (quantity > 0),
     unit_price numeric(10,2) not null check (unit_price >= 0),
     total_price numeric(10,2) not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_return_product_transaction_id on pos_schema.return_product(return_transaction_id);
 
 CREATE TABLE IF NOT EXISTS promotion_type(
-    promotion_type_id serial primary key,
-    type_name varchar(50) unique not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    promotion_type_id SERIAL PRIMARY KEY,
+    type_name VARCHAR(50) unique not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS promotion(
-    promotion_id uuid primary key default gen_random_uuid(),
+    promotion_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    promotion_name varchar(100) not null,
-    promotion_code varchar(50) not null,
+    promotion_name VARCHAR(100) not null,
+    promotion_code VARCHAR(50) not null,
     promotion_description text,
     promotion_type_id int REFERENCES pos_schema.promotion_type(promotion_type_id) on delete set null,
     customer_segment_id int REFERENCES general_schema.customer_segment(customer_segment_id) on delete set null,
     promotion_start_date date not null,
     promotion_end_date date not null,
-    is_active boolean default false,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    is_active BOOLEAN default false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     check (promotion_end_date > promotion_start_date)
 );
 
 CREATE TABLE IF NOT EXISTS promotion_rule(
-    promotion_rule_id uuid primary key default gen_random_uuid(),
+    promotion_rule_id uuid PRIMARY KEY default gen_random_uuid(),
     promotion_id uuid not null REFERENCES pos_schema.promotion(promotion_id) on delete cascade,
     -- =====================================
     -- Fixed amount or percentage discount
@@ -509,8 +612,8 @@ CREATE TABLE IF NOT EXISTS promotion_rule(
     -- =====================================
     -- Buy X get Y (2x1, 3x2, etc.)
     -- =====================================
-    buy_quantity integer,
-    get_quantity integer,
+    buy_quantity INTEGER,
+    get_quantity INTEGER,
     get_discount_percentage numeric(5,2) default 100.00 check (
         get_discount_percentage is null or 
         (get_discount_percentage >= 0 and get_discount_percentage <= 100)
@@ -518,87 +621,87 @@ CREATE TABLE IF NOT EXISTS promotion_rule(
     -- =====================================
     -- Volume discount
     -- =====================================
-    min_quantity integer,
-    max_quantity integer,
+    min_quantity INTEGER,
+    max_quantity INTEGER,
     -- =====================================
     -- Tiered pricing
     -- =====================================
-    tier_level integer,
-    tier_min_quantity integer,
-    tier_max_quantity integer,
+    tier_level INTEGER,
+    tier_min_quantity INTEGER,
+    tier_max_quantity INTEGER,
     tier_price numeric(10,2),
     tier_discount_percentage numeric(5,2),
     -- =====================================
     -- Minimum purchase amount for promotion
     -- =====================================
     min_purchase_amount numeric(10,2),
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 create type discount_result as (
     discount_amount numeric(10,2),
     discount_percentage numeric(5,2),
     rule_description text,
-    success boolean
+    success BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS loyalty_program(
-    loyalty_program_id uuid primary key default gen_random_uuid(),
+    loyalty_program_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     points_earned_per_currency_unit numeric(5,2) not null default 1.00 check (points_earned_per_currency_unit >= 0),
     points_redeemed_per_currency_unit numeric(10,2) not null default 100.00 check (points_redeemed_per_currency_unit > 0),
     minimum_purchase_for_points numeric(10,2) default 0 check (minimum_purchase_for_points >= 0),
-    is_active boolean default true,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    is_active BOOLEAN default true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tenant_customer_score(
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
-    score integer not null default 0 check (score >= 0),
-    lifetime_score integer not null default 0 check (lifetime_score >= 0),
-    score_redeemed integer not null default 0 check (score_redeemed >= 0),
+    score INTEGER not null default 0 check (score >= 0),
+    lifetime_score INTEGER not null default 0 check (lifetime_score >= 0),
+    score_redeemed INTEGER not null default 0 check (score_redeemed >= 0),
     last_earned_at timestamp,
     last_redeemed_at timestamp,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    primary key (tenant_customer_id, tenant_id)
+    PRIMARY KEY (tenant_customer_id, tenant_id)
 );
 
 CREATE TABLE IF NOT EXISTS score_redemption_status(
-    score_redemption_status_id serial primary key,
-    status_name varchar(50) unique not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    score_redemption_status_id SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) unique not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS score_transaction_type(
-    score_transaction_type_id serial primary key,
-    type_name varchar(50) unique not null,
+    score_transaction_type_id SERIAL PRIMARY KEY,
+    type_name VARCHAR(50) unique not null,
     description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS score_transaction(
-    score_transaction_id uuid primary key default gen_random_uuid(),
+    score_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
     transaction_type_id int REFERENCES pos_schema.score_transaction_type(score_transaction_type_id) on delete set null,
-    points integer not null,
+    points INTEGER not null,
     bill_id uuid REFERENCES pos_schema.bill(bill_id) on delete set null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS debtor (
-    debtor_id uuid primary key default gen_random_uuid(),
+    debtor_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     debt numeric(10, 2) not null default 0.00, -- ? Add check (debt >= 0) 
-    missed_payments integer not null default 0
+    missed_payments INTEGER not null default 0
 );
 
 
@@ -611,85 +714,113 @@ CREATE SCHEMA IF NOT EXISTS inventory_schema;
 SET SEARCH_PATH TO inventory_schema;
 
 CREATE TABLE IF NOT EXISTS warehouse (
-    warehouse_id uuid primary key default gen_random_uuid(),
+    warehouse_id uuid PRIMARY KEY default gen_random_uuid(),
     branch_id uuid not null REFERENCES general_schema.branch(branch_id) on delete cascade,
-    warehouse_name varchar(255) not null,
+    warehouse_name VARCHAR(255) not null,
     warehouse_address text not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    is_branch BOOLEAN default false not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS inventory(
-    inventory_id uuid primary key default gen_random_uuid(),
+    inventory_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     warehouse_id uuid not null REFERENCES inventory_schema.warehouse(warehouse_id) on delete cascade,
-    stock integer not null,
+    stock INTEGER not null,
     expiration_date timestamp check (expiration_date is null or expiration_date > current_timestamp),
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade  
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade  
 );
+CREATE INDEX IF NOT EXISTS idx_inventory_product_variant 
+    ON inventory_schema.inventory(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_warehouse 
+    ON inventory_schema.inventory(warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_tenant 
+    ON inventory_schema.inventory(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warehouse_is_branch 
+    ON inventory_schema.warehouse(is_branch);
+
+CREATE INDEX IF NOT EXISTS idx_warehouse_branch_sales 
+    ON inventory_schema.warehouse(branch_id, is_branch)
+    WHERE is_branch = TRUE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_warehouse_branch_sales_floor 
+    ON inventory_schema.warehouse(branch_id)
+    WHERE is_branch = TRUE;
 
 CREATE TABLE IF NOT EXISTS inventory_log_type(
-    inventory_log_type_id serial primary key,
-    inventory_log_type_name varchar(50) not null unique, 
+    inventory_log_type_id SERIAL PRIMARY KEY,
+    inventory_log_type_name VARCHAR(50) not null unique, 
     inventory_log_type_description text,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS inventory_log(
-    inventory_log_id uuid primary key default gen_random_uuid(),
-    inventory_log_type_id integer not null REFERENCES inventory_schema.inventory_log_type(inventory_log_type_id) on delete cascade,
+    inventory_log_id uuid PRIMARY KEY default gen_random_uuid(),
+    inventory_log_type_id INTEGER not null REFERENCES inventory_schema.inventory_log_type(inventory_log_type_id) on delete cascade,
     warehouse_id uuid not null REFERENCES inventory_schema.warehouse(warehouse_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
-    quantity integer not null,
+    product_variant_id uuid not null,
+    quantity INTEGER not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
-
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade  
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade  
 );
+CREATE INDEX IF NOT EXISTS idx_inventory_log_product_variant 
+    ON inventory_schema.inventory_log(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_log_warehouse 
+    ON inventory_schema.inventory_log(warehouse_id);
 
 CREATE TABLE IF NOT EXISTS inventory_transfer(
-    inventory_transfer_id uuid primary key default gen_random_uuid(),
+    inventory_transfer_id uuid PRIMARY KEY default gen_random_uuid(),
     from_warehouse_id uuid not null REFERENCES inventory_schema.warehouse(warehouse_id) on delete cascade,
     to_warehouse_id uuid not null REFERENCES inventory_schema.warehouse(warehouse_id) on delete cascade,
-    inventory_transfer_departure_date timestamp default current_timestamp,
+    inventory_transfer_departure_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     inventory_transfer_arrival_date timestamp,
-    transfer_date timestamp default current_timestamp,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp
+    transfer_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS inventory_transfer_product(
-    inventory_transfer_product_id uuid primary key default gen_random_uuid(),
+    inventory_transfer_product_id uuid PRIMARY KEY default gen_random_uuid(),
     inventory_transfer_id uuid not null REFERENCES inventory_schema.inventory_transfer(inventory_transfer_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
-    quantity integer not null,
-    created_at timestamp default current_timestamp,
-    updated_at timestamp default current_timestamp,
+    product_variant_id uuid not null,
+    quantity INTEGER not null,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade  
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade  
 );
+CREATE INDEX IF NOT EXISTS idx_transfer_product_variant 
+    ON inventory_schema.inventory_transfer_product(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS discrepancy_count(
     discrepancy_count_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     warehouse_id uuid NOT NULL REFERENCES inventory_schema.warehouse(warehouse_id) ON DELETE CASCADE,
-    stored_quantity integer NOT NULL,
-    physical_quantity integer NOT NULL,
+    stored_quantity INTEGER NOT NULL,
+    physical_quantity INTEGER NOT NULL,
     discrepancy_reason text,
-    created_at timestamp DEFAULT current_timestamp,
-    updated_at timestamp DEFAULT current_timestamp,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) ON DELETE CASCADE  
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) ON DELETE CASCADE  
 );
+CREATE INDEX IF NOT EXISTS idx_discrepancy_product_variant 
+    ON inventory_schema.discrepancy_count(tenant_id, product_variant_id);
 
 
 
@@ -724,7 +855,7 @@ CREATE TABLE IF NOT EXISTS supplier_branch(
 );
 
 CREATE TABLE IF NOT EXISTS purchase_order_status(
-    status_id serial PRIMARY KEY,
+    status_id SERIAL PRIMARY KEY,
     status_name VARCHAR(50) not null,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -746,14 +877,17 @@ CREATE TABLE IF NOT EXISTS purchase_order_item(
     purchase_order_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_order_id uuid not null REFERENCES purchase_schema.purchase_order(purchase_order_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_ordered INTEGER not null,
     unit_price NUMERIC(12,3) not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_purchase_order_item_variant 
+    ON purchase_schema.purchase_order_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS purchase_order_tracking(
     purchase_order_tracking_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -788,14 +922,17 @@ CREATE TABLE IF NOT EXISTS supplier_invoice_item(
     supplier_invoice_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     supplier_invoice_id uuid not null REFERENCES purchase_schema.supplier_invoice(supplier_invoice_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_billed INTEGER not null,
     unit_price NUMERIC(12,3) not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_supplier_invoice_item_variant 
+    ON purchase_schema.supplier_invoice_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS goods_receipt(
     goods_receipt_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -812,13 +949,16 @@ CREATE TABLE IF NOT EXISTS goods_receipt_item(
     goods_receipt_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     goods_receipt_id uuid not null REFERENCES purchase_schema.goods_receipt(goods_receipt_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_received INTEGER not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_goods_receipt_item_variant 
+    ON purchase_schema.goods_receipt_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS purchase_schema.purchase_account_payable(
     purchase_account_payable_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -848,7 +988,7 @@ CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_verified ON purchase_schem
 CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_date ON purchase_schema.purchase_order_payment(payment_date);
 
 CREATE TABLE IF NOT EXISTS purchase_order_payment_alert_type(
-    payment_alert_type_id serial PRIMARY KEY,
+    payment_alert_type_id SERIAL PRIMARY KEY,
     payment_alert_type_name VARCHAR(50) not null,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1051,12 +1191,12 @@ CREATE INDEX idx_payroll_movement_detail_id ON hr_schema.payroll_movement(detail
 -- =============================================
 set search_path = general_schema;
 
-create or replace procedure verify_tenant_payment(_payment_id uuid)
+CREATE OR REPLACE PROCEDURE verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
 declare
-    _exists boolean;
-    _already_verified boolean;
+    _exists BOOLEAN;
+    _already_verified BOOLEAN;
     _rows_updated int;
     _tenant_id uuid;
 BEGIN
@@ -1114,7 +1254,7 @@ CREATE OR REPLACE FUNCTION create_subscription()
 returns trigger as $$
 declare
     _subscription_type_id int;
-    _exists boolean;
+    _exists BOOLEAN;
     _old_end_date date;
     _time_left interval;
     _new_start_date date;
@@ -1245,6 +1385,153 @@ BEGIN
 end;
 $$ language plpgsql;
 
+CREATE OR REPLACE FUNCTION general_schema.prevent_category_cycles()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_current_id INTEGER;
+    v_visited INTEGER[];
+    v_max_iterations INTEGER := 10;
+    v_iteration INTEGER := 0;
+BEGIN
+    IF NEW.parent_category_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    v_current_id := NEW.parent_category_id;
+    v_visited := ARRAY[NEW.product_category_id];
+    
+    WHILE v_current_id IS NOT NULL AND v_iteration < v_max_iterations LOOP
+        IF v_current_id = NEW.product_category_id THEN
+            RAISE EXCEPTION 'Cycle detected: category % cannot be its own ancestor', 
+                NEW.product_category_id;
+        END IF;
+        
+        IF v_current_id = ANY(v_visited) THEN
+            RAISE EXCEPTION 'Cycle detected in category hierarchy';
+        END IF;
+        
+        v_visited := array_append(v_visited, v_current_id);
+        
+        SELECT parent_category_id INTO v_current_id
+        FROM general_schema.product_category
+        WHERE product_category_id = v_current_id;
+        
+        v_iteration := v_iteration + 1;
+    END LOOP;
+    
+    IF v_iteration >= v_max_iterations THEN
+        RAISE EXCEPTION 'Category hierarchy too deep or contains cycle';
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION general_schema.prevent_category_cycles() IS 
+    'Validates category hierarchy to prevent circular references (both direct and indirect cycles)';
+
+DROP TRIGGER IF EXISTS trigger_prevent_category_cycles 
+    ON general_schema.product_category;
+CREATE TRIGGER trigger_prevent_category_cycles
+    BEFORE INSERT OR UPDATE OF parent_category_id
+    ON general_schema.product_category
+    FOR EACH ROW
+    EXECUTE FUNCTION general_schema.prevent_category_cycles();
+
+
+CREATE OR REPLACE FUNCTION general_schema.update_category_hierarchy_level()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_parent_level INTEGER;
+BEGIN
+    IF NEW.parent_category_id IS NULL THEN
+        NEW.hierarchy_level := 0;
+    ELSE
+        SELECT hierarchy_level INTO v_parent_level
+        FROM general_schema.product_category
+        WHERE product_category_id = NEW.parent_category_id;
+        
+        IF v_parent_level IS NULL THEN
+            RAISE EXCEPTION 'Parent category % not found', NEW.parent_category_id;
+        END IF;
+        
+        NEW.hierarchy_level := v_parent_level + 1;
+        
+        IF NEW.hierarchy_level > 5 THEN
+            RAISE EXCEPTION 'Maximum category depth exceeded (max 5 levels)';
+        END IF;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION general_schema.update_category_hierarchy_level() IS 
+    'Automatically calculates and updates hierarchy_level based on parent category. Enforces max depth of 5 levels.';
+
+DROP TRIGGER IF EXISTS trigger_update_category_hierarchy 
+    ON general_schema.product_category;
+CREATE TRIGGER trigger_update_category_hierarchy
+    BEFORE INSERT OR UPDATE OF parent_category_id
+    ON general_schema.product_category
+    FOR EACH ROW
+    EXECUTE FUNCTION general_schema.update_category_hierarchy_level();
+
+
+CREATE OR REPLACE FUNCTION general_schema.get_subcategories(
+    p_parent_category_id INTEGER DEFAULT NULL
+)
+RETURNS TABLE(
+    category_id INTEGER,
+    category_name VARCHAR(100),
+    parent_id INTEGER,
+    level INTEGER,
+    full_path TEXT,
+    product_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE category_tree AS (
+        SELECT 
+            pc.product_category_id,
+            pc.category_name,
+            pc.parent_category_id,
+            pc.hierarchy_level,
+            0 AS depth,
+            pc.category_name::TEXT AS path
+        FROM general_schema.product_category pc
+        WHERE (p_parent_category_id IS NULL AND pc.parent_category_id IS NULL)
+           OR (pc.parent_category_id = p_parent_category_id)
+        
+        UNION ALL
+        
+        SELECT 
+            pc.product_category_id,
+            pc.category_name,
+            pc.parent_category_id,
+            pc.hierarchy_level,
+            ct.depth + 1,
+            ct.path || ' > ' || pc.category_name
+        FROM general_schema.product_category pc
+        INNER JOIN category_tree ct 
+            ON pc.parent_category_id = ct.product_category_id
+    )
+    SELECT 
+        ct.product_category_id,
+        ct.category_name,
+        ct.parent_category_id,
+        ct.hierarchy_level,
+        ct.path,
+        COUNT(p.product_id) AS product_count
+    FROM category_tree ct
+    LEFT JOIN general_schema.product p 
+        ON p.product_category_id = ct.product_category_id
+    GROUP BY ct.product_category_id, ct.category_name, ct.parent_category_id, 
+             ct.hierarchy_level, ct.path, ct.depth
+    ORDER BY ct.depth, ct.category_name;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
 drop trigger if exists update_branch_timestamp on general_schema.branch;
 create trigger update_branch_timestamp before update on general_schema.branch
 for each row execute function general_schema.update_timestamp();
@@ -1261,8 +1548,13 @@ drop trigger if exists update_product_timestamp on general_schema.product;
 create trigger update_product_timestamp before update on general_schema.product
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_product_attribute_timestamp on general_schema.product_attribute;
-create trigger update_product_attribute_timestamp before update on general_schema.product_attribute
+-- Triggers for new variant model tables
+drop trigger if exists update_attribute_value_timestamp on general_schema.attribute_value;
+create trigger update_attribute_value_timestamp before update on general_schema.attribute_value
+for each row execute function general_schema.update_timestamp();
+
+drop trigger if exists update_product_variant_timestamp on general_schema.product_variant;
+create trigger update_product_variant_timestamp before update on general_schema.product_variant
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_tenant_timestamp on general_schema.tenant;
@@ -1294,11 +1586,11 @@ for each row execute function general_schema.update_timestamp();
 set search_path = pos_schema;
 
 CREATE OR REPLACE FUNCTION check_sale_payment_completion(_sale_id uuid)
-returns boolean as $$
+returns BOOLEAN as $$
 declare
     _sale_total numeric(10,2);
     _payments_total numeric(10,2);
-    _is_completed boolean;
+    _is_completed BOOLEAN;
     _pending_payments int;
 BEGIN
         select total_amount, is_completed 
@@ -1381,7 +1673,7 @@ BEGIN
             new.sale_id,
             current_timestamp
         )
-        on conflict (sale_id) do nothing;
+        on conflict (sale_id) DO nothing;
         
         raise notice 'Sale % linked to session %', new.sale_id, _session_id;
     else
@@ -1432,7 +1724,7 @@ returns table (
     bill_id uuid,
     sale_id uuid,
     tenant_customer_id uuid,
-    currency_id integer,
+    currency_id INTEGER,
     subtotal_amount numeric(10,2),
     tax_amount numeric(10,2),
     total_amount numeric(10,2),
@@ -1462,7 +1754,7 @@ declare
     _bill_id uuid;
     _tenant_customer_id uuid;
     _tenant_id uuid;
-    _currency_id integer;
+    _currency_id INTEGER;
     _subtotal numeric(10,2);
     _tax numeric(10,2);
     _total numeric(10,2);
@@ -1567,9 +1859,9 @@ declare
     _new_tax numeric(10,2);
     _new_total numeric(10,2);
     _tax_rate numeric(5,2);
-    _quantity_remaining integer;
+    _quantity_remaining INTEGER;
     _sale_subtotal_after numeric(10,2);
-    _region_name varchar;
+    _region_name VARCHAR;
     _tenant_id uuid;
 BEGIN
     select 
@@ -1578,7 +1870,7 @@ BEGIN
         si.quantity,
         si.unit_price,
         si.total_price,
-        si.product_id,
+        si.product_variant_id,
         si.tenant_id
     into _sale_item_record
     from pos_schema.sale_item si
@@ -1682,8 +1974,8 @@ CREATE OR REPLACE FUNCTION auto_toggle_promotions()
 returns table(
     action text,
     promotion_id uuid,
-    promo_code varchar(50),
-    promo_name varchar(100)
+    promo_code VARCHAR(50),
+    promo_name VARCHAR(100)
 ) as $$
 declare
     _now timestamp := current_timestamp;
@@ -1743,7 +2035,7 @@ $$ language plpgsql;
 
     CREATE OR REPLACE FUNCTION calculate_percentage_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -1793,7 +2085,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_fixed_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -1843,7 +2135,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_buy_x_get_y_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -1852,7 +2144,7 @@ declare
     _total_price numeric(10,2);
     _discount numeric(10,2);
     _discount_pct numeric(5,2);
-    _free_items integer;
+    _free_items INTEGER;
     _result pos_schema.discount_result;
 BEGIN
     _total_price := _quantity * _unit_price;
@@ -1899,7 +2191,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_volume_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -1948,7 +2240,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_tiered_pricing_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -2013,7 +2305,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_combo_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -2029,19 +2321,19 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION calculate_promotion_discount(
     _promotion_id uuid,
     _tenant_id uuid,
-    _product_id uuid,
-    _quantity integer,
+    _product_variant_id uuid,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2) default null
 ) returns table(
     discount_amount numeric(10,2),
     discount_percentage numeric(5,2),
-    promotion_type varchar(50),
+    promotion_type VARCHAR(50),
     rule_applied text
 ) as $$
 declare
     _promo record;
-    _type_name varchar(50);
+    _type_name VARCHAR(50);
     _result pos_schema.discount_result;
 BEGIN
     select 
@@ -2076,7 +2368,7 @@ BEGIN
     _type_name := _promo.type_name;
     
     raise notice 'Calculating discount for promotion: % (%)', _promo.promotion_name, _type_name;
-    raise notice '   Product: %, Quantity: %, Unit Price: $%', _product_id, _quantity, _unit_price;
+    raise notice '   Product Variant: %, Quantity: %, Unit Price: $%', _product_variant_id, _quantity, _unit_price;
     
     case _type_name
         when 'percentage_discount' then
@@ -2122,7 +2414,7 @@ BEGIN
         return query select 
             _result.discount_amount,
             _result.discount_percentage,
-            _type_name::varchar(50),
+            _type_name::VARCHAR(50),
             _result.rule_description;
     end if;
 
@@ -2131,9 +2423,9 @@ BEGIN
 end;
 $$ language plpgsql;
 
-create or replace procedure open_close_cash_register_session(
+CREATE OR REPLACE PROCEDURE open_close_cash_register_session(
     _cash_register_id uuid,
-    _action varchar(10), 
+    _action VARCHAR(10), 
     _amount numeric(10,2)
 )
 as $$
@@ -2220,12 +2512,12 @@ CREATE OR REPLACE FUNCTION calculate_purchase_score(
 _tenant_id uuid,
 _tenant_customer_id uuid,
 _purchase_amount numeric(10,2)
-) returns integer as $$
+) returns INTEGER as $$
 declare
     _minimum_purchase numeric(10,2);
     _points_earned_per_currency_unit numeric(5,2);
-    _score integer;
-    _program_exists boolean;
+    _score INTEGER;
+    _program_exists BOOLEAN;
 BEGIN
         select exists(
             select 1 
@@ -2270,10 +2562,10 @@ declare
     _tenant_id uuid;
     _tenant_customer_id uuid;
     _bill_id uuid;
-    _points_earned integer;
-    _current_balance integer;
+    _points_earned INTEGER;
+    _current_balance INTEGER;
     _cash_payments_total numeric(10,2);
-    _points_already_awarded boolean;
+    _points_already_awarded BOOLEAN;
 BEGIN
         _bill_id := new.bill_id;
         
@@ -2340,7 +2632,7 @@ BEGIN
             current_timestamp
         )
         on conflict (tenant_customer_id, tenant_id)
-        do update set
+        DO update set
             score = tenant_customer_score.score + _points_earned,
             lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
             last_earned_at = current_timestamp
@@ -2383,17 +2675,17 @@ create trigger on_purchase_billed
 
 CREATE OR REPLACE FUNCTION redeem_points(
 _tenant_customer_id uuid,
-_points_to_redeem integer
+_points_to_redeem INTEGER
 ) returns table(
     cash_value numeric(10,2),
-    points_available integer,
-    success boolean,
+    points_available INTEGER,
+    success BOOLEAN,
     message text
 ) as $$
 declare
     _points_redeemed_per_currency_unit numeric(10,2); 
     _tenant_id uuid;
-    _current_points integer;
+    _current_points INTEGER;
     _cash_equivalent numeric(10,2);
 BEGIN   
     select tenant_id into _tenant_id
@@ -2482,19 +2774,19 @@ BEGIN
 end;
 $$ language plpgsql;
 
-create or replace procedure verify_customer_payment(_payment_id uuid)
+CREATE OR REPLACE PROCEDURE verify_customer_payment(_payment_id uuid)
 as $$
 declare
-    _exists boolean;
-    _already_verified boolean;
+    _exists BOOLEAN;
+    _already_verified BOOLEAN;
     _tenant_customer_id uuid;
     _sale_id uuid;
     _payment_amount numeric(10,2);
-    _payment_method varchar(50);
-    _is_points_redemption boolean;
-    _points_redeemed integer;
+    _payment_method VARCHAR(50);
+    _is_points_redemption BOOLEAN;
+    _points_redeemed INTEGER;
     _redeem_result record;
-    _sale_completed boolean;
+    _sale_completed BOOLEAN;
 BEGIN
     select exists(
         select 1 
@@ -2682,8 +2974,8 @@ CREATE OR REPLACE FUNCTION create_purchase_order(
     p_warehouse_id uuid,
     p_expected_delivery_date date,
     p_items jsonb default '[]'::jsonb,
-    p_has_invoice boolean default true,
-    p_payment_condition varchar(10) default 'CREDIT'
+    p_has_invoice BOOLEAN default true,
+    p_payment_condition VARCHAR(10) default 'CREDIT'
 ) returns uuid as $$
 declare
     v_purchase_order_id uuid;
@@ -2691,7 +2983,7 @@ declare
     v_item jsonb;
     v_tenant_id uuid;
     v_product_id uuid;
-    v_qty integer;
+    v_qty INTEGER;
     v_unit numeric(12,3);
     v_subtotal numeric(12,3);
     v_tax_rate numeric(5,2);
@@ -2729,14 +3021,14 @@ BEGIN
     if p_items is not null and jsonb_typeof(p_items) = 'array' and jsonb_array_length(p_items) > 0 then
         for v_item in select value from jsonb_array_elements(p_items)
         loop
-            v_product_id := (v_item ->> 'product_id')::uuid;
+            v_product_id := (v_item ->> 'product_variant_id')::uuid;
             v_qty := coalesce((v_item ->> 'quantity_ordered')::int, 0);
             v_unit := coalesce((v_item ->> 'unit_price')::numeric, 0);
 
             INSERT INTO purchase_schema.purchase_order_item(
                 purchase_order_id,
                 tenant_id,
-                product_id,
+                product_variant_id,
                 quantity_ordered,
                 unit_price
             ) VALUES (
@@ -2831,14 +3123,14 @@ BEGIN
         INSERT INTO purchase_schema.supplier_invoice_item(
             supplier_invoice_id,
             tenant_id,
-            product_id,
+            product_variant_id,
             quantity_billed,
             unit_price
         )
         select 
             v_supplier_invoice_id,
             tenant_id,
-            product_id,
+            product_variant_id,
             quantity_ordered,
             unit_price
         from purchase_schema.purchase_order_item
@@ -2982,7 +3274,7 @@ create trigger recalc_account_payable_on_payment_trigger
 CREATE OR REPLACE FUNCTION update_invoice_paid_status()
 returns trigger as $$
 declare
-    v_is_paid boolean;
+    v_is_paid BOOLEAN;
 BEGIN
     if new.account_payable_status = 3 and old.account_payable_status is distinct from 3 then
         select is_paid into v_is_paid
@@ -3046,19 +3338,19 @@ BEGIN
         ) returning goods_receipt_id into v_goods_receipt_id;
 
         for v_item in 
-            select tenant_id, product_id, quantity_ordered
+            select tenant_id, product_variant_id, quantity_ordered
             from purchase_schema.purchase_order_item
             where purchase_order_id = new.purchase_order_id
         loop
             INSERT INTO purchase_schema.goods_receipt_item(
                 goods_receipt_id,
                 tenant_id,
-                product_id,
+                product_variant_id,
                 quantity_received
             ) VALUES (
                 v_goods_receipt_id,
                 v_item.tenant_id,
-                v_item.product_id,
+                v_item.product_variant_id,
                 v_item.quantity_ordered
             );
         end loop;
@@ -3091,11 +3383,11 @@ declare
     v_receipt_subtotal numeric(12,3);
     v_receipt_tax numeric(12,3);
     v_receipt_total numeric(12,3);
-    v_order_qty integer;
-    v_invoice_qty integer;
-    v_receipt_qty integer;
-    v_amounts_matched boolean;
-    v_quantities_matched boolean;
+    v_order_qty INTEGER;
+    v_invoice_qty INTEGER;
+    v_receipt_qty INTEGER;
+    v_amounts_matched BOOLEAN;
+    v_quantities_matched BOOLEAN;
 BEGIN
     select supplier_invoice_id into v_supplier_invoice_id
     from purchase_schema.supplier_invoice
@@ -3202,8 +3494,8 @@ returns void as $$
 declare
     v_config record;
     v_account record;
-    v_days_until_due integer;
-    v_alert_type_id integer;
+    v_days_until_due INTEGER;
+    v_alert_type_id INTEGER;
     v_existing_alert_id uuid;
 BEGIN
     for v_config in 
@@ -3288,12 +3580,12 @@ returns table(
     payment_alert_id uuid,
     purchase_account_payable_id uuid,
     purchase_order_id uuid,
-    supplier_name varchar,
-    invoice_number varchar,
-    alert_type varchar,
+    supplier_name VARCHAR,
+    invoice_number VARCHAR,
+    alert_type VARCHAR,
     alert_type_description text,
     due_date date,
-    days_until_due integer,
+    days_until_due INTEGER,
     balance_remaining numeric,
     alert_date timestamp,
     created_at timestamp
@@ -3309,7 +3601,7 @@ BEGIN
         spat.payment_alert_type_name,
         spat.description,
         ap.due_date,
-        (ap.due_date - current_date)::integer as days_until_due,
+        (ap.due_date - current_date)::INTEGER as days_until_due,
         (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) as balance_remaining,
         spa.alert_date,
         spa.created_at
@@ -3353,7 +3645,7 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts()
 returns trigger as $$
 declare
-    v_is_paid boolean;
+    v_is_paid BOOLEAN;
 BEGIN
     if new.account_payable_status = 3 and old.account_payable_status is distinct from 3 then
         select is_paid into v_is_paid
@@ -3381,10 +3673,10 @@ create trigger auto_resolve_payment_alerts_trigger
 
 CREATE OR REPLACE FUNCTION initialize_payment_alert_config(
     p_tenant_id uuid,
-    p_warning_days integer default 7,
-    p_urgent_days integer default 3,
-    p_email_enabled boolean default true,
-    p_sms_enabled boolean default false
+    p_warning_days INTEGER default 7,
+    p_urgent_days INTEGER default 3,
+    p_email_enabled BOOLEAN default true,
+    p_sms_enabled BOOLEAN default false
 ) returns uuid as $$
 declare
     v_config_id uuid;
@@ -3402,7 +3694,7 @@ BEGIN
         p_email_enabled,
         p_sms_enabled
     )
-    on conflict (tenant_id) do update
+    on conflict (tenant_id) DO update
     set warning_days_before_due = excluded.warning_days_before_due,
         urgent_days_before_due = excluded.urgent_days_before_due,
         email_notifications_enabled = excluded.email_notifications_enabled,
@@ -3416,19 +3708,19 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid)
 returns table(
-    total_alerts integer,
-    overdue_count integer,
-    urgent_count integer,
-    warning_count integer,
+    total_alerts INTEGER,
+    overdue_count INTEGER,
+    urgent_count INTEGER,
+    warning_count INTEGER,
     total_amount_at_risk numeric
 ) as $$
 BEGIN
     return query
     select 
-        count(*)::integer as total_alerts,
-        count(*) filter (where spat.payment_alert_type_id = 3)::integer as overdue_count,
-        count(*) filter (where spat.payment_alert_type_id = 2)::integer as urgent_count,
-        count(*) filter (where spat.payment_alert_type_id = 1)::integer as warning_count,
+        count(*)::INTEGER as total_alerts,
+        count(*) filter (where spat.payment_alert_type_id = 3)::INTEGER as overdue_count,
+        count(*) filter (where spat.payment_alert_type_id = 2)::INTEGER as urgent_count,
+        count(*) filter (where spat.payment_alert_type_id = 1)::INTEGER as warning_count,
         coalesce(sum(ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid), 0) as total_amount_at_risk
     from purchase_schema.purchase_order_payment_alert spa
     join purchase_schema.purchase_order_payment_alert_type spat 

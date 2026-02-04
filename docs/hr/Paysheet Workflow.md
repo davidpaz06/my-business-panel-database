@@ -6,7 +6,7 @@ Scope: create and manage paysheets for employees, aggregate income concepts into
 
 ## Prerequisites
 
-- general data: a `general.branch` to attribute the paysheet, and valid `general.payment_method` IDs for employee payments in `paysheet_detail`.
+- general_schema data: a `general_schema.branch` to attribute the paysheet, and valid `general_schema.payment_method` IDs for employee payments in `paysheet_detail`.
 - Employees: existing employees in `hr_schema.employee` (can be created via `hr_schema.create_new_employee`).
 - HR objects: deployed `hr_schema.paysheet`, `hr_schema.paysheet_detail`, `hr_schema.income_concept`, `hr_schema.income_register`, and status catalog `hr_schema.paysheet_status` with at least `Pending`, `Completed`, `Canceled`.
 - Triggers & functions: trigger `update_gross_salary` over `income_register`; trigger `protect_net_salary` over `paysheet_detail`; functions `hr_schema.update_paysheet_state` and `hr_schema.generate_monthly_ccss`.

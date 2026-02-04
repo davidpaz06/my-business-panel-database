@@ -1,4 +1,3 @@
-
 -- =====================================
 -- TEST: PAGO DE CONTADO CON FACTURACIÓN
 -- =====================================
@@ -17,7 +16,7 @@
 -- ========================================
 -- SECCIÓN 0: Limpieza inicial
 -- ========================================
-do $$
+DO $$
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -26,132 +25,132 @@ BEGIN
     raise notice '';
     
     -- Limpiar en orden inverso a las FOREIGN KEYs
-    delete from pos.score_transaction 
+    delete from pos_schema.score_transaction 
     where tenant_customer_id in (
-        select tenant_customer_id from general.tenant_customer 
+        select tenant_customer_id from general_schema.tenant_customer 
         where email = 'juan.perez@email.com'
     );
     
-    delete from pos.tenant_customer_score 
+    delete from pos_schema.tenant_customer_score 
     where tenant_customer_id in (
-        select tenant_customer_id from general.tenant_customer 
+        select tenant_customer_id from general_schema.tenant_customer 
         where email = 'juan.perez@email.com'
     );
     
-    delete from pos.bill_payment 
+    delete from pos_schema.bill_payment 
     where bill_id in (
-        select bill_id from pos.bill 
+        select bill_id from pos_schema.bill 
         where tenant_customer_id in (
-            select tenant_customer_id from general.tenant_customer 
+            select tenant_customer_id from general_schema.tenant_customer 
             where email = 'juan.perez@email.com'
         )
     );
-    
-    delete from pos.bill 
+    select * from general_schema.product
+    delete from pos_schema.bill 
     where tenant_customer_id in (
-        select tenant_customer_id from general.tenant_customer 
+        select tenant_customer_id from general_schema.tenant_customer 
         where email = 'juan.perez@email.com'
     );
     
-    delete from pos.customer_payment 
+    delete from pos_schema.customer_payment 
     where tenant_customer_id in (
-        select tenant_customer_id from general.tenant_customer 
+        select tenant_customer_id from general_schema.tenant_customer 
         where email = 'juan.perez@email.com'
     );
     
-    delete from pos.cash_register_sale 
+    delete from pos_schema.cash_register_sale 
     where sale_id in (
-        select sale_id from pos.sale 
+        select sale_id from pos_schema.sale 
         where branch_id in (
-            select branch_id from general.branch 
+            select branch_id from general_schema.branch 
             where tenant_id in (
-                select tenant_id from general.tenant 
+                select tenant_id from general_schema.tenant 
                 where tenant_name = 'Super Comercio Digital'
             )
         )
     );
     
-    delete from pos.sale_item 
+    delete from pos_schema.sale_item 
     where sale_id in (
-        select sale_id from pos.sale 
+        select sale_id from pos_schema.sale 
         where branch_id in (
-            select branch_id from general.branch 
+            select branch_id from general_schema.branch 
             where tenant_id in (
-                select tenant_id from general.tenant 
+                select tenant_id from general_schema.tenant 
                 where tenant_name = 'Super Comercio Digital'
             )
         )
     );
     
-    delete from pos.sale 
+    delete from pos_schema.sale 
     where branch_id in (
-        select branch_id from general.branch 
+        select branch_id from general_schema.branch 
         where tenant_id in (
-            select tenant_id from general.tenant 
+            select tenant_id from general_schema.tenant 
             where tenant_name = 'Super Comercio Digital'
         )
     );
     
-    delete from pos.cash_register_session 
+    delete from pos_schema.cash_register_session 
     where cash_register_id in (
-        select cash_register_id from pos.cash_register 
+        select cash_register_id from pos_schema.cash_register 
         where branch_id in (
-            select branch_id from general.branch 
+            select branch_id from general_schema.branch 
             where tenant_id in (
-                select tenant_id from general.tenant 
+                select tenant_id from general_schema.tenant 
                 where tenant_name = 'Super Comercio Digital'
             )
         )
     );
     
-    delete from pos.cash_register 
+    delete from pos_schema.cash_register 
     where branch_id in (
-        select branch_id from general.branch 
+        select branch_id from general_schema.branch 
         where tenant_id in (
-            select tenant_id from general.tenant 
+            select tenant_id from general_schema.tenant 
             where tenant_name = 'Super Comercio Digital'
         )
     );
     
-    delete from pos.loyalty_program 
+    delete from pos_schema.loyalty_program 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general.tenant_customer 
+    delete from general_schema.tenant_customer 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general.product 
+    delete from general_schema.product 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general.users 
+    delete from general_schema.users 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general.branch 
+    delete from general_schema.branch 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general.tenant 
+    delete from general_schema.tenant 
     where tenant_name = 'Super Comercio Digital';
     
     raise notice '✓ Estado después de limpieza:';
-    raise notice '  Tenants: %', (select count(*) from general.tenant);
-    raise notice '  Clientes: %', (select count(*) from general.tenant_customer);
-    raise notice '  Productos: %', (select count(*) from general.product);
-    raise notice '  Ventas: %', (select count(*) from pos.sale);
-    raise notice '  Facturas: %', (select count(*) from pos.bill);
+    raise notice '  Tenants: %', (select count(*) from general_schema.tenant);
+    raise notice '  Clientes: %', (select count(*) from general_schema.tenant_customer);
+    raise notice '  Productos: %', (select count(*) from general_schema.product);
+    raise notice '  Ventas: %', (select count(*) from pos_schema.sale);
+    raise notice '  Facturas: %', (select count(*) from pos_schema.bill);
     raise notice '';
     raise notice '✅ SECCIÓN 0 COMPLETADA';
     raise notice '========================================';
@@ -161,15 +160,16 @@ end $$;
 -- ========================================
 -- SECCIÓN 1: Configuración inicial
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
     v_user_id uuid;
     v_customer_id uuid;
-    v_product_a_id uuid;
-    v_product_b_id uuid;
-    v_product_c_id uuid;
+    v_product_base_id uuid;
+    v_variant_a_id uuid;  -- ✅ Cambio: variant_id en lugar de product_id
+    v_variant_b_id uuid;
+    v_variant_c_id uuid;
     v_cash_register_id uuid;
     v_loyalty_program_id uuid;
 BEGIN
@@ -180,28 +180,28 @@ BEGIN
     raise notice '';
 
     -- 1.1 Crear tenant
-    INSERT INTO general.tenant (tenant_name, region_id, contact_email, is_subscribed)
+    INSERT INTO general_schema.tenant (tenant_name, region_id, contact_email, is_subscribed)
     VALUES ('Super Comercio Digital', 1, 'contacto@superdigital.com', true)
     returning tenant_id into v_tenant_id;
     
     raise notice '✓ Tenant creado: %', v_tenant_id;
 
     -- 1.2 Crear sucursal
-    INSERT INTO general.branch (tenant_id, branch_name, branch_address, is_main_branch)
+    INSERT INTO general_schema.branch (tenant_id, branch_name, branch_address, is_main_branch)
     VALUES (v_tenant_id, 'Sucursal Centro', 'Av. Principal #123', true)
     returning branch_id into v_branch_id;
     
     raise notice '✓ Sucursal creada: %', v_branch_id;
 
     -- 1.3 Crear usuario cajero
-    INSERT INTO general.users (tenant_id, email, password_hash, role_id)
+    INSERT INTO general_schema.users (tenant_id, email, password_hash, role_id)
     VALUES (v_tenant_id, 'cajero@superdigital.com', 'hash123', 1)
     returning user_id into v_user_id;
     
     raise notice '✓ Usuario cajero creado: %', v_user_id;
 
     -- 1.4 Crear cliente
-    INSERT INTO general.tenant_customer (
+    INSERT INTO general_schema.tenant_customer (
         tenant_id, first_name, last_name, document_number,
         email, phone, customer_segment_id
     )
@@ -215,33 +215,52 @@ BEGIN
     raise notice '  Nombre: Juan Pérez';
     raise notice '  Segmento: Regular';
 
-    -- 1.5 Crear productos
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-001', 'Laptop HP', 850.00)
-    returning product_id into v_product_a_id;
+    -- 1.5 Crear producto base
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
+    VALUES (v_tenant_id, 'PROD-BASE', 'Productos Electrónicos', 0.00)
+    returning product_id into v_product_base_id;
     
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-002', 'Mouse Logitech', 25.00)
-    returning product_id into v_product_b_id;
+    raise notice '✓ Producto base creado: %', v_product_base_id;
+
+    -- 1.6 Crear variantes vendibles
+    INSERT INTO general_schema.product_variant (
+        tenant_id, product_id, sku, variant_name, unit_price, is_active
+    )
+    VALUES (
+        v_tenant_id, v_product_base_id, 'PROD-001', 'Laptop HP', 850.00, true
+    )
+    returning product_variant_id into v_variant_a_id;
     
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-003', 'Teclado Mecánico', 120.00)
-    returning product_id into v_product_c_id;
+    INSERT INTO general_schema.product_variant (
+        tenant_id, product_id, sku, variant_name, unit_price, is_active
+    )
+    VALUES (
+        v_tenant_id, v_product_base_id, 'PROD-002', 'Mouse Logitech', 25.00, true
+    )
+    returning product_variant_id into v_variant_b_id;
     
-    raise notice '✓ Productos creados: 3';
+    INSERT INTO general_schema.product_variant (
+        tenant_id, product_id, sku, variant_name, unit_price, is_active
+    )
+    VALUES (
+        v_tenant_id, v_product_base_id, 'PROD-003', 'Teclado Mecánico', 120.00, true
+    )
+    returning product_variant_id into v_variant_c_id;
+    
+    raise notice '✓ Variantes creadas: 3';
     raise notice '  - Laptop HP: $850.00';
     raise notice '  - Mouse Logitech: $25.00';
     raise notice '  - Teclado Mecánico: $120.00';
 
-    -- 1.6 Crear caja registradora
-    INSERT INTO pos.cash_register (branch_id, is_active)
+    -- 1.7 Crear caja registradora
+    INSERT INTO pos_schema.cash_register (branch_id, is_active)
     VALUES (v_branch_id, true)
     returning cash_register_id into v_cash_register_id;
     
     raise notice '✓ Caja registradora creada: %', v_cash_register_id;
 
-    -- 1.7 Crear programa de lealtad
-    INSERT INTO pos.loyalty_program (
+    -- 1.8 Crear programa de lealtad
+    INSERT INTO pos_schema.loyalty_program (
         tenant_id,
         points_earned_per_currency_unit,
         points_redeemed_per_currency_unit,
@@ -270,10 +289,11 @@ end $$;
 -- ========================================
 -- SECCIÓN 2: Abrir sesión de caja
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_cash_register_id uuid;
+    v_user_id uuid;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -283,13 +303,13 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Obtener caja del tenant
     select cash_register_id into v_cash_register_id
-    from pos.cash_register cr
-    join general.branch b on cr.branch_id = b.branch_id
+    from pos_schema.cash_register cr
+    join general_schema.branch b on cr.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     and cr.is_active = true
     limit 1;
@@ -298,11 +318,18 @@ BEGIN
         raise exception 'No se encontró caja registradora para el tenant';
     end if;
 
-    -- Abrir sesión con $500 de fondo
-    call pos.open_close_cash_register_session(
+    -- Obtener user_id del cajero
+    select user_id into v_user_id
+    from general_schema.users
+    where tenant_id = v_tenant_id
+    limit 1;
+
+    -- Abrir sesión con $500 de fondo y user_id
+    call pos_schema.open_close_cash_register_session(
         v_cash_register_id,
         'open',
-        500.00
+        500.00,
+        v_user_id
     );
     
     raise notice '';
@@ -314,31 +341,31 @@ end $$;
 -- ========================================
 -- SECCIÓN 3: Crear venta con productos
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
     v_user_id uuid;
     v_customer_id uuid;
-    v_product_a_id uuid;
-    v_product_b_id uuid;
-    v_product_c_id uuid;
+    v_variant_a_id uuid;  -- ✅ Cambio: variant_id en lugar de product_id
+    v_variant_b_id uuid;
+    v_variant_c_id uuid;
     v_sale_id uuid;
     v_subtotal numeric(10,2);
     v_tax_rate numeric(5,2);
     v_tax_amount numeric(10,2);
     v_total_amount numeric(10,2);
-    v_region_id integer;
+    v_region_id INTEGER;
 BEGIN
     raise notice '';
     raise notice '========================================';
-    raise notice '🛒 SECCIÓN 3: Crear venta';
+    raise notice '🛒 SECCIÓN 3: Crear venta con productos';
     raise notice '========================================';
     raise notice '';
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     if v_tenant_id is null then
@@ -349,33 +376,33 @@ BEGIN
 
     -- Obtener IDs del mismo tenant
     select branch_id into v_branch_id
-    from general.branch
+    from general_schema.branch
     where tenant_id = v_tenant_id
     and branch_name = 'Sucursal Centro';
 
     select user_id into v_user_id
-    from general.users
+    from general_schema.users
     where tenant_id = v_tenant_id
     limit 1;
 
     select tenant_customer_id into v_customer_id
-    from general.tenant_customer
+    from general_schema.tenant_customer
     where tenant_id = v_tenant_id
     and email = 'juan.perez@email.com';
 
-    -- Obtener productos del mismo tenant
-    select product_id into v_product_a_id
-    from general.product
+    -- ✅ Obtener VARIANTES (no productos base)
+    select product_variant_id into v_variant_a_id
+    from general_schema.product_variant
     where tenant_id = v_tenant_id
     and sku = 'PROD-001';
 
-    select product_id into v_product_b_id
-    from general.product
+    select product_variant_id into v_variant_b_id
+    from general_schema.product_variant
     where tenant_id = v_tenant_id
     and sku = 'PROD-002';
 
-    select product_id into v_product_c_id
-    from general.product
+    select product_variant_id into v_variant_c_id
+    from general_schema.product_variant
     where tenant_id = v_tenant_id
     and sku = 'PROD-003';
 
@@ -384,23 +411,23 @@ BEGIN
         raise exception 'No se encontraron datos básicos del tenant';
     end if;
 
-    if v_product_a_id is null or v_product_b_id is null or v_product_c_id is null then
-        raise exception 'No se encontraron todos los productos del tenant';
+    if v_variant_a_id is null or v_variant_b_id is null or v_variant_c_id is null then
+        raise exception 'No se encontraron todas las variantes del tenant';
     end if;
 
-    raise notice '✓ Productos encontrados del tenant';
+    raise notice '✓ Variantes encontradas del tenant';
 
     -- ✅ CALCULAR SUBTOTAL + IMPUESTO
     v_subtotal := 850.00 + 25.00 + 120.00;  -- $995.00
     
     -- Obtener región del tenant
     select region_id into v_region_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_id = v_tenant_id;
     
     -- Obtener tasa de impuesto
     select rate_percentage into v_tax_rate
-    from general.tax_rate
+    from general_schema.tax_rate
     where region_id = v_region_id
     limit 1;
     
@@ -418,21 +445,20 @@ BEGIN
     raise notice '  TOTAL (con impuesto): $%', v_total_amount;
     raise notice '';
 
-    -- ✅ Crear venta CON IMPUESTO
-    INSERT INTO pos.sale (
+    INSERT INTO pos_schema.sale (
         branch_id,
         currency_id,
-        subtotal_amount,  -- ✅ Subtotal sin impuesto
-        tax_amount,       -- ✅ Impuesto
-        total_amount,     -- ✅ Total con impuesto
+        subtotal_amount,
+        tax_amount,
+        total_amount,
         is_completed
     )
     VALUES (
         v_branch_id,
-        1,  -- USD
-        v_subtotal,       -- $995.00
-        v_tax_amount,     -- $129.35
-        v_total_amount,   -- $1,124.35
+        1,
+        v_subtotal,
+        v_tax_amount,
+        v_total_amount,
         false
     )
     returning sale_id into v_sale_id;
@@ -442,32 +468,30 @@ BEGIN
     raise notice '  Impuesto: $%', v_tax_amount;
     raise notice '  Total: $%', v_total_amount;
     raise notice '  Estado: Pendiente';
-    raise notice '';
 
-    -- Agregar productos (sin cambios)
-    INSERT INTO pos.sale_item (
-        sale_id, tenant_id, product_id, quantity, unit_price, total_price
+    INSERT INTO pos_schema.sale_item (
+        sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price
     )
     VALUES (
-        v_sale_id, v_tenant_id, v_product_a_id, 1, 850.00, 850.00
+        v_sale_id, v_tenant_id, v_variant_a_id, 1, 850.00, 850.00
     );
     
     raise notice '✓ Producto agregado: Laptop HP × 1 = $850.00';
 
-    INSERT INTO pos.sale_item (
-        sale_id, tenant_id, product_id, quantity, unit_price, total_price
+    INSERT INTO pos_schema.sale_item (
+        sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price
     )
     VALUES (
-        v_sale_id, v_tenant_id, v_product_b_id, 1, 25.00, 25.00
+        v_sale_id, v_tenant_id, v_variant_b_id, 1, 25.00, 25.00
     );
     
     raise notice '✓ Producto agregado: Mouse Logitech × 1 = $25.00';
 
-    INSERT INTO pos.sale_item (
-        sale_id, tenant_id, product_id, quantity, unit_price, total_price
+    INSERT INTO pos_schema.sale_item (
+        sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price
     )
     VALUES (
-        v_sale_id, v_tenant_id, v_product_c_id, 1, 120.00, 120.00
+        v_sale_id, v_tenant_id, v_variant_c_id, 1, 120.00, 120.00
     );
     
     raise notice '✓ Producto agregado: Teclado Mecánico × 1 = $120.00';
@@ -478,17 +502,16 @@ BEGIN
 end $$;
 
 
-
 -- ========================================
 -- SECCIÓN 4: Registrar pago de contado
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_customer_id uuid;
     v_sale_id uuid;
     v_payment_id uuid;
-    v_payment_method varchar(50);
+    v_payment_method VARCHAR(50);
     v_sale_subtotal numeric(10,2);
     v_sale_tax numeric(10,2);
     v_sale_total numeric(10,2);  -- ✅ Ya incluye impuesto
@@ -501,12 +524,12 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Obtener cliente del tenant
     select tenant_customer_id into v_customer_id
-    from general.tenant_customer
+    from general_schema.tenant_customer
     where tenant_id = v_tenant_id
     and email = 'juan.perez@email.com';
 
@@ -521,8 +544,8 @@ BEGIN
         v_sale_subtotal,
         v_sale_tax,
         v_sale_total
-    from pos.sale s
-    join general.branch b on s.branch_id = b.branch_id
+    from pos_schema.sale s
+    join general_schema.branch b on s.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     and s.is_completed = false
     order by s.sale_date desc
@@ -540,7 +563,7 @@ BEGIN
     raise notice '';
 
     -- ✅ Registrar pago con el total CORRECTO
-    INSERT INTO pos.customer_payment (
+    INSERT INTO pos_schema.customer_payment (
         tenant_customer_id,
         sale_id,
         payment_method_id,
@@ -559,7 +582,7 @@ BEGIN
     returning customer_payment_id into v_payment_id;
     
     select name into v_payment_method
-    from general.payment_method
+    from general_schema.payment_method
     where payment_method_id = 3;
     
     raise notice '✓ Pago registrado: %', v_payment_id;
@@ -578,15 +601,15 @@ end $$;
 -- ========================================
 -- SECCIÓN 5: Verificar pago (TRIGGER CASCADE)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_payment_id uuid;
     v_sale_id uuid;
     v_bill_id uuid;
     v_session_id uuid;
-    v_points_earned integer;
-    v_sale_completed boolean;
+    v_points_earned INTEGER;
+    v_sale_completed BOOLEAN;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -596,14 +619,14 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Obtener pago pendiente del tenant
     select cp.customer_payment_id, cp.sale_id 
     into v_payment_id, v_sale_id
-    from pos.customer_payment cp
-    join general.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.customer_payment cp
+    join general_schema.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id
     and cp.verified = false
     order by cp.payment_date desc
@@ -618,7 +641,7 @@ BEGIN
     raise notice '';
 
     -- ✅ VERIFICAR PAGO (esto dispara toda la cascada)
-    call pos.verify_customer_payment(v_payment_id);
+    call pos_schema.verify_customer_payment(v_payment_id);
     
     raise notice '';
     raise notice '════════════════════════════════════════';
@@ -628,7 +651,7 @@ BEGIN
 
     -- Verificar que la venta se completó
     select is_completed into v_sale_completed
-    from pos.sale
+    from pos_schema.sale
     where sale_id = v_sale_id;
     
     if v_sale_completed then
@@ -639,7 +662,7 @@ BEGIN
 
     -- Verificar que se creó la factura
     select bill_id into v_bill_id
-    from pos.bill
+    from pos_schema.bill
     where sale_id = v_sale_id;
     
     if v_bill_id is not null then
@@ -650,7 +673,7 @@ BEGIN
 
     -- Verificar vinculación a sesión de caja
     select cash_register_session_id into v_session_id
-    from pos.cash_register_sale
+    from pos_schema.cash_register_sale
     where sale_id = v_sale_id;
     
     if v_session_id is not null then
@@ -661,8 +684,8 @@ BEGIN
 
     -- Verificar puntos ganados
     select score into v_points_earned
-    from pos.tenant_customer_score tcs
-    join general.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.tenant_customer_score tcs
+    join general_schema.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id
     and tc.email = 'juan.perez@email.com';
     
@@ -681,7 +704,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 6: Consultar factura completa
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_bill record;
@@ -696,7 +719,7 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Obtener datos de la factura del tenant
@@ -709,9 +732,9 @@ BEGIN
         b.billed_at,
         c.symbol as currency_symbol
     into v_bill
-    from pos.bill b
-    join general.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
-    join general.currency c on b.currency_id = c.currency_id
+    from pos_schema.bill b
+    join general_schema.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
+    join general_schema.currency c on b.currency_id = c.currency_id
     where tc.tenant_id = v_tenant_id
     order by b.billed_at desc
     limit 1;
@@ -734,23 +757,23 @@ BEGIN
     raise notice '  PRODUCTOS:';
     raise notice '  ───────────────────────────────────────';
 
-    -- Listar productos de la venta
+    -- Listar productos de la venta (variantes)
     for v_item in
         select 
-            p.product_name,
+            pv.variant_name,
             si.quantity,
             si.unit_price,
             si.total_price
-        from pos.sale_item si
-        join general.product p on si.tenant_id = p.tenant_id 
-                            and si.product_id = p.product_id
-        join pos.sale s on si.sale_id = s.sale_id
-        join pos.bill b on s.sale_id = b.sale_id
+        from pos_schema.sale_item si
+        join general_schema.product_variant pv on si.tenant_id = pv.tenant_id 
+                            and si.product_variant_id = pv.product_variant_id
+        join pos_schema.sale s on si.sale_id = s.sale_id
+        join pos_schema.bill b on s.sale_id = b.sale_id
         where b.bill_id = v_bill.bill_id
-        order by p.product_name
+        order by pv.variant_name
     loop
         raise notice '  • % × % = $%',
-            v_item.product_name,
+            v_item.variant_name,
             v_item.quantity,
             v_item.total_price;
     end loop;
@@ -765,9 +788,9 @@ BEGIN
             pm.name as method_name,
             cp.payment_amount,
             cp.verified
-        from pos.bill_payment bp
-        join pos.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
-        join general.payment_method pm on cp.payment_method_id = pm.payment_method_id
+        from pos_schema.bill_payment bp
+        join pos_schema.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
+        join general_schema.payment_method pm on cp.payment_method_id = pm.payment_method_id
         where bp.bill_id = v_bill.bill_id
     loop
         raise notice '  • %: $% ✓',
@@ -785,7 +808,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 7: Cerrar sesión de caja
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_cash_register_id uuid;
@@ -799,14 +822,14 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Obtener caja registradora activa del tenant
     select cr.cash_register_id into v_cash_register_id
-    from pos.cash_register_session crs
-    join pos.cash_register cr on crs.cash_register_id = cr.cash_register_id
-    join general.branch b on cr.branch_id = b.branch_id
+    from pos_schema.cash_register_session crs
+    join pos_schema.cash_register cr on crs.cash_register_id = cr.cash_register_id
+    join general_schema.branch b on cr.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     and crs.is_active = true
     order by crs.opened_at desc
@@ -820,10 +843,11 @@ BEGIN
     v_closing_amount := 1495.00;
 
     -- Cerrar sesión
-    call pos.open_close_cash_register_session(
+    call pos_schema.open_close_cash_register_session(
         v_cash_register_id,
         'close',
-        v_closing_amount
+        v_closing_amount,
+        null
     );
     
     raise notice '';
@@ -835,14 +859,14 @@ end $$;
 -- ========================================
 -- SECCIÓN 8: Resumen final
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
-    v_total_sales integer;
-    v_total_bills integer;
-    v_total_payments integer;
+    v_total_sales INTEGER;
+    v_total_bills INTEGER;
+    v_total_payments INTEGER;
     v_total_revenue numeric(10,2);
-    v_total_points integer;
+    v_total_points INTEGER;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -852,36 +876,36 @@ BEGIN
 
     -- Obtener tenant_id
     select tenant_id into v_tenant_id
-    from general.tenant
+    from general_schema.tenant
     where tenant_name = 'Super Comercio Digital';
 
     -- Estadísticas del tenant
     select count(*) into v_total_sales
-    from pos.sale s
-    join general.branch b on s.branch_id = b.branch_id
+    from pos_schema.sale s
+    join general_schema.branch b on s.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     and s.is_completed = true;
 
     select count(*) into v_total_bills
-    from pos.bill b
-    join general.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.bill b
+    join general_schema.tenant_customer tc on b.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id;
 
     select count(*) into v_total_payments
-    from pos.customer_payment cp
-    join general.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.customer_payment cp
+    join general_schema.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id
     and cp.verified = true;
 
     select coalesce(sum(cp.payment_amount), 0) into v_total_revenue
-    from pos.customer_payment cp
-    join general.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.customer_payment cp
+    join general_schema.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id
     and cp.verified = true;
 
     select coalesce(sum(tcs.score), 0) into v_total_points
-    from pos.tenant_customer_score tcs
-    join general.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
+    from pos_schema.tenant_customer_score tcs
+    join general_schema.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
     where tc.tenant_id = v_tenant_id;
 
     raise notice '📈 ESTADÍSTICAS (Tenant: Super Comercio Digital):';
@@ -920,12 +944,12 @@ select
     s.total_amount,
     s.is_completed,
     s.sale_date
-from pos.sale s
-join general.branch b on s.branch_id = b.branch_id
-join general.tenant t on b.tenant_id = t.tenant_id
-left join pos.cash_register_sale crs on s.sale_id = crs.sale_id
-left join pos.cash_register_session crss on crs.cash_register_session_id = crss.cash_register_session_id
-left join general.users u on crss.user_id = u.user_id
+from pos_schema.sale s
+join general_schema.branch b on s.branch_id = b.branch_id
+join general_schema.tenant t on b.tenant_id = t.tenant_id
+left join pos_schema.cash_register_sale crs on s.sale_id = crs.sale_id
+left join pos_schema.cash_register_session crss on crs.cash_register_session_id = crss.cash_register_session_id
+left join general_schema.users u on crss.user_id = u.user_id
 where t.tenant_name = 'Super Comercio Digital'
 order by s.sale_date desc;
 
@@ -940,29 +964,29 @@ select
     s.total_amount,
     s.is_completed,
     s.sale_date
-from pos.sale s
-join general.branch b on s.branch_id = b.branch_id
-join general.tenant t on b.tenant_id = t.tenant_id
-left join pos.cash_register_sale crs on s.sale_id = crs.sale_id
-left join pos.cash_register_session crss on crs.cash_register_session_id = crss.cash_register_session_id
-left join general.users u on crss.user_id = u.user_id  -- ✅ user desde sesión
+from pos_schema.sale s
+join general_schema.branch b on s.branch_id = b.branch_id
+join general_schema.tenant t on b.tenant_id = t.tenant_id
+left join pos_schema.cash_register_sale crs on s.sale_id = crs.sale_id
+left join pos_schema.cash_register_session crss on crs.cash_register_session_id = crss.cash_register_session_id
+left join general_schema.users u on crss.user_id = u.user_id  -- ✅ user desde sesión
 where t.tenant_name = 'Super Comercio Digital'
 order by s.sale_date desc;
 
--- Ver productos vendidos del tenant
+-- Ver productos vendidos del tenant (variantes)
 select 
     '=== PRODUCTOS VENDIDOS ===' as seccion,
-    p.product_name,
+    pv.variant_name,
     si.quantity,
     si.unit_price,
     si.total_price,
     s.sale_date
-from pos.sale_item si
-join general.product p on si.tenant_id = p.tenant_id 
-                    and si.product_id = p.product_id
-join pos.sale s on si.sale_id = s.sale_id
-join general.branch br on s.branch_id = br.branch_id
-join general.tenant t on br.tenant_id = t.tenant_id
+from pos_schema.sale_item si
+join general_schema.product_variant pv on si.tenant_id = pv.tenant_id 
+                    and si.product_variant_id = pv.product_variant_id
+join pos_schema.sale s on si.sale_id = s.sale_id
+join general_schema.branch br on s.branch_id = br.branch_id
+join general_schema.tenant t on br.tenant_id = t.tenant_id
 where t.tenant_name = 'Super Comercio Digital'
 order by s.sale_date desc;
 
@@ -974,10 +998,10 @@ select
     cp.payment_amount,
     cp.verified,
     cp.payment_date
-from pos.customer_payment cp
-join general.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
-join general.payment_method pm on cp.payment_method_id = pm.payment_method_id
-join general.tenant t on tc.tenant_id = t.tenant_id
+from pos_schema.customer_payment cp
+join general_schema.tenant_customer tc on cp.tenant_customer_id = tc.tenant_customer_id
+join general_schema.payment_method pm on cp.payment_method_id = pm.payment_method_id
+join general_schema.tenant t on tc.tenant_id = t.tenant_id
 where t.tenant_name = 'Super Comercio Digital'
 order by cp.payment_date desc;
 
@@ -989,9 +1013,9 @@ select
     tcs.lifetime_score as puntos_acumulados,
     tcs.score_redeemed as puntos_canjeados,
     tcs.last_earned_at
-from pos.tenant_customer_score tcs
-join general.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
-join general.tenant t on tc.tenant_id = t.tenant_id
+from pos_schema.tenant_customer_score tcs
+join general_schema.tenant_customer tc on tcs.tenant_customer_id = tc.tenant_customer_id
+join general_schema.tenant t on tc.tenant_id = t.tenant_id
 where t.tenant_name = 'Super Comercio Digital'
 order by tcs.score desc;
 
@@ -1006,9 +1030,9 @@ select
     crs.opened_at,
     crs.closed_at,
     (crs.closed_at - crs.opened_at) as duracion
-from pos.cash_register_session crs
-join pos.cash_register cr on crs.cash_register_id = cr.cash_register_id
-join general.branch b on cr.branch_id = b.branch_id
-join general.tenant t on b.tenant_id = t.tenant_id
+from pos_schema.cash_register_session crs
+join pos_schema.cash_register cr on crs.cash_register_id = cr.cash_register_id
+join general_schema.branch b on cr.branch_id = b.branch_id
+join general_schema.tenant t on b.tenant_id = t.tenant_id
 where t.tenant_name = 'Super Comercio Digital'
 order by crs.opened_at desc;

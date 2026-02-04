@@ -9,8 +9,8 @@
 -- ========================================
 DO $$
 DECLARE
-    v_email varchar := 'juan.perez@test.com';
-    v_doc_number varchar := '701230456';
+    v_email VARCHAR := 'juan.perez@test.com';
+    v_doc_number VARCHAR := '701230456';
     v_employee_id uuid;
     v_contract_id uuid;
 BEGIN
@@ -44,7 +44,7 @@ END $$;
 DO $$
 DECLARE
     v_employee_id UUID;
-    v_user UUID := (SELECT user_id FROM general.users LIMIT 1);
+    v_user UUID := (SELECT user_id FROM general_schema.users LIMIT 1);
     v_schedule_id INTEGER := 1;
 BEGIN
     RAISE NOTICE '';

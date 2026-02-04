@@ -4,12 +4,12 @@
 -- Purpose: Test the payment alert generation and management system
 -- =====================================
 
-set search_path = purchase, general;
+set search_path = purchase, general_schema;
 
 -- ========================================
 -- SECTION 0: Cleanup
 -- ========================================
-do $$
+DO $$
 BEGIN
     delete from purchase.purchase_order_payment_alert 
     where purchase_account_payable_id in (
@@ -44,41 +44,41 @@ BEGIN
     delete from purchase.supplier 
     where supplier_name = 'Alert Test Supplier';
     
-    delete from general.product 
+    delete from general_schema.product 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Alert Test Business'
     );
     
     delete from inventory_schema.warehouse 
     where branch_id in (
-        select branch_id from general.branch 
+        select branch_id from general_schema.branch 
         where tenant_id in (
-            select tenant_id from general.tenant 
+            select tenant_id from general_schema.tenant 
             where tenant_name = 'Alert Test Business'
         )
     );
     
-    delete from general.branch 
+    delete from general_schema.branch 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Alert Test Business'
     );
     
     delete from purchase.purchase_order_payment_alert_config 
     where tenant_id in (
-        select tenant_id from general.tenant 
+        select tenant_id from general_schema.tenant 
         where tenant_name = 'Alert Test Business'
     );
     
-    delete from general.tenant 
+    delete from general_schema.tenant 
     where tenant_name = 'Alert Test Business';
 end $$;
 
 -- ========================================
 -- SECTION 1: Setup test data
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
@@ -92,12 +92,12 @@ BEGIN
     raise notice '========================================';
 
     -- Create tenant
-    INSERT INTO general.tenant(tenant_name, region_id, contact_email)
+    INSERT INTO general_schema.tenant(tenant_name, region_id, contact_email)
     VALUES ('Alert Test Business', 1, 'test@alerts.com')
     returning tenant_id into v_tenant_id;
 
     -- Create branch
-    INSERT INTO general.branch(tenant_id, branch_name, contact_email)
+    INSERT INTO general_schema.branch(tenant_id, branch_name, contact_email)
     VALUES (v_tenant_id, 'Main Branch', 'branch@alerts.com')
     returning branch_id into v_branch_id;
 
@@ -115,7 +115,7 @@ BEGIN
     VALUES (v_supplier_id, v_branch_id);
 
     -- Create product
-    INSERT INTO general.product(tenant_id, product_name, sku, unit_price)
+    INSERT INTO general_schema.product(tenant_id, product_name, sku, unit_price)
     VALUES (v_tenant_id, 'Test Product', 'TEST-ALERT-001', 100.00)
     returning product_id into v_product_id;
 
@@ -141,7 +141,7 @@ end $$;
 -- ========================================
 -- SECTION 2: Create orders with different due dates
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_supplier_id uuid;
@@ -158,7 +158,7 @@ BEGIN
     raise notice '========================================';
 
     select t.tenant_id into v_tenant_id
-    from general.tenant t
+    from general_schema.tenant t
     where t.tenant_name = 'Alert Test Business';
 
     select s.supplier_id into v_supplier_id
@@ -167,12 +167,12 @@ BEGIN
 
     select w.warehouse_id into v_warehouse_id
     from inventory_schema.warehouse w
-    join general.branch b on w.branch_id = b.branch_id
+    join general_schema.branch b on w.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     limit 1;
 
     select p.product_id into v_product_id
-    from general.product p
+    from general_schema.product p
     where p.tenant_id = v_tenant_id
     and p.sku = 'TEST-ALERT-001'
     limit 1;
@@ -189,7 +189,7 @@ BEGIN
         'CREDIT'
     ) into v_order_overdue;
 
-    update general.account_payable
+    update general_schema.account_payable
     set due_date = current_date - interval '5 days'
     where account_payable_id = (
         select account_payable_id 
@@ -209,7 +209,7 @@ BEGIN
         'CREDIT'
     ) into v_order_urgent;
 
-    update general.account_payable
+    update general_schema.account_payable
     set due_date = current_date + interval '2 days'
     where account_payable_id = (
         select account_payable_id 
@@ -229,7 +229,7 @@ BEGIN
         'CREDIT'
     ) into v_order_warning;
 
-    update general.account_payable
+    update general_schema.account_payable
     set due_date = current_date + interval '5 days'
     where account_payable_id = (
         select account_payable_id 
@@ -259,7 +259,7 @@ end $$;
 -- ========================================
 -- SECTION 3: Generate alerts
 -- ========================================
-do $$
+DO $$
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -275,11 +275,11 @@ end $$;
 -- ========================================
 -- SECTION 4: View pending alerts
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_alert record;
-    v_count integer := 0;
+    v_count INTEGER := 0;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -287,7 +287,7 @@ BEGIN
     raise notice '========================================';
 
     select t.tenant_id into v_tenant_id
-    from general.tenant t
+    from general_schema.tenant t
     where t.tenant_name = 'Alert Test Business';
 
     for v_alert in 
@@ -313,7 +313,7 @@ end $$;
 -- ========================================
 -- SECTION 5: View alert statistics
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_stats record;
@@ -324,7 +324,7 @@ BEGIN
     raise notice '========================================';
 
     select t.tenant_id into v_tenant_id
-    from general.tenant t
+    from general_schema.tenant t
     where t.tenant_name = 'Alert Test Business';
 
     select * into v_stats
@@ -341,13 +341,13 @@ end $$;
 -- ========================================
 -- SECTION 6: Test auto-resolve on payment
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_purchase_account_payable_id uuid;
     v_payment_id uuid;
-    v_alerts_before integer;
-    v_alerts_after integer;
+    v_alerts_before INTEGER;
+    v_alerts_after INTEGER;
 BEGIN
     raise notice '';
     raise notice '========================================';
@@ -355,22 +355,22 @@ BEGIN
     raise notice '========================================';
 
     select t.tenant_id into v_tenant_id
-    from general.tenant t
+    from general_schema.tenant t
     where t.tenant_name = 'Alert Test Business';
 
     -- Get overdue account
     select sap.purchase_account_payable_id into v_purchase_account_payable_id
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
     join purchase.purchase_order so on sap.purchase_order_id = so.purchase_order_id
     join purchase.supplier s on so.supplier_id = s.supplier_id
     join purchase.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general.branch b on sb.branch_id = b.branch_id
+    join general_schema.branch b on sb.branch_id = b.branch_id
     where b.tenant_id = v_tenant_id
     and ap.due_date < current_date
     limit 1;
 
-    select count(*)::integer into v_alerts_before
+    select count(*)::INTEGER into v_alerts_before
     from purchase.purchase_order_payment_alert
     where purchase_account_payable_id = v_purchase_account_payable_id
     and is_resolved = false;
@@ -394,13 +394,13 @@ BEGIN
         'FULL-PAYMENT-TEST',
         false
     from purchase.purchase_account_payable sap
-    join general.account_payable ap on sap.account_payable_id = ap.account_payable_id
+    join general_schema.account_payable ap on sap.account_payable_id = ap.account_payable_id
     where sap.purchase_account_payable_id = v_purchase_account_payable_id
     returning payment_id into v_payment_id;
 
     call purchase.verify_purchase_order_payment(v_payment_id);
 
-    select count(*)::integer into v_alerts_after
+    select count(*)::INTEGER into v_alerts_after
     from purchase.purchase_order_payment_alert
     where purchase_account_payable_id = v_purchase_account_payable_id
     and is_resolved = false;

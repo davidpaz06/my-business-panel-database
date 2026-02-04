@@ -1,5 +1,5 @@
 -- ======================================================
--- MIGRATION: general/001-product-category-update.sql
+-- MIGRATION: general_schema/001-product-category-update.sql
 -- ======================================================
 -- Author: David
 -- Description: Part 1 - Adds hierarchical structure to product_category table

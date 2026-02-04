@@ -17,8 +17,8 @@ Covers:
 
 ## Prerequisites
 
-- Schemas: `purchase`, `general`, `inventory_schema`
-- general data: tenant, branch, products, payment methods, tax rates
+- Schemas: `purchase`, `general_schema`, `inventory_schema`
+- general_schema data: tenant, branch, products, payment methods, tax rates
 - Installed functions/triggers:
   - `purchase.create_purchase_order(...)`
   - `purchase.calculate_purchase_order_total(...)`
@@ -99,9 +99,9 @@ Covers:
 
 - Check items detail:
 ````sql
-  SELECT p.sku, soi.quantity_ordered FROM purchase.purchase_order_item soi JOIN general.product p USING (product_id) WHERE soi.purchase_order_id = '<order-uuid>' ORDER BY p.sku;
-  SELECT p.sku, sii.quantity_billed FROM purchase.supplier_invoice_item sii JOIN general.product p USING (product_id) WHERE sii.supplier_invoice_id = '<invoice-uuid>' ORDER BY p.sku;
-  SELECT p.sku, gri.quantity_received FROM purchase.goods_receipt_item gri JOIN general.product p USING (product_id) WHERE gri.goods_receipt_id = '<goods-receipt-uuid>' ORDER BY p.sku;
+  SELECT p.sku, soi.quantity_ordered FROM purchase.purchase_order_item soi JOIN general_schema.product p USING (product_id) WHERE soi.purchase_order_id = '<order-uuid>' ORDER BY p.sku;
+  SELECT p.sku, sii.quantity_billed FROM purchase.supplier_invoice_item sii JOIN general_schema.product p USING (product_id) WHERE sii.supplier_invoice_id = '<invoice-uuid>' ORDER BY p.sku;
+  SELECT p.sku, gri.quantity_received FROM purchase.goods_receipt_item gri JOIN general_schema.product p USING (product_id) WHERE gri.goods_receipt_id = '<goods-receipt-uuid>' ORDER BY p.sku;
 `````
 
 - Check three-way matching:

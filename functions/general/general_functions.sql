@@ -1,11 +1,11 @@
 set search_path = general_schema;
 
-create or replace procedure verify_tenant_payment(_payment_id uuid)
+CREATE OR REPLACE PROCEDURE verify_tenant_payment(_payment_id uuid)
 language plpgsql
 as $$
 declare
-    _exists boolean;
-    _already_verified boolean;
+    _exists BOOLEAN;
+    _already_verified BOOLEAN;
     _rows_updated int;
     _tenant_id uuid;
 BEGIN
@@ -63,7 +63,7 @@ CREATE OR REPLACE FUNCTION create_subscription()
 returns trigger as $$
 declare
     _subscription_type_id int;
-    _exists boolean;
+    _exists BOOLEAN;
     _old_end_date date;
     _time_left interval;
     _new_start_date date;
@@ -357,8 +357,13 @@ drop trigger if exists update_product_timestamp on general_schema.product;
 create trigger update_product_timestamp before update on general_schema.product
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_product_attribute_timestamp on general_schema.product_attribute;
-create trigger update_product_attribute_timestamp before update on general_schema.product_attribute
+-- Triggers for new variant model tables
+drop trigger if exists update_attribute_value_timestamp on general_schema.attribute_value;
+create trigger update_attribute_value_timestamp before update on general_schema.attribute_value
+for each row execute function general_schema.update_timestamp();
+
+drop trigger if exists update_product_variant_timestamp on general_schema.product_variant;
+create trigger update_product_variant_timestamp before update on general_schema.product_variant
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_tenant_timestamp on general_schema.tenant;

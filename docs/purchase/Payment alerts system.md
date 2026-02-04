@@ -18,8 +18,8 @@ Covers:
 
 ## Prerequisites
 
-- Schemas: `purchase`, `general`, `inventory_schema`
-- general data: tenant, branch, supplier, products, payment methods
+- Schemas: `purchase`, `general_schema`, `inventory_schema`
+- general_schema data: tenant, branch, supplier, products, payment methods
 - Installed functions/triggers:
   - `purchase.initialize_payment_alert_config(...)` - Sets up alert configuration per tenant
   - `purchase.generate_payment_alerts()` - Generates alerts based on due dates
@@ -39,7 +39,7 @@ Covers:
 - `purchase_order_payment_alert_type` - Alert type catalog (Upcoming, Urgent, Overdue, Reconciliation)
 - `purchase_order_payment_alert` - Active payment alert records
 - `purchase_account_payable` - Account payable with due dates
-- `general.account_payable` - general account payable data
+- `general_schema.account_payable` - general_schema account payable data
 
 ### Related Entities
 
@@ -152,7 +152,7 @@ SELECT purchase.create_purchase_order(
 );
 
 -- Manually adjust due date to simulate overdue
-UPDATE general.account_payable
+UPDATE general_schema.account_payable
 SET due_date = current_date - interval '5 days'
 WHERE account_payable_id = (
     SELECT account_payable_id
@@ -205,7 +205,7 @@ PERFORM purchase.generate_payment_alerts();
    ```sql
    SELECT sap.purchase_account_payable_id, ap.due_date
    FROM purchase_account_payable sap
-   JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
    WHERE sap.account_payable_status != 3  -- Not paid
    AND ap.due_date IS NOT NULL
    ```
@@ -404,7 +404,7 @@ WHERE is_resolved = false
    - `recalc_account_payable_on_payment()` trigger fires
    - Calls `check_account_payable_completion()`
    - Updates `purchase_account_payable.account_payable_status` to 3 (Paid)
-   - Updates `general.account_payable.is_paid` to true
+   - Updates `general_schema.account_payable.is_paid` to true
 
    **b) Auto-Resolve Trigger Fires**:
    - `auto_resolve_payment_alerts()` trigger fires on account_payable_status change
@@ -487,13 +487,13 @@ SELECT
     spa.alert_date
 FROM purchase.purchase_order_payment_alert spa
 JOIN purchase.purchase_account_payable sap ON spa.purchase_account_payable_id = sap.purchase_account_payable_id
-JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
 JOIN purchase.purchase_order so ON sap.purchase_order_id = so.purchase_order_id
 JOIN purchase.supplier s ON so.supplier_id = s.supplier_id
 JOIN purchase.supplier_invoice si ON so.purchase_order_id = si.purchase_order_id
 JOIN purchase.purchase_order_payment_alert_type spat ON spa.payment_alert_type_id = spat.payment_alert_type_id
 JOIN purchase.supplier_branch sb ON s.supplier_id = sb.supplier_id
-JOIN general.branch b ON sb.branch_id = b.branch_id
+JOIN general_schema.branch b ON sb.branch_id = b.branch_id
 WHERE b.tenant_id = '<tenant-uuid>'
 AND spa.is_resolved = false
 ORDER BY ap.due_date ASC;
@@ -526,7 +526,7 @@ SELECT
     sap.account_payable_status,
     (ap.subtotal + sap.tax_amount - ap.amount_paid) as balance
 FROM purchase.purchase_account_payable sap
-JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
 WHERE sap.account_payable_status != 3  -- Not paid
 AND ap.due_date IS NOT NULL
 AND ap.due_date < (current_date + interval '7 days')  -- Within warning period
@@ -549,7 +549,7 @@ SELECT
     ap.is_paid
 FROM purchase.purchase_order_payment_alert spa
 JOIN purchase.purchase_account_payable sap ON spa.purchase_account_payable_id = sap.purchase_account_payable_id
-JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
 WHERE spa.purchase_account_payable_id = '<sap-uuid>';
 
 -- Expected: is_resolved = true, account_payable_status = 3, is_paid = true
@@ -583,7 +583,7 @@ WHERE spa.purchase_account_payable_id = '<sap-uuid>';
        (ap.due_date - current_date) as days_until_due,
        sap.account_payable_status
    FROM purchase_account_payable sap
-   JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
    WHERE sap.account_payable_status != 3
    AND ap.due_date < (current_date + interval '7 days');
    ```
@@ -786,7 +786,7 @@ WHERE spa.purchase_account_payable_id = '<sap-uuid>';
    SELECT SUM(ap.subtotal + sap.tax_amount - ap.amount_paid) as manual_total
    FROM purchase_order_payment_alert spa
    JOIN purchase_account_payable sap ON spa.purchase_account_payable_id = sap.purchase_account_payable_id
-   JOIN general.account_payable ap ON sap.account_payable_id = ap.account_payable_id
+   JOIN general_schema.account_payable ap ON sap.account_payable_id = ap.account_payable_id
    WHERE spa.is_resolved = false;
    ```
 
@@ -863,7 +863,7 @@ WHERE spa.purchase_account_payable_id = '<sap-uuid>';
 ### Database Objects
 
 - Schema: `purchase` - Payment alert tables and functions
-- Schema: `general` - Account payable base tables
+- Schema: `general_schema` - Account payable base tables
 - Functions: `purchase_functions.sql` - All alert-related functions
 - Test: `testPaymentAlerts.sql` - Complete alert system test
 

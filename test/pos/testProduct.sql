@@ -15,12 +15,12 @@
 --  7) Resumen final
 -- =====================================
 
-set local search_path = general, pos;
+set local search_path = general_schema, pos;
 
 -- ========================================
 -- SECCIÓN 0: Limpieza inicial (idempotente)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
 BEGIN
@@ -28,19 +28,20 @@ BEGIN
     raise notice '🧹 SECCIÓN 0: Limpieza inicial (idempotente)';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1;
 
     if v_tenant_id is not null then
-        delete from general.product_attribute where tenant_id = v_tenant_id;
-        delete from general.product where tenant_id = v_tenant_id;
+        delete from general_schema.attribute_assignation where tenant_id = v_tenant_id;
+        delete from general_schema.product_variant where tenant_id = v_tenant_id;
+        delete from general_schema.product where tenant_id = v_tenant_id;
         raise notice '   Removed previous products for tenant %', v_tenant_id;
     else
         raise notice '   No previous test tenant found, nothing to clean';
     end if;
 
     -- 🔧 Resincronizar secuencia de product_category
-    perform setval('general.product_category_product_category_id_seq', 
-        coalesce((select max(product_category_id) from general.product_category), 0) + 1, 
+    perform setval('general_schema.product_category_product_category_id_seq', 
+        coalesce((select max(product_category_id) from general_schema.product_category), 0) + 1, 
         false);
     raise notice '   ✅ product_category sequence synchronized';
 
@@ -52,7 +53,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 1: Preparación (tenant + categoría)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_category_id int;
@@ -62,19 +63,19 @@ BEGIN
     raise notice '🏪 SECCIÓN 1: Preparación (tenant & category)';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1;
     if v_tenant_id is null then
-        INSERT INTO general.tenant (tenant_name, region_id, contact_email, is_subscribed)
-        VALUES ('Product Test Shop', (select region_id from general.region limit 1), 'products@testshop.local', false)
+        INSERT INTO general_schema.tenant (tenant_name, region_id, contact_email, is_subscribed)
+        VALUES ('Product Test Shop', (select region_id from general_schema.region limit 1), 'products@testshop.local', false)
         returning tenant_id into v_tenant_id;
         raise notice '   Tenant created: %', v_tenant_id;
     else
         raise notice '   Tenant exists: %', v_tenant_id;
     end if;
 
-    select product_category_id into v_category_id from general.product_category where category_name = 'Test Category' limit 1;
+    select product_category_id into v_category_id from general_schema.product_category where category_name = 'Test Category' limit 1;
     if v_category_id is null then
-        INSERT INTO general.product_category (category_name) VALUES ('Test Category') returning product_category_id into v_category_id;
+        INSERT INTO general_schema.product_category (category_name) VALUES ('Test Category') returning product_category_id into v_category_id;
         raise notice '   Product category created: %', v_category_id;
     else
         raise notice '   Product category exists: %', v_category_id;
@@ -88,9 +89,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 2: Insertar productos individuales (single inserts)
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     v_pid uuid;
 BEGIN
     raise notice '';
@@ -99,9 +100,9 @@ BEGIN
     raise notice '========================================';
 
     -- Single insert 1
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price, product_category_id)
-    VALUES (v_tenant_id, 'SINGLE-001', 'Single Product One', 9.99, (select product_category_id from general.product_category where category_name = 'Test Category' limit 1))
-    on conflict (tenant_id, sku) do nothing
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price, product_category_id)
+    VALUES (v_tenant_id, 'SINGLE-001', 'Single Product One', 9.99, (select product_category_id from general_schema.product_category where category_name = 'Test Category' limit 1))
+    on conflict (tenant_id, sku) DO nothing
     returning product_id into v_pid;
     if v_pid is not null then
         raise notice '   Inserted SINGLE-001 -> %', v_pid;
@@ -110,9 +111,9 @@ BEGIN
     end if;
 
     -- Single insert 2
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price, product_category_id)
-    VALUES (v_tenant_id, 'SINGLE-002', 'Single Product Two', 19.50, (select product_category_id from general.product_category where category_name = 'Test Category' limit 1))
-    on conflict (tenant_id, sku) do nothing
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price, product_category_id)
+    VALUES (v_tenant_id, 'SINGLE-002', 'Single Product Two', 19.50, (select product_category_id from general_schema.product_category where category_name = 'Test Category' limit 1))
+    on conflict (tenant_id, sku) DO nothing
     returning product_id into v_pid;
     if v_pid is not null then
         raise notice '   Inserted SINGLE-002 -> %', v_pid;
@@ -127,9 +128,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 3: Insertar productos en lote (batch inserts)
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     i int;
     v_sku text;
     v_pid uuid;  -- ✅ CORRECCIÓN: Declarar variable
@@ -142,9 +143,9 @@ BEGIN
 
     for i in 1..20 loop
         v_sku := lpad(i::text, 3, '0');
-        INSERT INTO general.product (tenant_id, sku, product_name, unit_price, product_category_id)
-        VALUES (v_tenant_id, 'BATCH-' || v_sku, 'Batch Product ' || v_sku, round( (5 + random()*45)::numeric, 2), (select product_category_id from general.product_category where category_name = 'Test Category' limit 1))
-        on conflict (tenant_id, sku) do nothing
+        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price, product_category_id)
+        VALUES (v_tenant_id, 'BATCH-' || v_sku, 'Batch Product ' || v_sku, round( (5 + random()*45)::numeric, 2), (select product_category_id from general_schema.product_category where category_name = 'Test Category' limit 1))
+        on conflict (tenant_id, sku) DO nothing
         returning product_id into v_pid;  -- ✅ CORRECCIÓN: Quitar STRICT
         
         if v_pid is not null then  -- ✅ CORRECCIÓN: Verificar si se insertó
@@ -160,9 +161,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 4: Borrar producto individual
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     v_deleted int;
 BEGIN
     raise notice '';
@@ -170,7 +171,7 @@ BEGIN
     raise notice '➖ SECCIÓN 4: Borrar producto individual (SINGLE-002)';
     raise notice '========================================';
 
-    delete from general.product where tenant_id = v_tenant_id and sku = 'SINGLE-002';
+    delete from general_schema.product where tenant_id = v_tenant_id and sku = 'SINGLE-002';
     get diagnostics v_deleted = row_count;
 
     if v_deleted = 1 then
@@ -186,9 +187,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 5: Borrar lote de productos (batch delete)
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     v_deleted int;
 BEGIN
     raise notice '';
@@ -196,7 +197,7 @@ BEGIN
     raise notice '🧺 SECCIÓN 5: Borrar lote de productos (sku LIKE ''BATCH-%%'')';  -- ✅ CORRECCIÓN: Usar %% para escapar %
     raise notice '========================================';
 
-    delete from general.product where tenant_id = v_tenant_id and sku like 'BATCH-%';
+    delete from general_schema.product where tenant_id = v_tenant_id and sku like 'BATCH-%';
     get diagnostics v_deleted = row_count;
 
     raise notice '   Batch products deleted this run: %', v_deleted;
@@ -208,9 +209,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 6: Verificaciones (constraints / partitions / counts)
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     v_count_total int;
     v_count_single int;
     v_tableoid record;
@@ -220,8 +221,8 @@ BEGIN
     raise notice '🔍 SECCIÓN 6: Verificaciones finales';
     raise notice '========================================';
 
-    select count(*) into v_count_total from general.product where tenant_id = v_tenant_id;
-    select count(*) into v_count_single from general.product where tenant_id = v_tenant_id and sku = 'SINGLE-001';
+    select count(*) into v_count_total from general_schema.product where tenant_id = v_tenant_id;
+    select count(*) into v_count_single from general_schema.product where tenant_id = v_tenant_id and sku = 'SINGLE-001';
 
     raise notice '   Products remaining for tenant %: %', v_tenant_id, v_count_total;
     raise notice '   SINGLE-001 exists: %', case when v_count_single > 0 then 'yes' else 'no' end;
@@ -229,7 +230,7 @@ BEGIN
     -- show partition (tableoid) for a sample row if exists
     if v_count_total > 0 then
         for v_tableoid in
-            select tableoid::regclass as partition_name from general.product where tenant_id = v_tenant_id limit 1
+            select tableoid::regclass as partition_name from general_schema.product where tenant_id = v_tenant_id limit 1
         loop
             raise notice '   Sample product partition: %', v_tableoid.partition_name;
         end loop;
@@ -247,9 +248,9 @@ end $$;
 -- ========================================
 -- SECCIÓN 7: Resumen final
 -- ========================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Product Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Product Test Shop' limit 1);
     v_count int;
 BEGIN
     raise notice '';
@@ -257,7 +258,7 @@ BEGIN
     raise notice '📊 SECCIÓN 7: RESUMEN FINAL';
     raise notice '========================================';
 
-    select count(*) into v_count from general.product where tenant_id = v_tenant_id;
+    select count(*) into v_count from general_schema.product where tenant_id = v_tenant_id;
 
     raise notice '   Tenant: %', v_tenant_id;
     raise notice '   Final product count for tenant: %', v_count;

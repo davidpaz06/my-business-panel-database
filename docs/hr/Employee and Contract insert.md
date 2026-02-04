@@ -6,7 +6,7 @@ Scope: insert a new contract and its linked employee in one atomic operation, en
 
 ## Prerequisites
 
-- general user: a `general.users.user_id` for the employee must already exist (FK on `employee.user_id`).
+- general_schema user: a `general_schema.users.user_id` for the employee must already exist (FK on `employee.user_id`).
 - Payment schedule: a valid schedule in `hr_schema.payment_schedule` (e.g., Monthly, Fortnight, Weekly, Daily). Use an existing `payment_schedule_id`.
 - HR tables & functions deployed: `hr_schema.contract`, `hr_schema.employee`, `hr_schema.payment_schedule`, trigger `hr_schema.validate_contract_dates`, and function `hr_schema.create_new_employee`.
 
@@ -14,7 +14,7 @@ Scope: insert a new contract and its linked employee in one atomic operation, en
 
 1. Validate the target payment schedule exists (performed by the function).
 2. Create a new `contract` (UUID) with start and end dates, hours, base salary, and duties.
-3. Create a new `employee` (UUID) that REFERENCES the newly created `contract`, a valid `payment_schedule`, and an existing `general.users.user_id`.
+3. Create a new `employee` (UUID) that REFERENCES the newly created `contract`, a valid `payment_schedule`, and an existing `general_schema.users.user_id`.
 4. Return the new `employee_id` to the caller.
 
 ## Detailed Steps & SQL snippets
@@ -33,7 +33,7 @@ Example
 ```sql
 -- Ensure you have a user and a valid schedule_id
 WITH any_user AS (
-	SELECT user_id FROM general.users LIMIT 1
+	SELECT user_id FROM general_schema.users LIMIT 1
 )
 SELECT hr_schema.create_new_employee(
 	p_start_date => DATE '2025-10-01',
@@ -61,7 +61,7 @@ On success, returns the `employee_id` (UUID). Internally the function:
 ### 2) Validations & Constraints enforced
 
 - Contract date logic: trigger `hr_schema.validate_contract_dates` on `hr_schema.contract` prevents `end_date < start_date`.
-- FOREIGN KEYs: `employee.user_id` → `general.users(user_id)`; `employee.schedule_id` → `hr_schema.payment_schedule(payment_schedule_id)`; `employee.contract_id` → `hr_schema.contract(contract_id)`.
+- FOREIGN KEYs: `employee.user_id` → `general_schema.users(user_id)`; `employee.schedule_id` → `hr_schema.payment_schedule(payment_schedule_id)`; `employee.contract_id` → `hr_schema.contract(contract_id)`.
 - Uniqueness: `employee.doc_number` and `employee.email` are unique. Duplicate VALUES raise a unique violation.
 - Cascading: `employee.contract_id` REFERENCES `contract` with `ON DELETE CASCADE` (deleting a contract deletes the employee record referencing it). Use with care in administrative operations.
 - Indexing: indexes exist for filtering and joins (e.g., `idx_contract_base_salary`, `idx_employee_user_id`, `idx_employee_is_active`).
@@ -113,7 +113,7 @@ WHERE contract_id = '<contract_id>'
 ## Idempotency & Safety Notes
 
 - Pre-checks: to avoid unique violations, check for existing `doc_number` or `email` before calling the function, or catch the raised exception in the application layer.
-- Referential integrity: ensure the `general.users.user_id` exists and the `payment_schedule_id` is valid prior to the insert.
+- Referential integrity: ensure the `general_schema.users.user_id` exists and the `payment_schedule_id` is valid prior to the insert.
 - Date integrity: ensure `p_end_date >= p_start_date`; otherwise the contract trigger blocks the transaction.
 - Deletion implications: be cautious with `ON DELETE CASCADE` on `employee.contract_id` → deleting a contract deletes the employee.
 
@@ -121,7 +121,7 @@ WHERE contract_id = '<contract_id>'
 
 - Error: schedule_id doesn’t exist → Confirm the `payment_schedule_id` in `hr_schema.payment_schedule`.
 - Unique violation (document/email) → Search for existing employee by `doc_number`/`email` and adjust input.
-- FK violation (user or schedule) → Create or correct the referenced `general.users` row or schedule.
+- FK violation (user or schedule) → Create or correct the referenced `general_schema.users` row or schedule.
 - Contract date error → Ensure `p_end_date` is on or after `p_start_date`.
 
 ## Reference Tests

@@ -20,8 +20,8 @@ CREATE OR REPLACE FUNCTION create_purchase_order(
     p_warehouse_id uuid,
     p_expected_delivery_date date,
     p_items jsonb default '[]'::jsonb,
-    p_has_invoice boolean default true,
-    p_payment_condition varchar(10) default 'CREDIT'
+    p_has_invoice BOOLEAN default true,
+    p_payment_condition VARCHAR(10) default 'CREDIT'
 ) returns uuid as $$
 declare
     v_purchase_order_id uuid;
@@ -29,7 +29,7 @@ declare
     v_item jsonb;
     v_tenant_id uuid;
     v_product_id uuid;
-    v_qty integer;
+    v_qty INTEGER;
     v_unit numeric(12,3);
     v_subtotal numeric(12,3);
     v_tax_rate numeric(5,2);
@@ -67,14 +67,14 @@ BEGIN
     if p_items is not null and jsonb_typeof(p_items) = 'array' and jsonb_array_length(p_items) > 0 then
         for v_item in select value from jsonb_array_elements(p_items)
         loop
-            v_product_id := (v_item ->> 'product_id')::uuid;
+            v_product_id := (v_item ->> 'product_variant_id')::uuid;
             v_qty := coalesce((v_item ->> 'quantity_ordered')::int, 0);
             v_unit := coalesce((v_item ->> 'unit_price')::numeric, 0);
 
             INSERT INTO purchase_schema.purchase_order_item(
                 purchase_order_id,
                 tenant_id,
-                product_id,
+                product_variant_id,
                 quantity_ordered,
                 unit_price
             ) VALUES (
@@ -169,14 +169,14 @@ BEGIN
         INSERT INTO purchase_schema.supplier_invoice_item(
             supplier_invoice_id,
             tenant_id,
-            product_id,
+            product_variant_id,
             quantity_billed,
             unit_price
         )
         select 
             v_supplier_invoice_id,
             tenant_id,
-            product_id,
+            product_variant_id,
             quantity_ordered,
             unit_price
         from purchase_schema.purchase_order_item
@@ -320,7 +320,7 @@ create trigger recalc_account_payable_on_payment_trigger
 CREATE OR REPLACE FUNCTION update_invoice_paid_status()
 returns trigger as $$
 declare
-    v_is_paid boolean;
+    v_is_paid BOOLEAN;
 BEGIN
     if new.account_payable_status = 3 and old.account_payable_status is distinct from 3 then
         select is_paid into v_is_paid
@@ -384,19 +384,19 @@ BEGIN
         ) returning goods_receipt_id into v_goods_receipt_id;
 
         for v_item in 
-            select tenant_id, product_id, quantity_ordered
+            select tenant_id, product_variant_id, quantity_ordered
             from purchase_schema.purchase_order_item
             where purchase_order_id = new.purchase_order_id
         loop
             INSERT INTO purchase_schema.goods_receipt_item(
                 goods_receipt_id,
                 tenant_id,
-                product_id,
+                product_variant_id,
                 quantity_received
             ) VALUES (
                 v_goods_receipt_id,
                 v_item.tenant_id,
-                v_item.product_id,
+                v_item.product_variant_id,
                 v_item.quantity_ordered
             );
         end loop;
@@ -429,11 +429,11 @@ declare
     v_receipt_subtotal numeric(12,3);
     v_receipt_tax numeric(12,3);
     v_receipt_total numeric(12,3);
-    v_order_qty integer;
-    v_invoice_qty integer;
-    v_receipt_qty integer;
-    v_amounts_matched boolean;
-    v_quantities_matched boolean;
+    v_order_qty INTEGER;
+    v_invoice_qty INTEGER;
+    v_receipt_qty INTEGER;
+    v_amounts_matched BOOLEAN;
+    v_quantities_matched BOOLEAN;
 BEGIN
     select supplier_invoice_id into v_supplier_invoice_id
     from purchase_schema.supplier_invoice
@@ -540,8 +540,8 @@ returns void as $$
 declare
     v_config record;
     v_account record;
-    v_days_until_due integer;
-    v_alert_type_id integer;
+    v_days_until_due INTEGER;
+    v_alert_type_id INTEGER;
     v_existing_alert_id uuid;
 BEGIN
     for v_config in 
@@ -626,12 +626,12 @@ returns table(
     payment_alert_id uuid,
     purchase_account_payable_id uuid,
     purchase_order_id uuid,
-    supplier_name varchar,
-    invoice_number varchar,
-    alert_type varchar,
+    supplier_name VARCHAR,
+    invoice_number VARCHAR,
+    alert_type VARCHAR,
     alert_type_description text,
     due_date date,
-    days_until_due integer,
+    days_until_due INTEGER,
     balance_remaining numeric,
     alert_date timestamp,
     created_at timestamp
@@ -647,7 +647,7 @@ BEGIN
         spat.payment_alert_type_name,
         spat.description,
         ap.due_date,
-        (ap.due_date - current_date)::integer as days_until_due,
+        (ap.due_date - current_date)::INTEGER as days_until_due,
         (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) as balance_remaining,
         spa.alert_date,
         spa.created_at
@@ -691,7 +691,7 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts()
 returns trigger as $$
 declare
-    v_is_paid boolean;
+    v_is_paid BOOLEAN;
 BEGIN
     if new.account_payable_status = 3 and old.account_payable_status is distinct from 3 then
         select is_paid into v_is_paid
@@ -719,10 +719,10 @@ create trigger auto_resolve_payment_alerts_trigger
 
 CREATE OR REPLACE FUNCTION initialize_payment_alert_config(
     p_tenant_id uuid,
-    p_warning_days integer default 7,
-    p_urgent_days integer default 3,
-    p_email_enabled boolean default true,
-    p_sms_enabled boolean default false
+    p_warning_days INTEGER default 7,
+    p_urgent_days INTEGER default 3,
+    p_email_enabled BOOLEAN default true,
+    p_sms_enabled BOOLEAN default false
 ) returns uuid as $$
 declare
     v_config_id uuid;
@@ -740,7 +740,7 @@ BEGIN
         p_email_enabled,
         p_sms_enabled
     )
-    on conflict (tenant_id) do update
+    on conflict (tenant_id) DO update
     set warning_days_before_due = excluded.warning_days_before_due,
         urgent_days_before_due = excluded.urgent_days_before_due,
         email_notifications_enabled = excluded.email_notifications_enabled,
@@ -754,19 +754,19 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid)
 returns table(
-    total_alerts integer,
-    overdue_count integer,
-    urgent_count integer,
-    warning_count integer,
+    total_alerts INTEGER,
+    overdue_count INTEGER,
+    urgent_count INTEGER,
+    warning_count INTEGER,
     total_amount_at_risk numeric
 ) as $$
 BEGIN
     return query
     select 
-        count(*)::integer as total_alerts,
-        count(*) filter (where spat.payment_alert_type_id = 3)::integer as overdue_count,
-        count(*) filter (where spat.payment_alert_type_id = 2)::integer as urgent_count,
-        count(*) filter (where spat.payment_alert_type_id = 1)::integer as warning_count,
+        count(*)::INTEGER as total_alerts,
+        count(*) filter (where spat.payment_alert_type_id = 3)::INTEGER as overdue_count,
+        count(*) filter (where spat.payment_alert_type_id = 2)::INTEGER as urgent_count,
+        count(*) filter (where spat.payment_alert_type_id = 1)::INTEGER as warning_count,
         coalesce(sum(ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid), 0) as total_amount_at_risk
     from purchase_schema.purchase_order_payment_alert spa
     join purchase_schema.purchase_order_payment_alert_type spat 

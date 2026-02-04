@@ -11,12 +11,12 @@
 -- 7) Verify invoice and sale zeroed and return_product rows created
 -- =====================================
 
-set local search_path = general, pos;
+set local search_path = general_schema, pos;
 
 -- ========================================
 -- SECCIÓN 0: Limpieza inicial (idempotente)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
 BEGIN
@@ -24,7 +24,7 @@ BEGIN
     raise notice '🧹 SECCIÓN 0: Limpieza inicial (idempotente)';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
 
     if v_tenant_id is not null then
 
@@ -32,67 +32,67 @@ BEGIN
             select return_transaction_id from pos.return_transaction rt
             join pos.bill b on rt.bill_id = b.bill_id
             join pos.sale s on b.sale_id = s.sale_id
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.return_transaction where bill_id in (
             select b.bill_id from pos.bill b
             join pos.sale s on b.sale_id = s.sale_id
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.bill_payment where bill_id in (
             select b.bill_id from pos.bill b
             join pos.sale s on b.sale_id = s.sale_id
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.bill where sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.customer_payment where sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.sale_item where tenant_id = v_tenant_id;
         delete from pos.sale where branch_id in (
-            select branch_id from general.branch where tenant_id = v_tenant_id
+            select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
         delete from pos.cash_register_sale where cash_register_session_id in (
             select cash_register_session_id from pos.cash_register_session crs
             join pos.cash_register cr on crs.cash_register_id = cr.cash_register_id
-            join general.branch br on cr.branch_id = br.branch_id
+            join general_schema.branch br on cr.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.cash_register_session where cash_register_id in (
             select cash_register_id from pos.cash_register cr
-            join general.branch br on cr.branch_id = br.branch_id
+            join general_schema.branch br on cr.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.cash_register where branch_id in (
-            select branch_id from general.branch where tenant_id = v_tenant_id
+            select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
         delete from pos.score_transaction where tenant_id = v_tenant_id;
         delete from pos.tenant_customer_score where tenant_id = v_tenant_id;
         delete from pos.loyalty_program where tenant_id = v_tenant_id;
 
-        delete from general.product where tenant_id = v_tenant_id;
-        delete from general.tenant_customer where tenant_id = v_tenant_id;
-        delete from general.users where tenant_id = v_tenant_id;
-        delete from general.branch where tenant_id = v_tenant_id;
-        delete from general.tenant where tenant_id = v_tenant_id;
+        delete from general_schema.product where tenant_id = v_tenant_id;
+        delete from general_schema.tenant_customer where tenant_id = v_tenant_id;
+        delete from general_schema.users where tenant_id = v_tenant_id;
+        delete from general_schema.branch where tenant_id = v_tenant_id;
+        delete from general_schema.tenant where tenant_id = v_tenant_id;
 
         raise notice '   Previous test data removed for tenant %', v_tenant_id;
     else
@@ -107,7 +107,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 1: Preparación completa de datos (idempotente)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
@@ -123,51 +123,51 @@ BEGIN
     raise notice '🏪 SECCIÓN 1: Preparación de datos';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
     if v_tenant_id is null then
-        INSERT INTO general.tenant(tenant_name, region_id, contact_email, is_subscribed)
-        VALUES ('Return Test Shop', (select region_id from general.region limit 1), 'returns@testshop.com', false)
+        INSERT INTO general_schema.tenant(tenant_name, region_id, contact_email, is_subscribed)
+        VALUES ('Return Test Shop', (select region_id from general_schema.region limit 1), 'returns@testshop.com', false)
         returning tenant_id into v_tenant_id;
     end if;
 
-    select branch_id into v_branch_id from general.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
+    select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
     if v_branch_id is null then
-        INSERT INTO general.branch (tenant_id, branch_name, branch_address, is_main_branch)
+        INSERT INTO general_schema.branch (tenant_id, branch_name, branch_address, is_main_branch)
         VALUES (v_tenant_id, 'Main Store', 'Test Address 1', true)
         returning branch_id into v_branch_id;
     end if;
 
-    select user_id into v_user_id from general.users where tenant_id = v_tenant_id and email = 'cashier@returntest.com' limit 1;
+    select user_id into v_user_id from general_schema.users where tenant_id = v_tenant_id and email = 'cashier@returntest.com' limit 1;
     if v_user_id is null then
-        INSERT INTO general.users (tenant_id, email, password_hash, role_id)
+        INSERT INTO general_schema.users (tenant_id, email, password_hash, role_id)
         VALUES (v_tenant_id, 'cashier@returntest.com', 'testhash', 1)
         returning user_id into v_user_id;
     end if;
 
-    select tenant_customer_id into v_customer_id from general.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
+    select tenant_customer_id into v_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
     if v_customer_id is null then
-        INSERT INTO general.tenant_customer (tenant_id, first_name, last_name, document_number, email, phone)
+        INSERT INTO general_schema.tenant_customer (tenant_id, first_name, last_name, document_number, email, phone)
         VALUES (v_tenant_id, 'Alice', 'Return', 'RT-001', 'customer@returntest.com', '555-0001')
         returning tenant_customer_id into v_customer_id;
     end if;
 
-    select product_id into v_prod_a from general.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
     if v_prod_a is null then
-        INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
         VALUES (v_tenant_id, 'RT-A', 'Product A', 10.00)
         returning product_id into v_prod_a;
     end if;
 
-    select product_id into v_prod_b from general.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
     if v_prod_b is null then
-        INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
         VALUES (v_tenant_id, 'RT-B', 'Product B', 20.00)
         returning product_id into v_prod_b;
     end if;
 
-    select product_id into v_prod_c from general.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+    select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
     if v_prod_c is null then
-        INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
         VALUES (v_tenant_id, 'RT-C', 'Product C', 15.00)
         returning product_id into v_prod_c;
     end if;
@@ -183,13 +183,13 @@ BEGIN
         VALUES (v_cash_reg, v_user_id, 100.00, true);
     end if;
 
-    perform 1 from general.payment_method where payment_method_id = 1;
+    perform 1 from general_schema.payment_method where payment_method_id = 1;
     if not found then
-        INSERT INTO general.payment_method(name) VALUES ('cash');
+        INSERT INTO general_schema.payment_method(name) VALUES ('cash');
     end if;
-    perform 1 from general.payment_method where payment_method_id = 4;
+    perform 1 from general_schema.payment_method where payment_method_id = 4;
     if not found then
-        INSERT INTO general.payment_method(name) VALUES ('loyalty_points');
+        INSERT INTO general_schema.payment_method(name) VALUES ('loyalty_points');
     end if;
 
     raise notice '✅ SECCIÓN 1 COMPLETADA';
@@ -200,7 +200,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 2: Crear venta y pagar (genera bill)
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
@@ -219,12 +219,12 @@ BEGIN
     raise notice '🛒 SECCIÓN 2: Crear venta y pagar (genera factura)';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
-    select branch_id into v_branch_id from general.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
-    select tenant_customer_id into v_customer_id from general.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
-    select product_id into v_prod_a from general.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
-    select product_id into v_prod_b from general.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
-    select product_id into v_prod_c from general.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
+    select tenant_customer_id into v_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
+    select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
 
     v_subtotal := 140.00; -- A x5 (50) + B x3 (60) + C x2 (30)
     v_tax := round(v_subtotal * 0.10, 2); -- assume 10% tax rate in test setup
@@ -263,7 +263,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 3: Devolución PARCIAL (menos que lo comprado)
 -- ========================================
-do $$
+DO $$
 declare
     v_sale_id uuid;
     v_bill_id uuid;
@@ -282,8 +282,8 @@ BEGIN
 
     select s.sale_id into v_sale_id
     from pos.sale s
-    join general.branch b on s.branch_id = b.branch_id
-    join general.tenant t on b.tenant_id = t.tenant_id
+    join general_schema.branch b on s.branch_id = b.branch_id
+    join general_schema.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Return Test Shop'
     order by s.sale_date desc
     limit 1;
@@ -293,11 +293,11 @@ BEGIN
     select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos.bill where sale_id = v_sale_id limit 1;
 
     select sale_item_id into v_si_a from pos.sale_item where sale_id = v_sale_id and product_id = (
-        select product_id from general.product where tenant_id = (select tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-A' limit 1
+        select product_id from general_schema.product where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-A' limit 1
     ) limit 1;
 
     select sale_item_id into v_si_b from pos.sale_item where sale_id = v_sale_id and product_id = (
-        select product_id from general.product where tenant_id = (select tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-B' limit 1
+        select product_id from general_schema.product where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-B' limit 1
     ) limit 1;
 
     if v_si_a is null or v_si_b is null then
@@ -343,7 +343,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 4: Verificaciones después de devolución PARCIAL
 -- ========================================
-do $$
+DO $$
 declare
     v_bill record;
     v_qty_a int;
@@ -360,24 +360,24 @@ BEGIN
     raise notice '📦 SECCIÓN 4: Verificaciones tras devolución PARCIAL';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
 
     select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
     from pos.bill b
     join pos.sale s on b.sale_id = s.sale_id
-    join general.branch br on s.branch_id = br.branch_id
+    join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id
     order by b.billed_at desc
     limit 1;
 
-    select coalesce(quantity,0) into v_qty_a from pos.sale_item si join general.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-A' and si.tenant_id = v_tenant_id limit 1;
-    select coalesce(quantity,0) into v_qty_b from pos.sale_item si join general.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-B' and si.tenant_id = v_tenant_id limit 1;
-    select coalesce(quantity,0) into v_qty_c from pos.sale_item si join general.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-C' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_a from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-A' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_b from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-B' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_c from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-C' and si.tenant_id = v_tenant_id limit 1;
 
     select rate_percentage into v_tax_rate
-    from general.tax_rate tr
-    join general.region r on tr.region = r.region_name
-    join general.tenant t on t.region_id = r.region_id
+    from general_schema.tax_rate tr
+    join general_schema.region r on tr.region = r.region_name
+    join general_schema.tenant t on t.region_id = r.region_id
     where t.tenant_id = v_tenant_id
     limit 1;
 
@@ -409,7 +409,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 5: Devolución TOTAL de los elementos restantes
 -- ========================================
-do $$
+DO $$
 declare
     v_bill_id uuid;
     v_return_tx uuid;
@@ -425,8 +425,8 @@ BEGIN
 
     select s.sale_id into v_sale_id
     from pos.sale s
-    join general.branch b on s.branch_id = b.branch_id
-    join general.tenant t on b.tenant_id = t.tenant_id
+    join general_schema.branch b on s.branch_id = b.branch_id
+    join general_schema.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Return Test Shop'
     order by s.sale_date desc
     limit 1;
@@ -457,7 +457,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 6: Verificaciones después de devolución TOTAL
 -- ========================================
-do $$
+DO $$
 declare
     v_bill record;
     v_remaining_items int;
@@ -468,19 +468,19 @@ BEGIN
     raise notice '📦 SECCIÓN 6: Verificaciones tras devolución TOTAL';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
 
     select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
     from pos.bill b
     join pos.sale s on b.sale_id = s.sale_id
-    join general.branch br on s.branch_id = br.branch_id
+    join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id
     order by b.billed_at desc
     limit 1;
 
     select count(*) into v_remaining_items from pos.sale_item si
     join pos.sale s on si.sale_id = s.sale_id
-    join general.branch br on s.branch_id = br.branch_id
+    join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id;
 
     raise notice 'Bill after total return: subtotal $% tax $% total $%', v_bill.subtotal_amount, v_bill.tax_amount, v_bill.total_amount;
@@ -502,7 +502,7 @@ end $$;
 -- ========================================
 -- SECCIÓN 7: Resumen final
 -- ========================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_customer_id uuid;
@@ -515,8 +515,8 @@ BEGIN
     raise notice '📊 SECCIÓN 7: RESUMEN FINAL';
     raise notice '========================================';
 
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Return Test Shop' limit 1;
-    select tenant_customer_id into v_customer_id from general.tenant_customer where tenant_id = v_tenant_id limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
+    select tenant_customer_id into v_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id limit 1;
 
     select count(rp.return_product_id), coalesce(sum(rp.total_price),0)
     into v_return_count, v_return_sum
@@ -525,7 +525,7 @@ BEGIN
     join pos.bill b on rt.bill_id = b.bill_id
     where b.sale_id in (
         select s.sale_id from pos.sale s
-        join general.branch br on s.branch_id = br.branch_id
+        join general_schema.branch br on s.branch_id = br.branch_id
         where br.tenant_id = v_tenant_id
     );
 
@@ -549,10 +549,10 @@ BEGIN
         join pos.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
         join pos.bill b on rt.bill_id = b.bill_id
         join pos.sale_item si on rp.sale_item_id = si.sale_item_id
-        join general.product p on si.product_id = p.product_id and si.tenant_id = p.tenant_id
+        join general_schema.product p on si.product_id = p.product_id and si.tenant_id = p.tenant_id
         where b.sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         )
     loop

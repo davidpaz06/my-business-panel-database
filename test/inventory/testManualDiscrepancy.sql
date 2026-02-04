@@ -11,7 +11,7 @@
 -- ========================================
 DO $$
 DECLARE
-    v_wh_name varchar := 'test_warehouse_discrepancy';
+    v_wh_name VARCHAR := 'test_warehouse_discrepancy';
     v_wh_id uuid;
 BEGIN
     RAISE NOTICE '========================================';
@@ -41,8 +41,8 @@ END $$ LANGUAGE plpgsql;
 -- ========================================
 DO $$
 DECLARE
-    v_tenant_id uuid := (SELECT tenant_id FROM general.tenant LIMIT 1);
-    v_branch_id uuid := (SELECT branch_id FROM general.branch WHERE tenant_id = v_tenant_id LIMIT 1);
+    v_tenant_id uuid := (SELECT tenant_id FROM general_schema.tenant LIMIT 1);
+    v_branch_id uuid := (SELECT branch_id FROM general_schema.branch WHERE tenant_id = v_tenant_id LIMIT 1);
     v_product_id uuid;
     v_wh_id uuid;
     v_inv_id uuid;
@@ -53,7 +53,7 @@ BEGIN
     RAISE NOTICE '========================================';
 
     IF v_branch_id IS NULL THEN
-        RAISE EXCEPTION 'No hay registros en general.branch. Inserte al menos una branch en general.branch';
+        RAISE EXCEPTION 'No hay registros en general_schema.branch. Inserte al menos una branch en general_schema.branch';
     END IF;
 
     -- Crear warehouse de prueba
@@ -63,15 +63,15 @@ BEGIN
 
     RAISE NOTICE '   ✓ Warehouse creado: %', v_wh_id;
 
-    -- Obtener un producto existente
-    SELECT product_id INTO v_product_id FROM general.product WHERE tenant_id = v_tenant_id LIMIT 1;
+    -- Obtener un product_variant existente
+    SELECT product_variant_id INTO v_product_id FROM general_schema.product_variant WHERE tenant_id = v_tenant_id LIMIT 1;
     IF v_product_id IS NULL THEN
         DELETE FROM inventory_schema.warehouse WHERE warehouse_id = v_wh_id;
-        RAISE EXCEPTION 'No hay product en general.product. Inserte al menos un registro en general.product';
+        RAISE EXCEPTION 'No hay product_variant en general_schema.product_variant. Inserte al menos un registro';
     END IF;
 
     -- Insertar inventory con stock conocido (sistema)
-    INSERT INTO inventory_schema.inventory(tenant_id, product_id, warehouse_id, stock, expiration_date)
+    INSERT INTO inventory_schema.inventory(tenant_id, product_variant_id, warehouse_id, stock, expiration_date)
     VALUES (v_tenant_id, v_product_id, v_wh_id, 42, current_timestamp + interval '90 days')
     RETURNING inventory_id INTO v_inv_id;
 
@@ -88,9 +88,9 @@ DECLARE
     v_wh_id uuid := (SELECT warehouse_id FROM inventory_schema.warehouse WHERE warehouse_name = 'test_warehouse_discrepancy' LIMIT 1);
     v_tenant_id uuid;
     v_product_id uuid;
-    v_system_stock integer;
-    v_physical_count integer := 37; -- conteo físico asumido distinto (ejemplo)
-    v_delta integer;
+    v_system_stock INTEGER;
+    v_physical_count INTEGER := 37; -- conteo físico asumido distinto (ejemplo)
+    v_delta INTEGER;
 BEGIN
     RAISE NOTICE '';
     RAISE NOTICE '========================================';
@@ -101,7 +101,7 @@ BEGIN
         RAISE EXCEPTION 'No se encontró warehouse de prueba';
     END IF;
 
-    SELECT tenant_id, product_id, stock INTO v_tenant_id, v_product_id, v_system_stock
+    SELECT tenant_id, product_variant_id, stock INTO v_tenant_id, v_product_id, v_system_stock
     FROM inventory_schema.inventory
     WHERE warehouse_id = v_wh_id
     LIMIT 1;
@@ -110,7 +110,7 @@ BEGIN
         RAISE EXCEPTION 'No inventory para contar';
     END IF;
 
-    RAISE NOTICE '   Stock en sistema para product %: %', v_product_id, v_system_stock;
+    RAISE NOTICE '   Stock en sistema para product_variant %: %', v_product_id, v_system_stock;
     RAISE NOTICE '   Conteo físico (simulado): %', v_physical_count;
 
     v_delta := v_physical_count - v_system_stock;
@@ -128,8 +128,8 @@ DECLARE
     v_wh_id uuid := (SELECT warehouse_id FROM inventory_schema.warehouse WHERE warehouse_name = 'test_warehouse_discrepancy' LIMIT 1);
     v_tenant_id uuid;
     v_product_id uuid;
-    v_stored integer;
-    v_physical integer := 37; -- mismo valor usado arriba
+    v_stored INTEGER;
+    v_physical INTEGER := 37; -- mismo valor usado arriba
     v_report_id uuid;
 BEGIN
     RAISE NOTICE '';
@@ -137,7 +137,7 @@ BEGIN
     RAISE NOTICE '📝 SECCIÓN 3: Registrar discrepancy_count (reporte manual)';
     RAISE NOTICE '========================================';
 
-    SELECT tenant_id, product_id, stock INTO v_tenant_id, v_product_id, v_stored
+    SELECT tenant_id, product_variant_id, stock INTO v_tenant_id, v_product_id, v_stored
     FROM inventory_schema.inventory
     WHERE warehouse_id = v_wh_id
     LIMIT 1;
@@ -146,7 +146,7 @@ BEGIN
         RAISE EXCEPTION 'No inventory para reportar discrepancia';
     END IF;
 
-    INSERT INTO inventory_schema.discrepancy_count(tenant_id, product_id, warehouse_id, stored_quantity, physical_quantity, discrepancy_reason)
+    INSERT INTO inventory_schema.discrepancy_count(tenant_id, product_variant_id, warehouse_id, stored_quantity, physical_quantity, discrepancy_reason)
     VALUES (v_tenant_id, v_product_id, v_wh_id, v_stored, v_physical, 'Manual count: found fewer items than system')
     RETURNING discrepancy_count_id INTO v_report_id;
 

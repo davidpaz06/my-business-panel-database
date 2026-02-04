@@ -6,10 +6,10 @@ Scope: retail returns where returns create return_transaction + return_product r
 
 ## Prerequisites
 
-- Tenant/Branch/Customer/Product exist in general.\* tables.
+- Tenant/Branch/Customer/Product exist in general_schema.\* tables.
 - POS objects and functions deployed:
   - Tables: pos.sale, pos.sale_item, pos.customer_payment, pos.bill, pos.return_transaction, pos.return_product.
-  - Triggers / functions: pos.update_on_return (trigger on return_product), pos.create_bill, pos.check_sale_payment_completion, general.update_timestamp.
+  - Triggers / functions: pos.update_on_return (trigger on return_product), pos.create_bill, pos.check_sale_payment_completion, general_schema.update_timestamp.
 
 ## High-level Flow
 
@@ -123,7 +123,7 @@ SELECT rp.return_product_id, rp.sale_item_id, rp.quantity, rp.unit_price, rp.tot
        p.sku, p.product_name
 FROM pos.return_product rp
 JOIN pos.sale_item si ON rp.sale_item_id = si.sale_item_id
-JOIN general.product p ON si.product_id = p.product_id AND si.tenant_id = p.tenant_id
+JOIN general_schema.product p ON si.product_id = p.product_id AND si.tenant_id = p.tenant_id
 WHERE rp.return_transaction_id = '<return_tx_id>';
 ```
 

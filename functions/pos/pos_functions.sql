@@ -1,11 +1,11 @@
 set search_path = pos_schema;
 
 CREATE OR REPLACE FUNCTION check_sale_payment_completion(_sale_id uuid)
-returns boolean as $$
+returns BOOLEAN as $$
 declare
     _sale_total numeric(10,2);
     _payments_total numeric(10,2);
-    _is_completed boolean;
+    _is_completed BOOLEAN;
     _pending_payments int;
 BEGIN
         select total_amount, is_completed 
@@ -88,7 +88,7 @@ BEGIN
             new.sale_id,
             current_timestamp
         )
-        on conflict (sale_id) do nothing;
+        on conflict (sale_id) DO nothing;
         
         raise notice 'Sale % linked to session %', new.sale_id, _session_id;
     else
@@ -139,7 +139,7 @@ returns table (
     bill_id uuid,
     sale_id uuid,
     tenant_customer_id uuid,
-    currency_id integer,
+    currency_id INTEGER,
     subtotal_amount numeric(10,2),
     tax_amount numeric(10,2),
     total_amount numeric(10,2),
@@ -169,7 +169,7 @@ declare
     _bill_id uuid;
     _tenant_customer_id uuid;
     _tenant_id uuid;
-    _currency_id integer;
+    _currency_id INTEGER;
     _subtotal numeric(10,2);
     _tax numeric(10,2);
     _total numeric(10,2);
@@ -274,9 +274,9 @@ declare
     _new_tax numeric(10,2);
     _new_total numeric(10,2);
     _tax_rate numeric(5,2);
-    _quantity_remaining integer;
+    _quantity_remaining INTEGER;
     _sale_subtotal_after numeric(10,2);
-    _region_name varchar;
+    _region_name VARCHAR;
     _tenant_id uuid;
 BEGIN
     select 
@@ -285,7 +285,7 @@ BEGIN
         si.quantity,
         si.unit_price,
         si.total_price,
-        si.product_id,
+        si.product_variant_id,
         si.tenant_id
     into _sale_item_record
     from pos_schema.sale_item si
@@ -389,8 +389,8 @@ CREATE OR REPLACE FUNCTION auto_toggle_promotions()
 returns table(
     action text,
     promotion_id uuid,
-    promo_code varchar(50),
-    promo_name varchar(100)
+    promo_code VARCHAR(50),
+    promo_name VARCHAR(100)
 ) as $$
 declare
     _now timestamp := current_timestamp;
@@ -450,7 +450,7 @@ $$ language plpgsql;
 
     CREATE OR REPLACE FUNCTION calculate_percentage_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -500,7 +500,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_fixed_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -550,7 +550,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_buy_x_get_y_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -559,7 +559,7 @@ declare
     _total_price numeric(10,2);
     _discount numeric(10,2);
     _discount_pct numeric(5,2);
-    _free_items integer;
+    _free_items INTEGER;
     _result pos_schema.discount_result;
 BEGIN
     _total_price := _quantity * _unit_price;
@@ -606,7 +606,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_volume_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -655,7 +655,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_tiered_pricing_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -720,7 +720,7 @@ $$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION calculate_combo_discount(
     _promotion_id uuid,
-    _quantity integer,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2)
 ) returns pos_schema.discount_result as $$
@@ -736,19 +736,19 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION calculate_promotion_discount(
     _promotion_id uuid,
     _tenant_id uuid,
-    _product_id uuid,
-    _quantity integer,
+    _product_variant_id uuid,
+    _quantity INTEGER,
     _unit_price numeric(10,2),
     _total_purchase_amount numeric(10,2) default null
 ) returns table(
     discount_amount numeric(10,2),
     discount_percentage numeric(5,2),
-    promotion_type varchar(50),
+    promotion_type VARCHAR(50),
     rule_applied text
 ) as $$
 declare
     _promo record;
-    _type_name varchar(50);
+    _type_name VARCHAR(50);
     _result pos_schema.discount_result;
 BEGIN
     select 
@@ -783,7 +783,7 @@ BEGIN
     _type_name := _promo.type_name;
     
     raise notice 'Calculating discount for promotion: % (%)', _promo.promotion_name, _type_name;
-    raise notice '   Product: %, Quantity: %, Unit Price: $%', _product_id, _quantity, _unit_price;
+    raise notice '   Product Variant: %, Quantity: %, Unit Price: $%', _product_variant_id, _quantity, _unit_price;
     
     case _type_name
         when 'percentage_discount' then
@@ -829,7 +829,7 @@ BEGIN
         return query select 
             _result.discount_amount,
             _result.discount_percentage,
-            _type_name::varchar(50),
+            _type_name::VARCHAR(50),
             _result.rule_description;
     end if;
 
@@ -838,10 +838,11 @@ BEGIN
 end;
 $$ language plpgsql;
 
-create or replace procedure open_close_cash_register_session(
+CREATE OR REPLACE PROCEDURE open_close_cash_register_session(
     _cash_register_id uuid,
-    _action varchar(10), 
-    _amount numeric(10,2)
+    _action VARCHAR(10), 
+    _amount numeric(10,2),
+    _user_id uuid
 )
 as $$
 declare
@@ -863,6 +864,7 @@ BEGIN
             
             INSERT INTO pos_schema.cash_register_session (
                 cash_register_id,
+                user_id,
                 opened_at,
                 opening_amount,
                 is_active,
@@ -870,6 +872,7 @@ BEGIN
                 updated_at
             ) VALUES (
                 _cash_register_id,
+                _user_id,
                 current_timestamp,
                 _amount,
                 true,
@@ -927,12 +930,12 @@ CREATE OR REPLACE FUNCTION calculate_purchase_score(
 _tenant_id uuid,
 _tenant_customer_id uuid,
 _purchase_amount numeric(10,2)
-) returns integer as $$
+) returns INTEGER as $$
 declare
     _minimum_purchase numeric(10,2);
     _points_earned_per_currency_unit numeric(5,2);
-    _score integer;
-    _program_exists boolean;
+    _score INTEGER;
+    _program_exists BOOLEAN;
 BEGIN
         select exists(
             select 1 
@@ -977,10 +980,10 @@ declare
     _tenant_id uuid;
     _tenant_customer_id uuid;
     _bill_id uuid;
-    _points_earned integer;
-    _current_balance integer;
+    _points_earned INTEGER;
+    _current_balance INTEGER;
     _cash_payments_total numeric(10,2);
-    _points_already_awarded boolean;
+    _points_already_awarded BOOLEAN;
 BEGIN
         _bill_id := new.bill_id;
         
@@ -1047,7 +1050,7 @@ BEGIN
             current_timestamp
         )
         on conflict (tenant_customer_id, tenant_id)
-        do update set
+        DO update set
             score = tenant_customer_score.score + _points_earned,
             lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
             last_earned_at = current_timestamp
@@ -1090,17 +1093,17 @@ create trigger on_purchase_billed
 
 CREATE OR REPLACE FUNCTION redeem_points(
 _tenant_customer_id uuid,
-_points_to_redeem integer
+_points_to_redeem INTEGER
 ) returns table(
     cash_value numeric(10,2),
-    points_available integer,
-    success boolean,
+    points_available INTEGER,
+    success BOOLEAN,
     message text
 ) as $$
 declare
     _points_redeemed_per_currency_unit numeric(10,2); 
     _tenant_id uuid;
-    _current_points integer;
+    _current_points INTEGER;
     _cash_equivalent numeric(10,2);
 BEGIN   
     select tenant_id into _tenant_id
@@ -1189,19 +1192,19 @@ BEGIN
 end;
 $$ language plpgsql;
 
-create or replace procedure verify_customer_payment(_payment_id uuid)
+CREATE OR REPLACE PROCEDURE verify_customer_payment(_payment_id uuid)
 as $$
 declare
-    _exists boolean;
-    _already_verified boolean;
+    _exists BOOLEAN;
+    _already_verified BOOLEAN;
     _tenant_customer_id uuid;
     _sale_id uuid;
     _payment_amount numeric(10,2);
-    _payment_method varchar(50);
-    _is_points_redemption boolean;
-    _points_redeemed integer;
+    _payment_method VARCHAR(50);
+    _is_points_redemption BOOLEAN;
+    _points_redeemed INTEGER;
     _redeem_result record;
-    _sale_completed boolean;
+    _sale_completed BOOLEAN;
 BEGIN
     select exists(
         select 1 

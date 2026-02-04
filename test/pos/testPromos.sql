@@ -5,16 +5,16 @@
 -- Ejecutar desde psql: \i testPromos_repeat.sql
 -- ============================================
 
-set search_path = general, pos;
+set search_path = general_schema, pos;
 
 -- ============================================
 -- SECCIÓN 0: Limpieza idempotente (eliminar tenant de prueba si existe)
 -- ============================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
 BEGIN
-    select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1;
+    select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1;
     if v_tenant_id is not null then
         RAISE NOTICE '%', format('🧹 Cleaning previous test tenant: %s', v_tenant_id);
         
@@ -23,47 +23,47 @@ BEGIN
         where bp.bill_id in (
             select b.bill_id from pos.bill b
             join pos.sale s on b.sale_id = s.sale_id
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.bill where sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.customer_payment where sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.sale_item where sale_id in (
             select s.sale_id from pos.sale s
-            join general.branch br on s.branch_id = br.branch_id
+            join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
         delete from pos.sale where branch_id in (
-            select branch_id from general.branch where tenant_id = v_tenant_id
+            select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
         delete from pos.cash_register_sale where cash_register_session_id in (
             select cash_register_session_id from pos.cash_register_session
             where cash_register_id in (
                 select cash_register_id from pos.cash_register
-                where branch_id in (select branch_id from general.branch where tenant_id = v_tenant_id)
+                where branch_id in (select branch_id from general_schema.branch where tenant_id = v_tenant_id)
             )
         );
 
         delete from pos.cash_register_session where cash_register_id in (
             select cash_register_id from pos.cash_register
-            where branch_id in (select branch_id from general.branch where tenant_id = v_tenant_id)
+            where branch_id in (select branch_id from general_schema.branch where tenant_id = v_tenant_id)
         );
 
         delete from pos.cash_register where branch_id in (
-            select branch_id from general.branch where tenant_id = v_tenant_id
+            select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
         delete from pos.promotion_rule where promotion_id in (
@@ -75,15 +75,16 @@ BEGIN
         delete from pos.tenant_customer_score where tenant_id = v_tenant_id;
         delete from pos.score_transaction where tenant_id = v_tenant_id;
 
-        delete from general.product_attribute where tenant_id = v_tenant_id;
-        delete from general.product where tenant_id = v_tenant_id;
+        delete from general_schema.attribute_assignation where tenant_id = v_tenant_id;
+        delete from general_schema.product_variant where tenant_id = v_tenant_id;
+        delete from general_schema.product where tenant_id = v_tenant_id;
 
-        delete from general.tenant_customer where tenant_id = v_tenant_id;
-        delete from general.users where tenant_id = v_tenant_id;
-        delete from general.branch where tenant_id = v_tenant_id;
+        delete from general_schema.tenant_customer where tenant_id = v_tenant_id;
+        delete from general_schema.users where tenant_id = v_tenant_id;
+        delete from general_schema.branch where tenant_id = v_tenant_id;
 
         -- finalmente borrar tenant
-        delete from general.tenant where tenant_id = v_tenant_id;
+        delete from general_schema.tenant where tenant_id = v_tenant_id;
 
         RAISE NOTICE '%', format('✅ Previous test data removed');
     else
@@ -95,7 +96,7 @@ end $$;
 -- ============================================
 -- SECCIÓN 1: Crear tenant, branch, cliente y productos (idempotente)
 -- ============================================
-do $$
+DO $$
 declare
     v_tenant_id uuid;
     v_branch_id uuid;
@@ -109,70 +110,70 @@ BEGIN
     RAISE NOTICE '%', format('🏗️  SECCIÓN 1: Creación de datos maestros');
 
     -- Tenant
-    INSERT INTO general.tenant(tenant_name, contact_email, region_id, is_subscribed)
-    VALUES ('Promos Test Shop', 'promos@testshop.local', (select region_id from general.region limit 1), false)
+    INSERT INTO general_schema.tenant(tenant_name, contact_email, region_id, is_subscribed)
+    VALUES ('Promos Test Shop', 'promos@testshop.local', (select region_id from general_schema.region limit 1), false)
     returning tenant_id into v_tenant_id;
     if v_tenant_id is null then
-        select tenant_id into v_tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1;
+        select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1;
     end if;
     RAISE NOTICE '%', format('  Tenant: %s', v_tenant_id);
 
     -- Branch
-    INSERT INTO general.branch (tenant_id, branch_name, branch_address, is_main_branch)
+    INSERT INTO general_schema.branch (tenant_id, branch_name, branch_address, is_main_branch)
     VALUES (v_tenant_id, 'Main Branch', 'Address Test', true)
     returning branch_id into v_branch_id;
     if v_branch_id is null then
-        select branch_id into v_branch_id from general.branch where tenant_id = v_tenant_id and branch_name = 'Main Branch' limit 1;
+        select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Main Branch' limit 1;
     end if;
     RAISE NOTICE '%', format('  Branch: %s', v_branch_id);
 
     -- Customer
-    INSERT INTO general.tenant_customer(
+    INSERT INTO general_schema.tenant_customer(
         tenant_id, first_name, last_name, document_number, email, phone, customer_segment_id
     ) VALUES (
         v_tenant_id, 'Test', 'Cliente', 'PT-001', 'test.client@promos.local', '+000-000-000', 3
     ) returning tenant_customer_id into v_customer_id;
     if v_customer_id is null then
-        select tenant_customer_id into v_customer_id from general.tenant_customer where tenant_id = v_tenant_id and email = 'test.client@promos.local' limit 1;
+        select tenant_customer_id into v_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id and email = 'test.client@promos.local' limit 1;
     end if;
     RAISE NOTICE '%', format('  Customer: %s', v_customer_id);
 
     -- Productos: catálogo controlado para las pruebas
     -- A: Laptop (categoria Electronics), B: Mouse, C: Cable (misma categoría B y C para demo de grupo)
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
     VALUES (v_tenant_id, 'PR-A', 'Laptop Test', 1000.00)
     returning product_id into v_prod_a;
     if v_prod_a is null then
-        select product_id into v_prod_a from general.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1;
+        select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1;
     end if;
 
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
     VALUES (v_tenant_id, 'PR-B', 'Mouse Test', 50.00)
     returning product_id into v_prod_b;
     if v_prod_b is null then
-        select product_id into v_prod_b from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1;
+        select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1;
     end if;
 
-    INSERT INTO general.product (tenant_id, sku, product_name, unit_price)
+    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
     VALUES (v_tenant_id, 'PR-C', 'Cable USB Test', 10.00)
     returning product_id into v_prod_c;
     if v_prod_c is null then
-        select product_id into v_prod_c from general.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1;
+        select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1;
     end if;
 
     RAISE NOTICE '%', format('  Products created: A=%s B=%s C=%s', v_prod_a, v_prod_b, v_prod_c);
 
     -- currency and payment_method safe-retrieval (fall back to any existing)
-    select currency_id into v_currency_id from general.currency limit 1;
+    select currency_id into v_currency_id from general_schema.currency limit 1;
     if v_currency_id is null then
-        INSERT INTO general.currency(currency_id_code, currency_name, symbol, exchange_rate_to_usd)
+        INSERT INTO general_schema.currency(currency_id_code, currency_name, symbol, exchange_rate_to_usd)
         VALUES ('USD', 'US Dollar', '$', 1.0)
         returning currency_id into v_currency_id;
     end if;
 
-    select payment_method_id into v_payment_method_id from general.payment_method where name = 'cash' limit 1;
+    select payment_method_id into v_payment_method_id from general_schema.payment_method where name = 'cash' limit 1;
     if v_payment_method_id is null then
-        INSERT INTO general.payment_method(name, description) VALUES ('cash', 'Cash payment') returning payment_method_id into v_payment_method_id;
+        INSERT INTO general_schema.payment_method(name, description) VALUES ('cash', 'Cash payment') returning payment_method_id into v_payment_method_id;
     end if;
 
     RAISE NOTICE '%', format('  Currency id: %s, Cash payment_method_id: %s', v_currency_id, v_payment_method_id);
@@ -185,31 +186,31 @@ end $$;
 -- SECCIÓN 2: Venta BASE (sin promoción) - pago contado y verificado
 -- - misma canasta será reutilizada para pruebas de promos
 -- ============================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
-    v_branch_id uuid := (select branch_id from general.branch where tenant_id = v_tenant_id limit 1);
-    v_customer_id uuid := (select tenant_customer_id from general.tenant_customer where tenant_id = v_tenant_id limit 1);
-    v_prod_a uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1);
-    v_prod_b uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1);
-    v_prod_c uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_branch_id uuid := (select branch_id from general_schema.branch where tenant_id = v_tenant_id limit 1);
+    v_customer_id uuid := (select tenant_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id limit 1);
+    v_prod_a uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1);
+    v_prod_b uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1);
+    v_prod_c uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1);
     v_sale_id uuid;
     v_payment_id uuid;
-    v_currency_id int := (select currency_id from general.currency limit 1);
-    v_payment_method_id int := (select payment_method_id from general.payment_method where name = 'cash' limit 1);
+    v_currency_id int := (select currency_id from general_schema.currency limit 1);
+    v_payment_method_id int := (select payment_method_id from general_schema.payment_method where name = 'cash' limit 1);
     v_subtotal numeric(12,2);
-    v_tax_rate numeric(5,2) := coalesce((select rate_percentage from general.tax_rate where region = 'US Federal' limit 1), 0);
+    v_tax_rate numeric(5,2) := coalesce((select rate_percentage from general_schema.tax_rate where region = 'US Federal' limit 1), 0);
     v_tax numeric(12,2);
     v_total numeric(12,2);
 BEGIN
     RAISE NOTICE '%', format('🛒 SECCIÓN 2: Creating base sale (no promo)');
 
     -- Remove any previous sales/payments for this tenant to keep idempotence at sale-level
-    delete from pos.bill_payment bp where bp.bill_id in (select b.bill_id from pos.bill b join pos.sale s on b.sale_id = s.sale_id join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
-    delete from pos.bill where sale_id in (select s.sale_id from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
-    delete from pos.customer_payment where sale_id in (select s.sale_id from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
-    delete from pos.sale_item where sale_id in (select s.sale_id from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
-    delete from pos.sale where branch_id in (select branch_id from general.branch where tenant_id = v_tenant_id);
+    delete from pos.bill_payment bp where bp.bill_id in (select b.bill_id from pos.bill b join pos.sale s on b.sale_id = s.sale_id join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
+    delete from pos.bill where sale_id in (select s.sale_id from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
+    delete from pos.customer_payment where sale_id in (select s.sale_id from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
+    delete from pos.sale_item where sale_id in (select s.sale_id from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id);
+    delete from pos.sale where branch_id in (select branch_id from general_schema.branch where tenant_id = v_tenant_id);
 
     -- Sale composition (same for all promo tests)
     -- 1 x Laptop ($1000) + 2 x Mouse ($50) + 3 x Cable ($10)
@@ -262,14 +263,14 @@ end $$;
 -- Nota: promotion_type ids se obtienen por name (seguro con los inserts del esquema)
 
 -- 3.1 Descuento porcentual (20 percent)
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'percentage_discount' limit 1);
     v_promo_id uuid;
     v_rule_id uuid;
     v_discount record;
-    v_subtotal numeric(12,2) := (select subtotal_amount from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1);
+    v_subtotal numeric(12,2) := (select subtotal_amount from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1);
 BEGIN
     RAISE NOTICE ''; 
     RAISE NOTICE '%', format('--- 3.1 Percentage discount (20 percent) ---');
@@ -286,7 +287,7 @@ BEGIN
     for v_discount in select * from pos.calculate_promotion_discount(
             (select promotion_id from pos.promotion where tenant_id = v_tenant_id and promotion_code = 'PT-PERC' limit 1),
             v_tenant_id,
-            (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1),
+            (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1),
             1, 1000.00, v_subtotal
         )
     loop
@@ -298,9 +299,9 @@ end $$;
 
 
 -- 3.2 Descuento fijo ($10 off si >= $50)
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'fixed_amount_discount' limit 1);
     v_promo_id uuid;    -- Variable declarada para capturar el ID
     v_discount record;  -- Variable para el loop de resultados
@@ -320,8 +321,8 @@ BEGIN
     for v_discount in select * from pos.calculate_promotion_discount(
             v_promo_id,
             v_tenant_id,
-            (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1),
-            3, 10.00, (select subtotal_amount from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1)
+            (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1),
+            3, 10.00, (select subtotal_amount from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1)
         )
     loop
         RAISE NOTICE '%', format('  Fixed Discount result: amount=$%s rule=%s', v_discount.discount_amount, v_discount.rule_applied);
@@ -332,9 +333,9 @@ end $$;
 
 
 -- 3.3 Buy X Get Y (2x1 sobre Mouse - PR-B)
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'buy_x_get_y' limit 1);
     v_promo_id uuid;
     v_discount record; -- CORRECCIÓN: Variable agregada
@@ -352,8 +353,8 @@ BEGIN
     -- calcular descuento para 3 unidades de PR-B (esperado 1 gratis)
     for v_discount in select * from pos.calculate_promotion_discount(
             v_promo_id, v_tenant_id,
-            (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
-            3, 50.00, (select subtotal_amount from pos.sale s join general.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1)
+            (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
+            3, 50.00, (select subtotal_amount from pos.sale s join general_schema.branch br on s.branch_id = br.branch_id where br.tenant_id = v_tenant_id order by s.sale_date desc limit 1)
         )
     loop
         RAISE NOTICE '%', format('  2x1 Discount: $%s (%s percent) rule=%s', v_discount.discount_amount, v_discount.discount_percentage, v_discount.rule_applied);
@@ -364,9 +365,9 @@ end $$;
 
 
 -- 3.4 Volume discount (15 percent para 10+ unidades) -- (aplica si compramos at least 10 items)
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'volume_discount' limit 1);
     v_promo_id uuid;
     v_discount record; -- CORRECCIÓN: Variable agregada
@@ -384,7 +385,7 @@ BEGIN
     -- calcular descuento simulando 15 unidades de PR-B
     for v_discount in select * from pos.calculate_promotion_discount(
             v_promo_id, v_tenant_id,
-            (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
+            (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
             15, 50.00, 15 * 50.00
         )
     loop
@@ -396,9 +397,9 @@ end $$;
 
 
 -- 3.5 Tiered pricing (3 niveles) - demostración con PR-B
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'tiered_pricing' limit 1);
     v_promo_id uuid;
     v_discount record; -- CORRECCIÓN: Variable agregada
@@ -423,7 +424,7 @@ BEGIN
     -- calcular ejemplo Tier 2 (25 unidades)
     for v_discount in select * from pos.calculate_promotion_discount(
             v_promo_id, v_tenant_id,
-            (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
+            (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1),
             25, 50.00, 25 * 50.00
         )
     loop
@@ -435,9 +436,9 @@ end $$;
 
 
 -- 3.6 Combo (informativo; no aplica a single-product tests)
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
     v_type_id int := (select promotion_type_id from pos.promotion_type where type_name = 'combo' limit 1);
 BEGIN
     RAISE NOTICE ''; 
@@ -457,20 +458,20 @@ end $$;
 -- - Se reutiliza la canasta base pero se aplica el descuento calculado y se genera un pago por el monto final.
 -- - Cada ejecución crea sale + payment + triggers => bill. Resultados se muestran.
 -- ============================================
-do $$
+DO $$
 declare
-    v_tenant_id uuid := (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1);
-    v_customer_id uuid := (select tenant_customer_id from general.tenant_customer where tenant_id = v_tenant_id limit 1);
-    v_currency_id int := (select currency_id from general.currency limit 1);
-    v_payment_method_id int := (select payment_method_id from general.payment_method where name = 'cash' limit 1);
-    v_prod_a uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1);
-    v_prod_b uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1);
-    v_prod_c uuid := (select product_id from general.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1);
+    v_tenant_id uuid := (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1);
+    v_customer_id uuid := (select tenant_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id limit 1);
+    v_currency_id int := (select currency_id from general_schema.currency limit 1);
+    v_payment_method_id int := (select payment_method_id from general_schema.payment_method where name = 'cash' limit 1);
+    v_prod_a uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-A' limit 1);
+    v_prod_b uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-B' limit 1);
+    v_prod_c uuid := (select product_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PR-C' limit 1);
     v_promotion record;
     v_sale_id uuid;
     v_payment_id uuid;
     v_subtotal numeric(12,2);
-    v_tax_rate numeric(5,2) := coalesce((select rate_percentage from general.tax_rate where region = 'US Federal' limit 1), 0);
+    v_tax_rate numeric(5,2) := coalesce((select rate_percentage from general_schema.tax_rate where region = 'US Federal' limit 1), 0);
     v_tax numeric(12,2);
     v_total_before numeric(12,2);
     v_discount_amount numeric(12,2);
@@ -519,7 +520,7 @@ BEGIN
 
         -- create sale + items (this sale is independent from base sale)
         INSERT INTO pos.sale(branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
-        VALUES ((select branch_id from general.branch where tenant_id = v_tenant_id limit 1), v_currency_id, v_subtotal, v_tax, v_total_before, false)
+        VALUES ((select branch_id from general_schema.branch where tenant_id = v_tenant_id limit 1), v_currency_id, v_subtotal, v_tax, v_total_before, false)
         returning sale_id into v_sale_id;
 
         INSERT INTO pos.sale_item(sale_id, tenant_id, product_id, quantity, unit_price, total_price)
@@ -564,5 +565,5 @@ select
     p.promotion_end_date
 from pos.promotion p
 join pos.promotion_type pt on p.promotion_type_id = pt.promotion_type_id
-where tenant_id = (select tenant_id from general.tenant where tenant_name = 'Promos Test Shop' limit 1)
+where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Promos Test Shop' limit 1)
 order by p.created_at;

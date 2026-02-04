@@ -9,8 +9,8 @@
 -- ========================================
 DO $$
 DECLARE
-    v_email varchar := 'flow.test@test.com';
-    v_doc_number varchar := 'FLW_TST_01';
+    v_email VARCHAR := 'flow.test@test.com';
+    v_doc_number VARCHAR := 'FLW_TST_01';
     v_user_id uuid;
     v_employee_id uuid;
     v_paysheet_id uuid;
@@ -48,7 +48,7 @@ BEGIN
     END IF;
 
     -- Eliminar usuario de prueba
-    DELETE FROM general.users WHERE email = v_email;
+    DELETE FROM general_schema.users WHERE email = v_email;
     RAISE NOTICE '   ✓ Usuario de prueba eliminado: %', v_email;
 
     -- Eliminar conceptos de ingreso de prueba
@@ -66,7 +66,7 @@ DO $$
 DECLARE
     v_employee_id UUID;
     v_user_id UUID;
-    v_branch_id UUID := (SELECT branch_id FROM general.branch LIMIT 1);
+    v_branch_id UUID := (SELECT branch_id FROM general_schema.branch LIMIT 1);
     v_schedule_id INTEGER := 1;
 BEGIN
     RAISE NOTICE '';
@@ -75,7 +75,7 @@ BEGIN
     RAISE NOTICE '========================================';
 
     -- Crear usuario de prueba
-    INSERT INTO general.users(email, password_hash, role_id)
+    INSERT INTO general_schema.users(email, password_hash, role_id)
     VALUES ('flow.test@test.com', '948y3948yr98438r', 2)
     RETURNING user_id INTO v_user_id;
 
@@ -118,7 +118,7 @@ DECLARE
     v_employee_id UUID := (SELECT employee_id FROM hr_schema.employee WHERE email = 'flow.test@test.com' LIMIT 1);
     v_paysheet_id UUID := gen_random_uuid();
     v_detail_id UUID := gen_random_uuid();
-    v_branch_id UUID := (SELECT branch_id FROM general.branch LIMIT 1);
+    v_branch_id UUID := (SELECT branch_id FROM general_schema.branch LIMIT 1);
     v_pending_status INTEGER;
 BEGIN
     RAISE NOTICE '';

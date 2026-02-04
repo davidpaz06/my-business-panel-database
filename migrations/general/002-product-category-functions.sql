@@ -1,5 +1,5 @@
 -- ======================================================
--- MIGRATION: general/002-product-category-functions.sql
+-- MIGRATION: general_schema/002-product-category-functions.sql
 -- ======================================================
 -- Author: David
 -- Description: Part 2 - Adds functions and triggers for category hierarchy

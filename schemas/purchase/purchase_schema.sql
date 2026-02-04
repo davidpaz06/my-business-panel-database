@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS supplier_branch(
 );
 
 CREATE TABLE IF NOT EXISTS purchase_order_status(
-    status_id serial PRIMARY KEY,
+    status_id SERIAL PRIMARY KEY,
     status_name VARCHAR(50) not null,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -47,14 +47,17 @@ CREATE TABLE IF NOT EXISTS purchase_order_item(
     purchase_order_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_order_id uuid not null REFERENCES purchase_schema.purchase_order(purchase_order_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_ordered INTEGER not null,
     unit_price NUMERIC(12,3) not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_purchase_order_item_variant 
+    ON purchase_schema.purchase_order_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS purchase_order_tracking(
     purchase_order_tracking_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,14 +92,17 @@ CREATE TABLE IF NOT EXISTS supplier_invoice_item(
     supplier_invoice_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     supplier_invoice_id uuid not null REFERENCES purchase_schema.supplier_invoice(supplier_invoice_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_billed INTEGER not null,
     unit_price NUMERIC(12,3) not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_supplier_invoice_item_variant 
+    ON purchase_schema.supplier_invoice_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS goods_receipt(
     goods_receipt_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -113,13 +119,16 @@ CREATE TABLE IF NOT EXISTS goods_receipt_item(
     goods_receipt_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     goods_receipt_id uuid not null REFERENCES purchase_schema.goods_receipt(goods_receipt_id) on delete cascade,
     tenant_id uuid not null,                                                         
-    product_id uuid not null,
+    product_variant_id uuid not null,
     quantity_received INTEGER not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_id) REFERENCES general_schema.product(tenant_id, product_id) on delete cascade
+    FOREIGN KEY (tenant_id, product_variant_id) 
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
+CREATE INDEX IF NOT EXISTS idx_goods_receipt_item_variant 
+    ON purchase_schema.goods_receipt_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS purchase_schema.purchase_account_payable(
     purchase_account_payable_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -149,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_verified ON purchase_schem
 CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_date ON purchase_schema.purchase_order_payment(payment_date);
 
 CREATE TABLE IF NOT EXISTS purchase_order_payment_alert_type(
-    payment_alert_type_id serial PRIMARY KEY,
+    payment_alert_type_id SERIAL PRIMARY KEY,
     payment_alert_type_name VARCHAR(50) not null,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
