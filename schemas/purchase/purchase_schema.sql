@@ -8,12 +8,14 @@ CREATE TABLE IF NOT EXISTS supplier(
     supplier_contact_info TEXT,
     supplier_address TEXT,
     supplier_notes TEXT,
-    added_by uuid REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
+    added_by uuid REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_supplier_name on purchase_schema.supplier(supplier_name);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_added_by ON purchase_schema.supplier(added_by);
 
 CREATE TABLE IF NOT EXISTS supplier_branch(
     supplier_branch_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -11,6 +11,7 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
   -- Parametros para la crecaion del empleado
   p_user_id UUID,
   p_tenant_id UUID,
+  p_branch_id UUID,  
   p_first_name VARCHAR(100),
   p_last_name VARCHAR(100),
   p_doc_number VARCHAR(100),
@@ -29,8 +30,8 @@ BEGIN
     RAISE EXCEPTION 'Integrity error: schedule_id (schedule_id: %) doesnt exists', p_schedule_id;
   END IF;
 
-  INSERT INTO hr_schema.contract (start_date, end_date, hours, base_salary, duties)
-  VALUES (p_start_date, p_end_date, p_hours, p_base_salary, p_duties)
+  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties)
+  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties)
   RETURNING contract_id INTO v_new_contract_id;
 
   v_new_employee_id := gen_random_uuid();
