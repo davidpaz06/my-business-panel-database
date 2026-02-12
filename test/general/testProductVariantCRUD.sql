@@ -46,7 +46,6 @@ BEGIN
         DELETE FROM general_schema.attribute_assignation WHERE tenant_id = v_tenant_id;
         DELETE FROM general_schema.product_variant WHERE tenant_id = v_tenant_id;
         DELETE FROM general_schema.attribute_value WHERE tenant_id = v_tenant_id;
-        DELETE FROM general_schema.product WHERE tenant_id = v_tenant_id;
         DELETE FROM general_schema.tenant_attribute WHERE tenant_id = v_tenant_id;
         DELETE FROM inventory_schema.warehouse 
         WHERE branch_id IN (
@@ -59,6 +58,10 @@ BEGIN
     ELSE
         RAISE NOTICE '   ℹ️  No previous test tenant found';
     END IF;
+
+    -- Limpiar entradas CABYS de prueba
+    DELETE FROM general_schema.product WHERE cabys_code LIKE 'TSHIRT%';
+    RAISE NOTICE '   ✓ Removed test CABYS entries';
 
     RAISE NOTICE '✅ SECCIÓN 0 COMPLETADA';
     RAISE NOTICE '========================================';
@@ -164,129 +167,122 @@ select * from general_schema.product_category
 -- ========================================
 -- SECCIÓN 2: Crear atributos y valores
 -- ========================================
-DO $$
-DECLARE
-    v_tenant_id UUID := (SELECT tenant_id FROM general_schema.tenant WHERE tenant_name = 'Variant Test Shop' LIMIT 1);
-    v_attr_color UUID;
-    v_attr_size UUID;
-    v_val_red UUID;
-    v_val_blue UUID;
-    v_val_green UUID;
-    v_val_s UUID;
-    v_val_m UUID;
-    v_val_l UUID;
-    v_val_xl UUID;
 BEGIN
-    RAISE NOTICE '';
-    RAISE NOTICE '========================================';
-    RAISE NOTICE '🎨 SECCIÓN 2: Crear atributos y valores';
-    RAISE NOTICE '========================================';
+    -- Variables
+    DO $$
+    DECLARE
+        v_tenant_id UUID := (SELECT tenant_id FROM general_schema.tenant WHERE tenant_name = 'Variant Test Shop' LIMIT 1);
+        v_attr_color UUID;
+        v_attr_size UUID;
+        v_val_red UUID;
+        v_val_blue UUID;
+        v_val_green UUID;
+        v_val_s UUID;
+        v_val_m UUID;
+        v_val_l UUID;
+        v_val_xl UUID;
+    BEGIN
+        RAISE NOTICE '';
+        RAISE NOTICE '========================================';
+        RAISE NOTICE '🎨 SECCIÓN 2: Crear atributos y valores';
+        RAISE NOTICE '========================================';
 
-    -- Crear atributo "Color"
-    INSERT INTO general_schema.tenant_attribute (
-        tenant_id,
-        attribute_name,
-        is_custom
-    ) VALUES (
-        v_tenant_id,
-        'Color',
-        TRUE
-    )
-    RETURNING tenant_attribute_id INTO v_attr_color;
-    RAISE NOTICE '   ✓ Attribute "Color" created: %', v_attr_color;
+        -- Crear atributo "Color"
+        INSERT INTO general_schema.tenant_attribute (
+            tenant_id,
+            attribute_name,
+            is_custom
+        ) VALUES (
+            v_tenant_id,
+            'Color',
+            TRUE
+        )
+        RETURNING tenant_attribute_id INTO v_attr_color;
+        RAISE NOTICE '   ✓ Attribute "Color" created: %', v_attr_color;
 
-    -- Crear atributo "Size"
-    INSERT INTO general_schema.tenant_attribute (
-        tenant_id,
-        attribute_name,
-        is_custom
-    ) VALUES (
-        v_tenant_id,
-        'Size',
-        TRUE
-    )
-    RETURNING tenant_attribute_id INTO v_attr_size;
-    RAISE NOTICE '   ✓ Attribute "Size" created: %', v_attr_size;
+        -- Crear atributo "Size"
+        INSERT INTO general_schema.tenant_attribute (
+            tenant_id,
+            attribute_name,
+            is_custom
+        ) VALUES (
+            v_tenant_id,
+            'Size',
+            TRUE
+        )
+        RETURNING tenant_attribute_id INTO v_attr_size;
+        RAISE NOTICE '   ✓ Attribute "Size" created: %', v_attr_size;
 
-    -- Crear valores para Color
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_color, 'Red')
-    RETURNING attribute_value_id INTO v_val_red;
-    RAISE NOTICE '   ✓ Value "Red" created: %', v_val_red;
+        -- Crear valores para Color
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_color, 'Red')
+        RETURNING attribute_value_id INTO v_val_red;
+        RAISE NOTICE '   ✓ Value "Red" created: %', v_val_red;
 
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_color, 'Blue')
-    RETURNING attribute_value_id INTO v_val_blue;
-    RAISE NOTICE '   ✓ Value "Blue" created: %', v_val_blue;
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_color, 'Blue')
+        RETURNING attribute_value_id INTO v_val_blue;
+        RAISE NOTICE '   ✓ Value "Blue" created: %', v_val_blue;
 
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_color, 'Green')
-    RETURNING attribute_value_id INTO v_val_green;
-    RAISE NOTICE '   ✓ Value "Green" created: %', v_val_green;
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_color, 'Green')
+        RETURNING attribute_value_id INTO v_val_green;
+        RAISE NOTICE '   ✓ Value "Green" created: %', v_val_green;
 
-    -- Crear valores para Size
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_size, 'S')
-    RETURNING attribute_value_id INTO v_val_s;
-    RAISE NOTICE '   ✓ Value "S" created: %', v_val_s;
+        -- Crear valores para Size
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_size, 'S')
+        RETURNING attribute_value_id INTO v_val_s;
+        RAISE NOTICE '   ✓ Value "S" created: %', v_val_s;
 
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_size, 'M')
-    RETURNING attribute_value_id INTO v_val_m;
-    RAISE NOTICE '   ✓ Value "M" created: %', v_val_m;
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_size, 'M')
+        RETURNING attribute_value_id INTO v_val_m;
+        RAISE NOTICE '   ✓ Value "M" created: %', v_val_m;
 
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_size, 'L')
-    RETURNING attribute_value_id INTO v_val_l;
-    RAISE NOTICE '   ✓ Value "L" created: %', v_val_l;
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_size, 'L')
+        RETURNING attribute_value_id INTO v_val_l;
+        RAISE NOTICE '   ✓ Value "L" created: %', v_val_l;
 
-    INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
-    VALUES (v_tenant_id, v_attr_size, 'XL')
-    RETURNING attribute_value_id INTO v_val_xl;
-    RAISE NOTICE '   ✓ Value "XL" created: %', v_val_xl;
+        INSERT INTO general_schema.attribute_value (tenant_id, tenant_attribute_id, value_name)
+        VALUES (v_tenant_id, v_attr_size, 'XL')
+        RETURNING attribute_value_id INTO v_val_xl;
+        RAISE NOTICE '   ✓ Value "XL" created: %', v_val_xl;
 
-    RAISE NOTICE '   📊 Summary: 2 attributes, 7 values created';
-    RAISE NOTICE '✅ SECCIÓN 2 COMPLETADA';
-    RAISE NOTICE '========================================';
-END $$;
+        RAISE NOTICE '   📊 Summary: 2 attributes, 7 values created';
+        RAISE NOTICE '✅ SECCIÓN 2 COMPLETADA';
+        RAISE NOTICE '========================================';
+    END $$;
+END;
 
 -- ========================================
--- SECCIÓN 3: Crear producto base
+-- SECCIÓN 3: Crear entrada CABYS (catálogo global)
 -- ========================================
 DO $$
 DECLARE
-    v_tenant_id UUID := (SELECT tenant_id FROM general_schema.tenant WHERE tenant_name = 'Variant Test Shop' LIMIT 1);
     v_category_id INT := (SELECT product_category_id FROM general_schema.product_category WHERE category_name = 'Clothing' LIMIT 1);
-    v_product_id UUID;
 BEGIN
     RAISE NOTICE '';
     RAISE NOTICE '========================================';
-    RAISE NOTICE '📦 SECCIÓN 3: Crear producto base';
+    RAISE NOTICE '📦 SECCIÓN 3: Crear entrada CABYS (catálogo global)';
     RAISE NOTICE '========================================';
 
-    -- Crear producto base: T-Shirt
+    -- Crear entrada CABYS: Camiseta de algodón
     INSERT INTO general_schema.product (
-        tenant_id,
-        sku,
+        cabys_code,
         product_name,
-        product_description,
-        product_category_id,
-        unit_price
+        product_category_id
     ) VALUES (
-        v_tenant_id,
-        'TSHIRT-BASE',
-        'Cotton T-Shirt',
-        'Premium cotton t-shirt available in multiple colors and sizes',
-        v_category_id,
-        25.00
+        'TSHIRT0000001',
+        'Camiseta de algodón',
+        v_category_id
     )
-    RETURNING product_id INTO v_product_id;
+    ON CONFLICT (cabys_code) DO NOTHING;
     
-    RAISE NOTICE '   ✓ Base product created:';
-    RAISE NOTICE '     - ID: %', v_product_id;
-    RAISE NOTICE '     - SKU: TSHIRT-BASE';
-    RAISE NOTICE '     - Name: Cotton T-Shirt';
-    RAISE NOTICE '     - Price: $25.00';
+    RAISE NOTICE '   ✓ CABYS entry created:';
+    RAISE NOTICE '     - Code: TSHIRT0000001';
+    RAISE NOTICE '     - Name: Camiseta de algodón';
 
     RAISE NOTICE '✅ SECCIÓN 3 COMPLETADA';
     RAISE NOTICE '========================================';
@@ -298,7 +294,6 @@ END $$;
 DO $$
 DECLARE
     v_tenant_id UUID := (SELECT tenant_id FROM general_schema.tenant WHERE tenant_name = 'Variant Test Shop' LIMIT 1);
-    v_product_id UUID := (SELECT product_id FROM general_schema.product WHERE tenant_id = v_tenant_id AND sku = 'TSHIRT-BASE' LIMIT 1);
     v_variant_id UUID;
     v_count INT := 0;
 BEGIN
@@ -309,9 +304,9 @@ BEGIN
 
     -- Red S
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-RED-S', 'Cotton T-Shirt - Red/S', 25.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-RED-S', 'Cotton T-Shirt - Red/S', 25.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-RED-S (%)', v_variant_id;
@@ -319,9 +314,9 @@ BEGIN
 
     -- Red M
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-RED-M', 'Cotton T-Shirt - Red/M', 25.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-RED-M', 'Cotton T-Shirt - Red/M', 25.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-RED-M (%)', v_variant_id;
@@ -329,9 +324,9 @@ BEGIN
 
     -- Red L
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-RED-L', 'Cotton T-Shirt - Red/L', 27.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-RED-L', 'Cotton T-Shirt - Red/L', 27.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-RED-L (%)', v_variant_id;
@@ -339,9 +334,9 @@ BEGIN
 
     -- Blue S
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-BLUE-S', 'Cotton T-Shirt - Blue/S', 25.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-BLUE-S', 'Cotton T-Shirt - Blue/S', 25.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-BLUE-S (%)', v_variant_id;
@@ -349,9 +344,9 @@ BEGIN
 
     -- Blue M
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-BLUE-M', 'Cotton T-Shirt - Blue/M', 25.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-BLUE-M', 'Cotton T-Shirt - Blue/M', 25.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-BLUE-M (%)', v_variant_id;
@@ -359,9 +354,9 @@ BEGIN
 
     -- Blue XL
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-BLUE-XL', 'Cotton T-Shirt - Blue/XL', 29.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-BLUE-XL', 'Cotton T-Shirt - Blue/XL', 29.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-BLUE-XL (%)', v_variant_id;
@@ -369,9 +364,9 @@ BEGIN
 
     -- Green M
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-GREEN-M', 'Cotton T-Shirt - Green/M', 25.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-GREEN-M', 'Cotton T-Shirt - Green/M', 25.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-GREEN-M (%)', v_variant_id;
@@ -379,9 +374,9 @@ BEGIN
 
     -- Green L
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     ) VALUES (
-        v_tenant_id, v_product_id, 'TSHIRT-GREEN-L', 'Cotton T-Shirt - Green/L', 27.00, TRUE
+        v_tenant_id, 'TSHIRT0000001', 'TSHIRT-GREEN-L', 'Cotton T-Shirt - Green/L', 27.00, TRUE
     )
     RETURNING product_variant_id INTO v_variant_id;
     RAISE NOTICE '   ✓ Variant created: TSHIRT-GREEN-L (%)', v_variant_id;
@@ -606,11 +601,11 @@ BEGIN
     RAISE NOTICE '🔍 SECCIÓN 7: Consultas de verificación';
     RAISE NOTICE '========================================';
 
-    -- Contar productos base
+    -- Contar entradas CABYS
     SELECT COUNT(*) INTO v_product_count 
     FROM general_schema.product 
-    WHERE tenant_id = v_tenant_id;
-    RAISE NOTICE '   📦 Base products: %', v_product_count;
+    WHERE cabys_code LIKE 'TSHIRT%';
+    RAISE NOTICE '   📦 CABYS catalog entries: %', v_product_count;
 
     -- Contar variantes
     SELECT COUNT(*) INTO v_variant_count 

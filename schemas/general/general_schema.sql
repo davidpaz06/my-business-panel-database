@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS region(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- TODO: AGREGAR CAMPOS:
+--      CODIGO DE ACTIVIDAD ECONOMICA
 CREATE TABLE IF NOT EXISTS tenant(
     tenant_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_name VARCHAR(100) unique not null,
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS currency(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- TODO: AGREGAR SEED DE TAX RATES DE CABYS (0, 1, 2, 4, 13, 15, 18, 27)
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,
     region VARCHAR(100) unique not null,
@@ -188,34 +191,43 @@ CREATE INDEX IF NOT EXISTS idx_product_category_parent
 CREATE INDEX IF NOT EXISTS idx_product_category_hierarchy 
     ON general_schema.product_category(parent_category_id, hierarchy_level);
 
-CREATE TABLE IF NOT EXISTS product(
-    tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
-    product_id uuid not null default gen_random_uuid(),
-    sku VARCHAR(50) not null,
-    product_name VARCHAR(100) not null,
-    product_name_tsv tsvector generated always as (to_tsvector('spanish', product_name)) stored,
-    product_description text,
-    product_category_id int REFERENCES general_schema.product_category(product_category_id) on delete set null,
-    unit_price numeric(10,2) not null check (unit_price >= 0),
+CREATE TABLE IF NOT EXISTS unit_measure(
+    unit_measure_id SERIAL PRIMARY KEY,
+    unit_name VARCHAR(50) UNIQUE NOT NULL,
+    symbol VARCHAR(10),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-    PRIMARY KEY (tenant_id, product_id)   
-) partition by hash (tenant_id);
-DO $$
-declare
-    i int;
-BEGIN
-    for i in 0..7 loop
-        execute format(
-            'CREATE TABLE IF NOT EXISTS general_schema.product_p%s partition of general_schema.product for VALUES with (modulus 8, remainder %s);'
-            , i, i);
-    end loop;
-end;
-$$ language plpgsql;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_product_tenant_sku on general_schema.product(tenant_id, sku);
-CREATE INDEX IF NOT EXISTS idx_product_tenant_btree on general_schema.product(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_product_name_fts on general_schema.product using gin ( product_name_tsv );
+CREATE TABLE IF NOT EXISTS commercial_unit_measure(
+    commercial_unit_measure_id SERIAL PRIMARY KEY,
+    unit_name VARCHAR(50) UNIQUE NOT NULL,
+    symbol VARCHAR(10),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS product(
+    cabys_code VARCHAR(13) PRIMARY KEY,
+    product_name VARCHAR(255) NOT NULL,
+    product_name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('spanish', product_name)) STORED,
+    product_category_id INT REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
+    tax_rate_id INT REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
+    unit_measure_id INT REFERENCES general_schema.unit_measure(unit_measure_id) ON DELETE SET NULL,
+    commercial_unit_measure_id INT REFERENCES general_schema.commercial_unit_measure(commercial_unit_measure_id) ON DELETE SET NULL,
+    is_exonerated BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_name_fts 
+    ON general_schema.product USING gin(product_name_tsv);
+CREATE INDEX IF NOT EXISTS idx_product_category 
+    ON general_schema.product(product_category_id) 
+    WHERE product_category_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_product_tax_rate 
+    ON general_schema.product(tax_rate_id) 
+    WHERE tax_rate_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS global_attribute (
     global_attribute_id SERIAL PRIMARY KEY,
@@ -266,7 +278,7 @@ CREATE INDEX IF NOT EXISTS idx_attribute_value_tenant
 CREATE TABLE IF NOT EXISTS product_variant (
     tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     product_variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    product_id uuid NOT NULL,
+    cabys_code VARCHAR(13) REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
     sku VARCHAR(100) NOT NULL,
     variant_name VARCHAR(255),
     unit_price numeric(10,2) CHECK (unit_price >= 0),
@@ -274,11 +286,7 @@ CREATE TABLE IF NOT EXISTS product_variant (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (tenant_id, product_variant_id),
-    
-    FOREIGN KEY (tenant_id, product_id) 
-        REFERENCES general_schema.product(tenant_id, product_id) 
-        ON DELETE CASCADE
+    PRIMARY KEY (tenant_id, product_variant_id)
 ) PARTITION BY HASH (tenant_id);
 
 DO $$
@@ -298,8 +306,8 @@ $$ LANGUAGE plpgsql;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variant_tenant_sku 
     ON general_schema.product_variant(tenant_id, sku);
-CREATE INDEX IF NOT EXISTS idx_product_variant_product 
-    ON general_schema.product_variant(tenant_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_product_variant_cabys 
+    ON general_schema.product_variant(cabys_code);
 CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
     ON general_schema.product_variant(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_product_variant_active 
@@ -307,8 +315,8 @@ CREATE INDEX IF NOT EXISTS idx_product_variant_active
     WHERE is_active = true;
 
 COMMENT ON TABLE general_schema.product_variant IS 
-    'Specific sellable product variants linked to a base product. 
-    Variants can have unique SKUs and prices.';
+    'Tenant-specific sellable product variants linked to a CABYS catalog entry. 
+    Variants have unique SKUs and prices per tenant.';
 
 CREATE TABLE IF NOT EXISTS attribute_assignation (
     tenant_id uuid NOT NULL,
@@ -376,3 +384,4 @@ CREATE TABLE IF NOT EXISTS general_schema.account_payable (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+

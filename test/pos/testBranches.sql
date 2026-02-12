@@ -27,8 +27,8 @@ BEGIN
         )
     );
 
-    -- Elimina productos
-    delete from general_schema.product
+    -- Elimina variantes de producto
+    delete from general_schema.product_variant
     where tenant_id in (
         select tenant_id from general_schema.tenant
         where tenant_name = 'Comercio MultiSucursal'
@@ -104,18 +104,29 @@ BEGIN
     )
     returning tenant_customer_id into v_cliente_id;
 
-    -- Crear productos
-    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-A', 'Monitor LG', 200.00)
-    returning product_id into v_prod_a;
+    -- Crear entradas CABYS de prueba
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('BRTEST0000001', 'Monitor')
+    ON CONFLICT (cabys_code) DO NOTHING;
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('BRTEST0000002', 'Mouse')
+    ON CONFLICT (cabys_code) DO NOTHING;
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('BRTEST0000003', 'Teclado')
+    ON CONFLICT (cabys_code) DO NOTHING;
 
-    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-B', 'Mouse Genius', 20.00)
-    returning product_id into v_prod_b;
+    -- Crear variantes de producto para el tenant
+    INSERT INTO general_schema.product_variant (tenant_id, sku, variant_name, unit_price, cabys_code)
+    VALUES (v_tenant_id, 'PROD-A', 'Monitor LG', 200.00, 'BRTEST0000001')
+    returning product_variant_id into v_prod_a;
 
-    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-C', 'Teclado Redragon', 50.00)
-    returning product_id into v_prod_c;
+    INSERT INTO general_schema.product_variant (tenant_id, sku, variant_name, unit_price, cabys_code)
+    VALUES (v_tenant_id, 'PROD-B', 'Mouse Genius', 20.00, 'BRTEST0000002')
+    returning product_variant_id into v_prod_b;
+
+    INSERT INTO general_schema.product_variant (tenant_id, sku, variant_name, unit_price, cabys_code)
+    VALUES (v_tenant_id, 'PROD-C', 'Teclado Redragon', 50.00, 'BRTEST0000003')
+    returning product_variant_id into v_prod_c;
 
     raise notice '✓ Setup inicial completado';
 end $$;
@@ -137,31 +148,31 @@ BEGIN
     select branch_id into v_branch_centro from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Sucursal Centro';
     select branch_id into v_branch_norte from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Sucursal Norte';
     select tenant_customer_id into v_cliente_id from general_schema.tenant_customer where tenant_id = v_tenant_id and email = 'ana.ramirez@email.com';
-    select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-A';
-    select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-B';
-    select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-C';
+    select product_variant_id into v_prod_a from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-A';
+    select product_variant_id into v_prod_b from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-B';
+    select product_variant_id into v_prod_c from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-C';
 
     -- Venta 1 en Centro
     INSERT INTO pos_schema.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
     VALUES (v_branch_centro, 1, 200.00, 26.00, 226.00, true)
     returning sale_id into v_sale_id;
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_prod_a, 1, 200.00, 200.00);
 
     -- Venta 2 en Centro
     INSERT INTO pos_schema.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
     VALUES (v_branch_centro, 1, 70.00, 9.10, 79.10, true)
     returning sale_id into v_sale_id;
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_prod_b, 2, 20.00, 40.00);
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_prod_c, 1, 50.00, 50.00);
 
     -- Venta 3 en Norte
     INSERT INTO pos_schema.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
     VALUES (v_branch_norte, 1, 100.00, 13.00, 113.00, true)
     returning sale_id into v_sale_id;
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_prod_c, 2, 50.00, 100.00);
 
     raise notice '✓ Ventas realizadas en ambas sucursales';
@@ -182,25 +193,25 @@ order by b.branch_name;
 -- SECCIÓN 4: Reporte - Productos vendidos por sucursal
 select 
     b.branch_name,
-    p.product_name,
+    pv.variant_name as product_name,
     sum(si.quantity) as cantidad_vendida,
     sum(si.total_price) as ingresos
 from pos_schema.sale_item si
 join pos_schema.sale s on si.sale_id = s.sale_id
 join general_schema.branch b on s.branch_id = b.branch_id
-join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id
+join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id
 where b.branch_name in ('Sucursal Centro', 'Sucursal Norte')
-group by b.branch_name, p.product_name
+group by b.branch_name, pv.variant_name
 order by b.branch_name, ingresos desc;
 
 -- SECCIÓN 5: Reporte - Ventas totales por producto (todas las sucursales)
 select 
-    p.product_name,
+    pv.variant_name as product_name,
     sum(si.quantity) as cantidad_vendida,
     sum(si.total_price) as ingresos
 from pos_schema.sale_item si
-join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id
-group by p.product_name
+join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id
+group by pv.variant_name
 order by ingresos desc;
 
 -- SECCIÓN 6: Reporte - Detalle de ventas por sucursal
@@ -209,13 +220,15 @@ select
     s.sale_id,
     s.sale_date,
     s.total_amount,
-    p.product_name,
+    p.product_name as cabys_name,
+    pv.variant_name as product_name,
     si.quantity,
     si.total_price
 from pos_schema.sale s
 join general_schema.branch b on s.branch_id = b.branch_id
 join pos_schema.sale_item si on s.sale_id = si.sale_id
-join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id
+join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id
+left join general_schema.product p on pv.cabys_code = p.cabys_code
 where b.branch_name in ('Sucursal Centro', 'Sucursal Norte')
 order by b.branch_name, s.sale_date desc;
 

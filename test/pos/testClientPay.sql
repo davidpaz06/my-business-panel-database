@@ -45,7 +45,6 @@ BEGIN
             where email = 'juan.perez@email.com'
         )
     );
-    select * from general_schema.product
     delete from pos_schema.bill 
     where tenant_customer_id in (
         select tenant_customer_id from general_schema.tenant_customer 
@@ -124,11 +123,13 @@ BEGIN
         where tenant_name = 'Super Comercio Digital'
     );
     
-    delete from general_schema.product 
+    delete from general_schema.product_variant 
     where tenant_id in (
         select tenant_id from general_schema.tenant 
         where tenant_name = 'Super Comercio Digital'
     );
+
+    DELETE FROM general_schema.product WHERE cabys_code LIKE 'CPTEST%';
     
     delete from general_schema.users 
     where tenant_id in (
@@ -148,7 +149,7 @@ BEGIN
     raise notice '✓ Estado después de limpieza:';
     raise notice '  Tenants: %', (select count(*) from general_schema.tenant);
     raise notice '  Clientes: %', (select count(*) from general_schema.tenant_customer);
-    raise notice '  Productos: %', (select count(*) from general_schema.product);
+    raise notice '  Productos (variants): %', (select count(*) from general_schema.product_variant);
     raise notice '  Ventas: %', (select count(*) from pos_schema.sale);
     raise notice '  Facturas: %', (select count(*) from pos_schema.bill);
     raise notice '';
@@ -166,8 +167,7 @@ declare
     v_branch_id uuid;
     v_user_id uuid;
     v_customer_id uuid;
-    v_product_base_id uuid;
-    v_variant_a_id uuid;  -- ✅ Cambio: variant_id en lugar de product_id
+    v_variant_a_id uuid;
     v_variant_b_id uuid;
     v_variant_c_id uuid;
     v_cash_register_id uuid;
@@ -215,35 +215,35 @@ BEGIN
     raise notice '  Nombre: Juan Pérez';
     raise notice '  Segmento: Regular';
 
-    -- 1.5 Crear producto base
-    INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-    VALUES (v_tenant_id, 'PROD-BASE', 'Productos Electrónicos', 0.00)
-    returning product_id into v_product_base_id;
+    -- 1.5 Crear entrada CABYS
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('CPTEST0000001', 'Productos Electrónicos')
+    ON CONFLICT (cabys_code) DO NOTHING;
     
-    raise notice '✓ Producto base creado: %', v_product_base_id;
+    raise notice '✓ Entrada CABYS creada: CPTEST0000001';
 
     -- 1.6 Crear variantes vendibles
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     )
     VALUES (
-        v_tenant_id, v_product_base_id, 'PROD-001', 'Laptop HP', 850.00, true
+        v_tenant_id, 'CPTEST0000001', 'PROD-001', 'Laptop HP', 850.00, true
     )
     returning product_variant_id into v_variant_a_id;
     
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     )
     VALUES (
-        v_tenant_id, v_product_base_id, 'PROD-002', 'Mouse Logitech', 25.00, true
+        v_tenant_id, 'CPTEST0000001', 'PROD-002', 'Mouse Logitech', 25.00, true
     )
     returning product_variant_id into v_variant_b_id;
     
     INSERT INTO general_schema.product_variant (
-        tenant_id, product_id, sku, variant_name, unit_price, is_active
+        tenant_id, cabys_code, sku, variant_name, unit_price, is_active
     )
     VALUES (
-        v_tenant_id, v_product_base_id, 'PROD-003', 'Teclado Mecánico', 120.00, true
+        v_tenant_id, 'CPTEST0000001', 'PROD-003', 'Teclado Mecánico', 120.00, true
     )
     returning product_variant_id into v_variant_c_id;
     

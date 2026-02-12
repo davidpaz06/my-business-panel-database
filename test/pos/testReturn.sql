@@ -11,7 +11,7 @@
 -- 7) Verify invoice and sale zeroed and return_product rows created
 -- =====================================
 
-set local search_path = general_schema, pos;
+set local search_path = general_schema, pos_schema;
 
 -- ========================================
 -- SECCIÓN 0: Limpieza inicial (idempotente)
@@ -28,67 +28,68 @@ BEGIN
 
     if v_tenant_id is not null then
 
-        delete from pos.return_product where return_transaction_id in (
-            select return_transaction_id from pos.return_transaction rt
-            join pos.bill b on rt.bill_id = b.bill_id
-            join pos.sale s on b.sale_id = s.sale_id
+        delete from pos_schema.return_product where return_transaction_id in (
+            select return_transaction_id from pos_schema.return_transaction rt
+            join pos_schema.bill b on rt.bill_id = b.bill_id
+            join pos_schema.sale s on b.sale_id = s.sale_id
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.return_transaction where bill_id in (
-            select b.bill_id from pos.bill b
-            join pos.sale s on b.sale_id = s.sale_id
+        delete from pos_schema.return_transaction where bill_id in (
+            select b.bill_id from pos_schema.bill b
+            join pos_schema.sale s on b.sale_id = s.sale_id
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.bill_payment where bill_id in (
-            select b.bill_id from pos.bill b
-            join pos.sale s on b.sale_id = s.sale_id
+        delete from pos_schema.bill_payment where bill_id in (
+            select b.bill_id from pos_schema.bill b
+            join pos_schema.sale s on b.sale_id = s.sale_id
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.bill where sale_id in (
-            select s.sale_id from pos.sale s
+        delete from pos_schema.bill where sale_id in (
+            select s.sale_id from pos_schema.sale s
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.customer_payment where sale_id in (
-            select s.sale_id from pos.sale s
+        delete from pos_schema.customer_payment where sale_id in (
+            select s.sale_id from pos_schema.sale s
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.sale_item where tenant_id = v_tenant_id;
-        delete from pos.sale where branch_id in (
+        delete from pos_schema.sale_item where tenant_id = v_tenant_id;
+        delete from pos_schema.sale where branch_id in (
             select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
-        delete from pos.cash_register_sale where cash_register_session_id in (
-            select cash_register_session_id from pos.cash_register_session crs
-            join pos.cash_register cr on crs.cash_register_id = cr.cash_register_id
+        delete from pos_schema.cash_register_sale where cash_register_session_id in (
+            select cash_register_session_id from pos_schema.cash_register_session crs
+            join pos_schema.cash_register cr on crs.cash_register_id = cr.cash_register_id
             join general_schema.branch br on cr.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.cash_register_session where cash_register_id in (
-            select cash_register_id from pos.cash_register cr
+        delete from pos_schema.cash_register_session where cash_register_id in (
+            select cash_register_id from pos_schema.cash_register cr
             join general_schema.branch br on cr.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         );
 
-        delete from pos.cash_register where branch_id in (
+        delete from pos_schema.cash_register where branch_id in (
             select branch_id from general_schema.branch where tenant_id = v_tenant_id
         );
 
-        delete from pos.score_transaction where tenant_id = v_tenant_id;
-        delete from pos.tenant_customer_score where tenant_id = v_tenant_id;
-        delete from pos.loyalty_program where tenant_id = v_tenant_id;
+        delete from pos_schema.score_transaction where tenant_id = v_tenant_id;
+        delete from pos_schema.tenant_customer_score where tenant_id = v_tenant_id;
+        delete from pos_schema.loyalty_program where tenant_id = v_tenant_id;
 
-        delete from general_schema.product where tenant_id = v_tenant_id;
+        delete from general_schema.product_variant where tenant_id = v_tenant_id;
+        DELETE FROM general_schema.product WHERE cabys_code LIKE 'RTTEST%';
         delete from general_schema.tenant_customer where tenant_id = v_tenant_id;
         delete from general_schema.users where tenant_id = v_tenant_id;
         delete from general_schema.branch where tenant_id = v_tenant_id;
@@ -151,35 +152,39 @@ BEGIN
         returning tenant_customer_id into v_customer_id;
     end if;
 
-    select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('RTTEST0000001', 'Productos de prueba devoluciones')
+    ON CONFLICT (cabys_code) DO NOTHING;
+
+    select product_variant_id into v_prod_a from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
     if v_prod_a is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'RT-A', 'Product A', 10.00)
-        returning product_id into v_prod_a;
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'RTTEST0000001', 'RT-A', 'Producto A', 100.00, true)
+        returning product_variant_id into v_prod_a;
     end if;
 
-    select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    select product_variant_id into v_prod_b from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
     if v_prod_b is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'RT-B', 'Product B', 20.00)
-        returning product_id into v_prod_b;
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'RTTEST0000001', 'RT-B', 'Producto B', 200.00, true)
+        returning product_variant_id into v_prod_b;
     end if;
 
-    select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+    select product_variant_id into v_prod_c from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
     if v_prod_c is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'RT-C', 'Product C', 15.00)
-        returning product_id into v_prod_c;
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'RTTEST0000001', 'RT-C', 'Producto C', 50.00, true)
+        returning product_variant_id into v_prod_c;
     end if;
 
-    select cash_register_id into v_cash_reg from pos.cash_register where branch_id = v_branch_id limit 1;
+    select cash_register_id into v_cash_reg from pos_schema.cash_register where branch_id = v_branch_id limit 1;
     if v_cash_reg is null then
-        INSERT INTO pos.cash_register (branch_id, is_active) VALUES (v_branch_id, true) returning cash_register_id into v_cash_reg;
+        INSERT INTO pos_schema.cash_register (branch_id, is_active) VALUES (v_branch_id, true) returning cash_register_id into v_cash_reg;
     end if;
 
-    perform 1 from pos.cash_register_session where cash_register_id = v_cash_reg and is_active = true;
+    perform 1 from pos_schema.cash_register_session where cash_register_id = v_cash_reg and is_active = true;
     if not found then
-        INSERT INTO pos.cash_register_session (cash_register_id, user_id, opening_amount, is_active)
+        INSERT INTO pos_schema.cash_register_session (cash_register_id, user_id, opening_amount, is_active)
         VALUES (v_cash_reg, v_user_id, 100.00, true);
     end if;
 
@@ -222,19 +227,19 @@ BEGIN
     select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
     select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Main Store' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where tenant_id = v_tenant_id and email = 'customer@returntest.com' limit 1;
-    select product_id into v_prod_a from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
-    select product_id into v_prod_b from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
-    select product_id into v_prod_c from general_schema.product where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
+    select product_variant_id into v_prod_a from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-A' limit 1;
+    select product_variant_id into v_prod_b from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-B' limit 1;
+    select product_variant_id into v_prod_c from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'RT-C' limit 1;
 
     v_subtotal := 140.00; -- A x5 (50) + B x3 (60) + C x2 (30)
     v_tax := round(v_subtotal * 0.10, 2); -- assume 10% tax rate in test setup
     v_total := v_subtotal + v_tax;
 
-    INSERT INTO pos.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
+    INSERT INTO pos_schema.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
     VALUES (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES 
         (v_sale_id, v_tenant_id, v_prod_a, 5, 10.00, 50.00),
         (v_sale_id, v_tenant_id, v_prod_b, 3, 20.00, 60.00),
@@ -242,17 +247,17 @@ BEGIN
 
     raise notice '✓ Sale created: % (subtotal $% tax $% total $%)', v_sale_id, v_subtotal, v_tax, v_total;
 
-    INSERT INTO pos.customer_payment (tenant_customer_id, sale_id, payment_method_id, payment_amount, currency_id, verified)
+    INSERT INTO pos_schema.customer_payment (tenant_customer_id, sale_id, payment_method_id, payment_amount, currency_id, verified)
     VALUES (v_customer_id, v_sale_id, 1, v_total, 1, false)
     returning customer_payment_id into v_payment_id;
 
     raise notice '✓ Payment created (unverified): % amount $%', v_payment_id, v_total;
 
-    call pos.verify_customer_payment(v_payment_id);
+    call pos_schema.verify_customer_payment(v_payment_id);
 
     perform pg_sleep(0.2);
 
-    if not exists (select 1 from pos.bill where sale_id = v_sale_id) then
+    if not exists (select 1 from pos_schema.bill where sale_id = v_sale_id) then
         raise exception 'Bill was not created for sale %', v_sale_id;
     end if;
 
@@ -281,7 +286,7 @@ BEGIN
     raise notice '========================================';
 
     select s.sale_id into v_sale_id
-    from pos.sale s
+    from pos_schema.sale s
     join general_schema.branch b on s.branch_id = b.branch_id
     join general_schema.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Return Test Shop'
@@ -290,28 +295,28 @@ BEGIN
 
     if v_sale_id is null then raise exception 'No sale found for partial return'; end if;
 
-    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos.bill where sale_id = v_sale_id limit 1;
+    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos_schema.bill where sale_id = v_sale_id limit 1;
 
-    select sale_item_id into v_si_a from pos.sale_item where sale_id = v_sale_id and product_id = (
-        select product_id from general_schema.product where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-A' limit 1
+    select sale_item_id into v_si_a from pos_schema.sale_item where sale_id = v_sale_id and product_variant_id = (
+        select product_variant_id from general_schema.product_variant where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-A' limit 1
     ) limit 1;
 
-    select sale_item_id into v_si_b from pos.sale_item where sale_id = v_sale_id and product_id = (
-        select product_id from general_schema.product where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-B' limit 1
+    select sale_item_id into v_si_b from pos_schema.sale_item where sale_id = v_sale_id and product_variant_id = (
+        select product_variant_id from general_schema.product_variant where tenant_id = (select tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1) and sku = 'RT-B' limit 1
     ) limit 1;
 
     if v_si_a is null or v_si_b is null then
         raise exception 'Sale items for A or B not found';
     end if;
 
-    INSERT INTO pos.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
-    VALUES (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos.return_status where status_name = 'pending' limit 1))
+    INSERT INTO pos_schema.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
+    VALUES (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos_schema.return_status where status_name = 'pending' limit 1))
     returning return_transaction_id into v_return_tx;
 
     raise notice '✓ Return transaction created: %', v_return_tx;
 
     -- insert return lines (trigger will compute total_price and update sale_item/bill)
-    INSERT INTO pos.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
+    INSERT INTO pos_schema.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
     VALUES
         (v_return_tx, v_si_a, 2, 10.00),
         (v_return_tx, v_si_b, 1, 20.00);
@@ -319,7 +324,7 @@ BEGIN
     perform pg_sleep(0.1);
 
     -- Verify return_product rows were created
-    select count(*) into v_return_product_count from pos.return_product where return_transaction_id = v_return_tx;
+    select count(*) into v_return_product_count from pos_schema.return_product where return_transaction_id = v_return_tx;
     
     if v_return_product_count <> 2 then
         raise exception 'Expected 2 return_product rows, found %', v_return_product_count;
@@ -327,13 +332,13 @@ BEGIN
 
     raise notice '✓ return_product rows created: %', v_return_product_count;
 
-    select coalesce(sum(total_price),0) into v_return_total from pos.return_product where return_transaction_id = v_return_tx;
+    select coalesce(sum(total_price),0) into v_return_total from pos_schema.return_product where return_transaction_id = v_return_tx;
 
     if abs(v_return_total - v_expected_return) > 0.01 then
         raise exception 'Partial return recorded amount mismatch. Expected $% got $%', v_expected_return, v_return_total;
     end if;
 
-    update pos.return_transaction set total_refund_amount = v_return_total where return_transaction_id = v_return_tx;
+    update pos_schema.return_transaction set total_refund_amount = v_return_total where return_transaction_id = v_return_tx;
 
     raise notice '✓ Partial return recorded: % lines, returned total $%', v_return_product_count, v_return_total;
     raise notice '✅ SECCIÓN 3 COMPLETADA';
@@ -363,16 +368,16 @@ BEGIN
     select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
 
     select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
-    from pos.bill b
-    join pos.sale s on b.sale_id = s.sale_id
+    from pos_schema.bill b
+    join pos_schema.sale s on b.sale_id = s.sale_id
     join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id
     order by b.billed_at desc
     limit 1;
 
-    select coalesce(quantity,0) into v_qty_a from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-A' and si.tenant_id = v_tenant_id limit 1;
-    select coalesce(quantity,0) into v_qty_b from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-B' and si.tenant_id = v_tenant_id limit 1;
-    select coalesce(quantity,0) into v_qty_c from pos.sale_item si join general_schema.product p on si.tenant_id = p.tenant_id and si.product_id = p.product_id where p.sku = 'RT-C' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_a from pos_schema.sale_item si join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id where pv.sku = 'RT-A' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_b from pos_schema.sale_item si join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id where pv.sku = 'RT-B' and si.tenant_id = v_tenant_id limit 1;
+    select coalesce(quantity,0) into v_qty_c from pos_schema.sale_item si join general_schema.product_variant pv on si.tenant_id = pv.tenant_id and si.product_variant_id = pv.product_variant_id where pv.sku = 'RT-C' and si.tenant_id = v_tenant_id limit 1;
 
     select rate_percentage into v_tax_rate
     from general_schema.tax_rate tr
@@ -424,28 +429,28 @@ BEGIN
     raise notice '========================================';
 
     select s.sale_id into v_sale_id
-    from pos.sale s
+    from pos_schema.sale s
     join general_schema.branch b on s.branch_id = b.branch_id
     join general_schema.tenant t on b.tenant_id = t.tenant_id
     where t.tenant_name = 'Return Test Shop'
     order by s.sale_date desc
     limit 1;
 
-    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos.bill where sale_id = v_sale_id limit 1;
+    select bill_id, tenant_customer_id into v_bill_id, v_customer_id from pos_schema.bill where sale_id = v_sale_id limit 1;
 
-    INSERT INTO pos.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
-    VALUES (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos.return_status where status_name = 'pending' limit 1))
+    INSERT INTO pos_schema.return_transaction (bill_id, tenant_customer_id, total_refund_amount, refund_method, return_status_id)
+    VALUES (v_bill_id, v_customer_id, 0.00, 1, (select return_status_id from pos_schema.return_status where status_name = 'pending' limit 1))
     returning return_transaction_id into v_return_tx;
 
     for v_si in
-        select sale_item_id, quantity, unit_price from pos.sale_item where sale_id = v_sale_id
+        select sale_item_id, quantity, unit_price from pos_schema.sale_item where sale_id = v_sale_id
     loop
         v_total_returned := v_total_returned + (v_si.quantity * v_si.unit_price);
-        INSERT INTO pos.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
+        INSERT INTO pos_schema.return_product (return_transaction_id, sale_item_id, quantity, unit_price)
         VALUES (v_return_tx, v_si.sale_item_id, v_si.quantity, v_si.unit_price);
     end loop;
 
-    update pos.return_transaction set total_refund_amount = v_total_returned where return_transaction_id = v_return_tx;
+    update pos_schema.return_transaction set total_refund_amount = v_total_returned where return_transaction_id = v_return_tx;
 
     perform pg_sleep(0.1);
 
@@ -471,15 +476,15 @@ BEGIN
     select tenant_id into v_tenant_id from general_schema.tenant where tenant_name = 'Return Test Shop' limit 1;
 
     select b.subtotal_amount, b.tax_amount, b.total_amount into v_bill
-    from pos.bill b
-    join pos.sale s on b.sale_id = s.sale_id
+    from pos_schema.bill b
+    join pos_schema.sale s on b.sale_id = s.sale_id
     join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id
     order by b.billed_at desc
     limit 1;
 
-    select count(*) into v_remaining_items from pos.sale_item si
-    join pos.sale s on si.sale_id = s.sale_id
+    select count(*) into v_remaining_items from pos_schema.sale_item si
+    join pos_schema.sale s on si.sale_id = s.sale_id
     join general_schema.branch br on s.branch_id = br.branch_id
     where br.tenant_id = v_tenant_id;
 
@@ -520,11 +525,11 @@ BEGIN
 
     select count(rp.return_product_id), coalesce(sum(rp.total_price),0)
     into v_return_count, v_return_sum
-    from pos.return_product rp
-    join pos.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
-    join pos.bill b on rt.bill_id = b.bill_id
+    from pos_schema.return_product rp
+    join pos_schema.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
+    join pos_schema.bill b on rt.bill_id = b.bill_id
     where b.sale_id in (
-        select s.sale_id from pos.sale s
+        select s.sale_id from pos_schema.sale s
         join general_schema.branch br on s.branch_id = br.branch_id
         where br.tenant_id = v_tenant_id
     );
@@ -543,21 +548,21 @@ BEGIN
             rp.quantity,
             rp.unit_price,
             rp.total_price,
-            p.sku,
-            p.product_name
-        from pos.return_product rp
-        join pos.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
-        join pos.bill b on rt.bill_id = b.bill_id
-        join pos.sale_item si on rp.sale_item_id = si.sale_item_id
-        join general_schema.product p on si.product_id = p.product_id and si.tenant_id = p.tenant_id
+            pv.sku,
+            pv.variant_name
+        from pos_schema.return_product rp
+        join pos_schema.return_transaction rt on rp.return_transaction_id = rt.return_transaction_id
+        join pos_schema.bill b on rt.bill_id = b.bill_id
+        join pos_schema.sale_item si on rp.sale_item_id = si.sale_item_id
+        join general_schema.product_variant pv on si.product_variant_id = pv.product_variant_id and si.tenant_id = pv.tenant_id
         where b.sale_id in (
-            select s.sale_id from pos.sale s
+            select s.sale_id from pos_schema.sale s
             join general_schema.branch br on s.branch_id = br.branch_id
             where br.tenant_id = v_tenant_id
         )
     loop
         raise notice '  - % (%) × % @ $% = $%',
-            v_return_detail.product_name,
+            v_return_detail.variant_name,
             v_return_detail.sku,
             v_return_detail.quantity,
             v_return_detail.unit_price,

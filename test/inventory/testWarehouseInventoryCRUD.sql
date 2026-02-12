@@ -201,15 +201,15 @@ BEGIN
     VALUES (v_branch_id, 'test_warehouse_mvp_tmp', 'Address tmp')
     RETURNING warehouse_id INTO v_warehouse_id;
 
-    SELECT tenant_id, product_id INTO v_tenant_id, v_product_id FROM general_schema.product LIMIT 1;
+    SELECT tenant_id, product_variant_id INTO v_tenant_id, v_product_id FROM general_schema.product_variant LIMIT 1;
     IF v_product_id IS NULL THEN
         DELETE FROM inventory_schema.warehouse WHERE warehouse_id = v_warehouse_id;
-        RAISE EXCEPTION 'No hay registros en general_schema.product. Inserte al menos un product en general_schema.product';
+        RAISE EXCEPTION 'No hay registros en general_schema.product_variant. Inserte al menos un product_variant';
     END IF;
 
     RAISE NOTICE '   Forzando inserción inválida (expiration_date en el pasado)';
     BEGIN
-        INSERT INTO inventory_schema.inventory(tenant_id, product_id, warehouse_id, stock, expiration_date)
+        INSERT INTO inventory_schema.inventory(tenant_id, product_variant_id, warehouse_id, stock, expiration_date)
         VALUES (v_tenant_id, v_product_id, v_warehouse_id, 1, current_timestamp - interval '1 day');
 
         RAISE EXCEPTION '❌ Fallo de prueba: Se permitió la inserción inválida de inventory';

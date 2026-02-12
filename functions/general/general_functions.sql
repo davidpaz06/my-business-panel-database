@@ -331,7 +331,7 @@ BEGIN
         ct.parent_category_id,
         ct.hierarchy_level,
         ct.path,
-        COUNT(p.product_id) AS product_count
+        COUNT(p.cabys_code) AS product_count
     FROM category_tree ct
     LEFT JOIN general_schema.product p 
         ON p.product_category_id = ct.product_category_id
@@ -349,15 +349,18 @@ drop trigger if exists update_product_category_timestamp on general_schema.produ
 create trigger update_product_category_timestamp before update on general_schema.product_category
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_product_tsv on general_schema.product;
-create trigger update_product_tsv before insert or update on general_schema.product
-for each row execute function general_schema.update_product_tsv();
-
 drop trigger if exists update_product_timestamp on general_schema.product;
 create trigger update_product_timestamp before update on general_schema.product
 for each row execute function general_schema.update_timestamp();
 
--- Triggers for new variant model tables
+drop trigger if exists update_unit_measure_timestamp on general_schema.unit_measure;
+create trigger update_unit_measure_timestamp before update on general_schema.unit_measure
+for each row execute function general_schema.update_timestamp();
+
+drop trigger if exists update_commercial_unit_measure_timestamp on general_schema.commercial_unit_measure;
+create trigger update_commercial_unit_measure_timestamp before update on general_schema.commercial_unit_measure
+for each row execute function general_schema.update_timestamp();
+
 drop trigger if exists update_attribute_value_timestamp on general_schema.attribute_value;
 create trigger update_attribute_value_timestamp before update on general_schema.attribute_value
 for each row execute function general_schema.update_timestamp();

@@ -225,7 +225,6 @@ DECLARE
     _current_amount_paid NUMERIC(12,3);
     _payments_total NUMERIC(12,3);
     _balance NUMERIC(12,3);
-    _pending_payments INT;
     _target_purchase_ap_id UUID;
 BEGIN
     SELECT 
@@ -249,19 +248,9 @@ BEGIN
         RAISE EXCEPTION 'Account payable not found: %', _account_payable_id;
     END IF;
 
-    SELECT COUNT(*) INTO _pending_payments
-    FROM purchase_schema.purchase_order_payment sop
-    WHERE sop.purchase_account_payable_id = _target_purchase_ap_id
-    AND sop.verified = FALSE;
-
-    IF _pending_payments > 0 THEN
-        RETURN FALSE;
-    END IF;
-
     SELECT COALESCE(SUM(sop.amount_paid), 0) INTO _payments_total
     FROM purchase_schema.purchase_order_payment sop
-    WHERE sop.purchase_account_payable_id = _target_purchase_ap_id
-    AND sop.verified = TRUE;
+    WHERE sop.purchase_account_payable_id = _target_purchase_ap_id;
 
     _balance := _amount_due - _payments_total;
 
@@ -300,20 +289,18 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION recalc_account_payable_on_payment()
 returns trigger as $$
 BEGIN
-    if new.verified = true and (old.verified is null or old.verified = false) then
-        perform purchase_schema.check_account_payable_completion(
-            (select account_payable_id 
-             from purchase_schema.purchase_account_payable 
-             where purchase_account_payable_id = new.purchase_account_payable_id)
-        );
-    end if;
+    perform purchase_schema.check_account_payable_completion(
+        (select account_payable_id 
+         from purchase_schema.purchase_account_payable 
+         where purchase_account_payable_id = new.purchase_account_payable_id)
+    );
     return new;
 end;
 $$ language plpgsql;
 
 drop trigger if exists recalc_account_payable_on_payment_trigger on purchase_schema.purchase_order_payment;
 create trigger recalc_account_payable_on_payment_trigger
-    after update of verified on purchase_schema.purchase_order_payment
+    after insert or update of amount_paid on purchase_schema.purchase_order_payment
     for each row
     execute function recalc_account_payable_on_payment();
 

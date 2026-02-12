@@ -1,64 +1,75 @@
 # Product and variants creation
 
-## Product (Base Product Definition)
+## Product (CABYS Catalog)
 
-A product is a fundamental catalog record stored in the `product` table that represents
-a base product entity within the system. It serves as the central reference point for all
-business operations including sales transactions, inventory management, and variant management.
+The `product` table is a **global, shared catalog** based on CABYS (Catálogo de Bienes y
+Servicios) — the official Costa Rican classification of goods and services used for
+electronic invoicing and tax compliance.
 
 ### Key Characteristics
 
-- Represents a single, sellable item with core attributes (name, description, price, category)
-- Acts as the parent entity for product variants, which are the actual SKU-specific units
-- Tenant-isolated: each tenant maintains its own independent product catalog through hash partitioning
-- Supports hierarchical organization through product categories
-- Enables multi-variant sales models (e.g., one base product "T-Shirt" with variants for size/color combinations)
+- **Global catalog**: not partitioned or tenant-specific. All tenants share the same CABYS entries.
+- **Primary key**: `cabys_code VARCHAR(13)` — the 13-digit CABYS classification code.
+- **Tax linkage**: references `tax_rate_id` for the corresponding tax rate and supports `is_exonerated` flag.
+- **Measurement units**: references `unit_measure_id` and `commercial_unit_measure_id` for standard and commercial units.
+- **Full-text search**: `product_name_tsv` is a `GENERATED ALWAYS AS` tsvector column (Spanish config) for efficient search.
+- **Category support**: optional `product_category_id` for hierarchical organization.
 
 A product record contains:
 
-- tenant_id: Identifies the tenant owner (enables multi-tenancy)
-- product_id: Unique identifier (UUID)
-- sku: Base product SKU
-- product_name: Display name with full-text search support
-- product_description: Detailed product information
-- product_category_id: Classification for organization
-- unit_price: Base pricing reference
-- Timestamps: created_at, updated_at for audit trails
+- cabys_code: 13-digit CABYS classification code (PK)
+- product_name: Display name
+- product_name_tsv: Auto-generated tsvector for Spanish FTS
+- product_category_id: Optional classification
+- tax_rate_id: Associated tax rate
+- unit_measure_id: Standard unit of measure (FK to `unit_measure`)
+- commercial_unit_measure_id: Commercial unit of measure (FK to `commercial_unit_measure`)
+- is_exonerated: Whether the product is tax-exonerated (default false)
+- Timestamps: created_at, updated_at
 
-**Scope:** product catalog management where each tenant maintains its own isolated product inventory with global and custom attributes, sellable variants, full-text search capabilities, and partition-based storage for scalability.
+## Product Variant (Tenant's Sellable Items)
+
+When tenants add products to their catalog, they create entries in the `product_variant`
+table. Each variant is the actual sellable SKU and optionally references a CABYS catalog
+entry via `cabys_code`.
+
+**Scope:** Tenants manage their inventory through `product_variant`. The `product` table
+is the read-only CABYS reference catalog. All sales, purchases, and inventory operations
+use `product_variant_id`.
 
 ## Data Model Overview
 
 ```bash
-product (base product)
-  └── product_variant (sellable SKU) [partitioned x8]
+product (CABYS catalog — global, not partitioned)
+  └── product_variant (tenant sellable SKU) [partitioned x8 by tenant_id]
         └── attribute_assignation (many-to-many) [partitioned x8]
               └── attribute_value (e.g., "Red", "XL")
                     └── tenant_attribute (e.g., "Color", "Size")
                           └── global_attribute (template)
+
+unit_measure ──────────┐
+commercial_unit_measure ┼──► product (FK references)
+tax_rate ──────────────┘
 ```
 
 ## Prerequisites
 
 - Tenant exists in `general_schema.tenant` with an active subscription.
 - Database schema deployed with:
-  - Tables: `general_schema.product`, `general_schema.product_variant`, `general_schema.product_category`, `general_schema.global_attribute`, `general_schema.tenant_attribute`, `general_schema.attribute_value`, `general_schema.attribute_assignation`.
-  - Partitions: `general_schema.product` partitioned by hash on `tenant_id` (8 partitions). Same for `product_variant` and `attribute_assignation`.
-  - Indexes: unique constraint on `(tenant_id, sku)` for both product and product_variant, full-text search index on `product_name_tsv`, partition-aware btree indexes.
-
----
-
-- Triggers: `update_product_tsv` (auto-generates tsvector for Spanish full-text search), `update_product_timestamp`, `update_product_variant_timestamp`.
+  - Tables: `general_schema.product`, `general_schema.product_variant`, `general_schema.product_category`, `general_schema.unit_measure`, `general_schema.commercial_unit_measure`, `general_schema.global_attribute`, `general_schema.tenant_attribute`, `general_schema.attribute_value`, `general_schema.attribute_assignation`.
+  - Partitions: `general_schema.product_variant` partitioned by hash on `tenant_id` (8 partitions). Same for `attribute_assignation`. The `product` table is **not** partitioned.
+  - Indexes: unique constraint on `(tenant_id, sku)` for `product_variant`, GIN index on `product_name_tsv`, index on `product_variant(cabys_code)`.
+  - Triggers: `update_product_timestamp`, `update_product_variant_timestamp`, `update_unit_measure_timestamp`, `update_commercial_unit_measure_timestamp`.
 
 ## High-level Flow
 
-1. **Create Product Categories** (optional but recommended for organization).
-2. **Insert Base Product** — create one base product with its product_category.
-3. **Create Attributes** — define global attributes (Color, Size) and tenant-specific values (Red, Blue, S, M, L).
-4. **Create Product Variants** — create sellable SKUs referencing the base product.
+1. **Populate CABYS Catalog** — seed the `product` table with CABYS entries (cabys_code, product_name, tax_rate, units).
+2. **Create Product Categories** (optional but recommended for organization).
+3. **Create Product Variants** — tenant creates sellable SKUs, optionally referencing a CABYS entry via `cabys_code`.
+4. **Create Attributes** — define global attributes (Color, Size) and tenant-specific values (Red, Blue, S, M, L).
 5. **Assign Attributes to Variants** — link attribute values to product variants.
-6. **Search & Query** — use full-text search or standard filters to retrieve products/variants.
-7. **Update/Delete** — modify or remove products as needed (with CASCADE behavior for variants and attributes).
+6. **Search & Query** — use full-text search on the CABYS catalog or standard filters on variants.
+7. **Update/Delete** — modify or remove product variants as needed (with CASCADE behavior for attributes).
 
 ---
 
@@ -96,11 +107,12 @@ JOIN general_schema.global_attribute ga ON ta.global_attribute_id = ga.global_at
 WHERE aa.product_variant_id = '<variant_id>';
 ```
 
-### 2. Find all variants for a base product
+### 2. Find all variants linked to a CABYS entry
 
 ```sql
-SELECT * FROM general_schema.product_variant
-WHERE product_id = '<base_product_id>';
+SELECT pv.*
+FROM general_schema.product_variant pv
+WHERE pv.cabys_code = '<cabys_code>';
 ```
 
 ### 3. List all enabled attributes for a tenant
@@ -112,13 +124,19 @@ JOIN general_schema.global_attribute ga ON ta.global_attribute_id = ga.global_at
 WHERE ta.tenant_id = '<tenant_id>';
 ```
 
-### 4. Search products by attribute value (e.g., all "Red" T-Shirts)
+### 4. Search CABYS catalog by name (full-text search)
 
 ```sql
-SELECT p.product_id, p.product_name, pv.product_variant_id
+SELECT p.cabys_code, p.product_name
 FROM general_schema.product p
-JOIN general_schema.product_variant pv ON p.product_id = pv.product_id
-JOIN general_schema.attribute_assignation aa ON pv.product_variant_id = aa.product_variant_id
-JOIN general_schema.attribute_value av ON aa.attribute_value_id = av.attribute_value_id
-WHERE av.value = 'Red';
+WHERE p.product_name_tsv @@ plainto_tsquery('spanish', 'camiseta');
+```
+
+### 5. Get a tenant's variants with their CABYS info
+
+```sql
+SELECT pv.product_variant_id, pv.sku, pv.variant_name, p.cabys_code, p.product_name AS cabys_name
+FROM general_schema.product_variant pv
+LEFT JOIN general_schema.product p ON pv.cabys_code = p.cabys_code
+WHERE pv.tenant_id = '<tenant_id>';
 ```

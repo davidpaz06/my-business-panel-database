@@ -151,13 +151,11 @@ CREATE TABLE IF NOT EXISTS purchase_schema.purchase_order_payment(
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     payment_reference VARCHAR(100),
     notes TEXT,
-    verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_payable ON purchase_schema.purchase_order_payment(purchase_account_payable_id);
-CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_verified ON purchase_schema.purchase_order_payment(verified);
 CREATE INDEX IF NOT EXISTS idx_purchase_order_payment_date ON purchase_schema.purchase_order_payment(payment_date);
 
 CREATE TABLE IF NOT EXISTS purchase_order_payment_alert_type(

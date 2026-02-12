@@ -119,9 +119,10 @@ BEGIN
     delete from general_schema.product_variant 
     where tenant_id = any(v_tenant_ids);
 
-    -- ✅ 12. product (AHORA SEGURO: sale_item y product_variant ya eliminados)
-    delete from general_schema.product 
+    -- ✅ 12. product_variant adicional + product CABYS test entries
+    delete from general_schema.product_variant 
     where tenant_id = any(v_tenant_ids);
+    DELETE FROM general_schema.product WHERE cabys_code LIKE 'HPTEST%';
 
     -- 12. sale (depende de branch)
     delete from pos_schema.sale 
@@ -188,9 +189,9 @@ declare
     v_branch_id uuid;
     v_user_id uuid;
     v_customer_id uuid;
-    v_product_a_id uuid;
-    v_product_b_id uuid;
-    v_product_c_id uuid;
+    v_variant_a_id uuid;
+    v_variant_b_id uuid;
+    v_variant_c_id uuid;
     v_cash_register_id uuid;
     v_loyalty_program_id uuid;
 BEGIN
@@ -238,29 +239,35 @@ BEGIN
     end if;
     raise notice '✓ Cliente: %', v_customer_id;
 
-    -- 1.5 Crear productos
-    select product_id into v_product_a_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-001' limit 1;
-    if v_product_a_id is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'PROD-001', 'Laptop HP', 850.00)
-        returning product_id into v_product_a_id;
+    -- 1.5 Crear productos (CABYS + variantes)
+    -- Create CABYS entries
+    INSERT INTO general_schema.product (cabys_code, product_name)
+    VALUES ('HPTEST0000001', 'Electrónicos')
+    ON CONFLICT (cabys_code) DO NOTHING;
+
+    -- Create variants
+    select product_variant_id into v_variant_a_id from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-001' limit 1;
+    if v_variant_a_id is null then
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'HPTEST0000001', 'PROD-001', 'Laptop HP', 850.00, true)
+        returning product_variant_id into v_variant_a_id;
     end if;
 
-    select product_id into v_product_b_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-002' limit 1;
-    if v_product_b_id is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'PROD-002', 'Mouse Logitech', 25.00)
-        returning product_id into v_product_b_id;
+    select product_variant_id into v_variant_b_id from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-002' limit 1;
+    if v_variant_b_id is null then
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'HPTEST0000001', 'PROD-002', 'Mouse Logitech', 25.00, true)
+        returning product_variant_id into v_variant_b_id;
     end if;
 
-    select product_id into v_product_c_id from general_schema.product where tenant_id = v_tenant_id and sku = 'PROD-003' limit 1;
-    if v_product_c_id is null then
-        INSERT INTO general_schema.product (tenant_id, sku, product_name, unit_price)
-        VALUES (v_tenant_id, 'PROD-003', 'Teclado Mecánico', 120.00)
-        returning product_id into v_product_c_id;
+    select product_variant_id into v_variant_c_id from general_schema.product_variant where tenant_id = v_tenant_id and sku = 'PROD-003' limit 1;
+    if v_variant_c_id is null then
+        INSERT INTO general_schema.product_variant (tenant_id, cabys_code, sku, variant_name, unit_price, is_active)
+        VALUES (v_tenant_id, 'HPTEST0000001', 'PROD-003', 'Teclado Mecánico', 120.00, true)
+        returning product_variant_id into v_variant_c_id;
     end if;
 
-    raise notice '✓ Productos: %, %, %', v_product_a_id, v_product_b_id, v_product_c_id;
+    raise notice '✓ Variantes: %, %, %', v_variant_a_id, v_variant_b_id, v_variant_c_id;
 
     -- 1.6 Crear caja registradora
     select cash_register_id into v_cash_register_id from pos_schema.cash_register where branch_id = v_branch_id limit 1;
@@ -332,7 +339,7 @@ BEGIN
     select branch_id into v_branch_id from general_schema.branch where tenant_id = v_tenant_id and branch_name = 'Sucursal Centro' limit 1;
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-002' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-002' and tenant_id = v_tenant_id limit 1;
 
     select coalesce(score, 0) into v_points_before from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
 
@@ -345,7 +352,7 @@ BEGIN
     VALUES (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 2, 25.00, 50.00);
 
     INSERT INTO pos_schema.customer_payment (tenant_customer_id, sale_id, payment_method_id, payment_amount, currency_id, verified)
@@ -399,7 +406,7 @@ BEGIN
 
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-003' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-003' and tenant_id = v_tenant_id limit 1;
 
     select coalesce(score, 0) into v_points_before from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
 
@@ -412,7 +419,7 @@ BEGIN
     VALUES (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 1, 120.00, 120.00);
 
     INSERT INTO pos_schema.customer_payment (tenant_customer_id, sale_id, payment_method_id, payment_amount, currency_id, verified)
@@ -462,7 +469,7 @@ BEGIN
 
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-001' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-001' and tenant_id = v_tenant_id limit 1;
 
     select coalesce(score, 0) into v_points_before from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
 
@@ -476,7 +483,7 @@ BEGIN
     VALUES (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 1, 850.00, 850.00);
 
     -- Pago 1: Efectivo $350
@@ -568,7 +575,7 @@ BEGIN
 
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-003' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-003' and tenant_id = v_tenant_id limit 1;
 
     select points_redeemed_per_currency_unit into v_redeem_rate from pos_schema.loyalty_program where tenant_id = v_tenant_id and is_active = true limit 1;
     select coalesce(score, 0) into v_points_before from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
@@ -598,7 +605,7 @@ BEGIN
     VALUES (v_branch_id, 1, v_subtotal, v_tax, v_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 1, 120.00, 120.00);
 
     -- Pago con puntos
@@ -653,7 +660,7 @@ BEGIN
 
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-002' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-002' and tenant_id = v_tenant_id limit 1;
 
     select points_redeemed_per_currency_unit into v_redeem_rate from pos_schema.loyalty_program where tenant_id = v_tenant_id and is_active = true limit 1;
     select coalesce(score, 0) into v_points_before from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
@@ -675,7 +682,7 @@ BEGIN
     VALUES (v_branch_id, 1, v_sale_total, 0.00, v_sale_total, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 1, v_sale_total, v_sale_total);
 
     INSERT INTO pos_schema.customer_payment (tenant_customer_id, sale_id, payment_method_id, is_points_redemption, points_redeemed, points_to_currency_rate, payment_amount, currency_id, verified)
@@ -720,7 +727,7 @@ BEGIN
 
     select user_id into v_user_id from general_schema.users where email = 'cajero@superdigital.com' limit 1;
     select tenant_customer_id into v_customer_id from general_schema.tenant_customer where email = 'juan.perez@email.com' and tenant_id = v_tenant_id limit 1;
-    select product_id into v_product_id from general_schema.product where sku = 'PROD-001' and tenant_id = v_tenant_id limit 1;
+    select product_variant_id into v_product_id from general_schema.product_variant where sku = 'PROD-001' and tenant_id = v_tenant_id limit 1;
 
     select points_redeemed_per_currency_unit into v_redeem_rate from pos_schema.loyalty_program where tenant_id = v_tenant_id and is_active = true limit 1;
     select coalesce(score, 0) into v_points_available from pos_schema.tenant_customer_score where tenant_customer_id = v_customer_id and tenant_id = v_tenant_id;
@@ -733,7 +740,7 @@ BEGIN
     VALUES (v_branch_id, 1, 500.00, 0.00, 500.00, false)
     returning sale_id into v_sale_id;
 
-    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_id, quantity, unit_price, total_price)
+    INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
     VALUES (v_sale_id, v_tenant_id, v_product_id, 1, 500.00, 500.00);
 
     BEGIN
