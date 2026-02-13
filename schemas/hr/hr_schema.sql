@@ -10,6 +10,21 @@ CREATE TABLE IF NOT EXISTS payment_schedule(
 	daycount INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hr_schema.config (
+  branch_id UUID PRIMARY KEY REFERENCES general_schema.branch(branch_id),
+  foul_expiration_months INTEGER DEFAULT 6,
+  updated_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS hr_schema.turn (
+  turn_id SERIAL PRIMARY KEY,
+  branch_id UUID REFERENCES general_schema.branch(branch_id) NOT NULL,
+  entry TIMESTAMP NOT NULL,
+  out TIMESTAMP NOT NULL
+);
+
+CREATE INDEX branch_turn_idx ON hr_schema.turn(branch_id);
+
 CREATE TABLE IF NOT EXISTS contract(
 	contract_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
@@ -17,7 +32,9 @@ CREATE TABLE IF NOT EXISTS contract(
 	end_date DATE NOT NULL,
 	hours INTEGER NOT NULL,
 	base_salary NUMERIC(19, 4) NOT NULL,
-	duties TEXT
+	duties TEXT,
+	turn_type INTEGER,
+	turn_id INTEGER REFERENCES hr_schema.turn(turn_id) NOT NULL
 );
 --Indice para filtracion o busqueda por rango de precios
 CREATE INDEX idx_contract_base_salary ON hr_schema.contract (base_salary);
@@ -26,6 +43,7 @@ CREATE TABLE IF NOT EXISTS employee(
 	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	user_id UUID NOT NULL REFERENCES general_schema.users(user_id) ON DELETE CASCADE,
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,
@@ -52,6 +70,35 @@ CREATE INDEX idx_employee_scheduled_id ON hr_schema.employee (schedule_id);
 --Indice que se utilizara unicamente para el proceso de nomina y generacion de reportes
 CREATE INDEX idx_employee_is_active ON hr_schema.employee (is_active);
 
+CREATE TABLE IF NOT EXISTS hr_schema.foul(
+  foul_id SERIAL PRIMARY KEY,
+  employee_id UUID n NOT NULL REFERENCES hr_schema.employee(employee_id),
+  branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+  identificator VARCHAR(50) UNIQUE NOT NULL, 
+  foul_date DATE NOT NULL,
+  foul_hour TIME NOT NULL,
+  description TEXT
+);
+
+CREATE INDEX idx_look_employee ON hr_schema.foul(employee_id);
+CREATE INDEX idx_look_period_fouls ON hr_schema.foul(foul_date);
+CREATE INDEX idx_identificator_foul ON hr_schema.foul(identificator);
+
+CREATE TABLE IF NOT EXISTS hr_schema.suspention (
+  suspention_id SERIAL PRIMARY KEY,
+  employee_id UUID REFERENCES hr_schema.employee(employee_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+  suspention_start DATE NOT NULL,
+  suspention_end DATE NOT NULL,
+  reason TEXT NOT NULL,
+	is_active BOOLEAN DEFAULT TRUE,
+	created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE INDEX get_employee_suspention_idx ON hr_schema.suspention(employee_id);
+CREATE INDEX get_suspentions_period_idx ON hr_schema.suspention(suspention_start, suspention_end);
+CREATE INDEX idx_branch_suspention ON hr_schema.suspention(branch_id)
+
 CREATE TABLE IF NOT EXISTS clocking(
 	clocking_id SERIAL PRIMARY KEY NOT NULL,
 	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
@@ -65,6 +112,43 @@ CREATE TABLE IF NOT EXISTS clocking(
 CREATE INDEX idx_track_employee_hours_in ON hr_schema.clocking (employee_id, clock_in DESC);
 -- Indice para ubicar turnos por sucursal
 CREATE INDEX idx_track_hours_branch_id ON hr_schema.clocking (branch_id);
+
+CREATE TABLE IF NOT EXISTS hr_schema.tardiness (
+  tardiness_id SERIAL PRIMARY KEY,
+  employee_id UUID REFERENCES hr_schema.employee(employee_id),
+  branch_id UUID REFERENCES general_schema.branch(branch_id),
+  type VARCHAR(20) NOT NULL, -- "late" | "early"
+  log TEXT,
+  registered_at DATE DEFAULT NOW()
+);
+
+CREATE INDEX idx_emp_tardiness_srch ON hr_schema.tardiness(employee_id);
+CREATE INDEX idx_brnch_tardiness_srch ON hr_schema.tardiness(branch_id);
+CREATE INDEX idx_register_srch ON hr_schema.tardiness(registered_at);
+
+CREATE TABLE IF NOT EXISTS hr_schema.holiday (
+  holiday_id SERIAL PRIMARY KEY NOT NULL,
+  date TIMESTAMP NOT NULL,
+  holiday_name VARCHAR(150) NOT NULL,
+  is_freeday BOOLEAN NOT NULL DEFAULT TRUE,
+  is_payable BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS hr_schema.incapacity (
+    incapacity_id SERIAL PRIMARY KEY,
+    branch_id UUID  REFERENCES general_schema.branch(branch_id),
+    employee_id UUID  REFERENCES hr_schema.employee(employee_id),
+    type VARCHAR(50),
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    percentage_to_pay DECIMAL(5, 2) NOT NULL,
+    days_paying INTEGER DEFAULT 3,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE INDEX search_branch_index ON hr_schema.incapacity(branch_id);
+CREATE INDEX incapacity_search_idx ON hr_schema.incapacity(employee_id);
+CREATE INDEX filter_by_periods_idx ON hr_schema.incapacity(period_start, period_end);
 
 -- MODULO DE NOMINA
 
@@ -80,7 +164,9 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 	type VARCHAR(20) NOT NULL, -- 'earning' o 'deduction'
 	calculation_method VARCHAR(30) NOT NULL, -- 'fixed', 'percentage', 'fromula', 'manual'
 	is_taxable BOOLEAN DEFAULT TRUE,
-	is_active BOOLEAN DEFAULT TRUE
+	is_active BOOLEAN DEFAULT TRUE,
+	base_value NUMERIC(19, 4) DEFAULT 0,
+	code VARCHAR(10) NOT NULL
 );
 
 -- Indice para filtracion por conceptos
@@ -97,7 +183,7 @@ CREATE TABLE IF NOT EXISTS paysheet(
 	total_earnings NUMERIC(19, 4) NOT NULL DEFAULT 0,
 	total_deductions NUMERIC(19, 4) NOT NULL DEFAULT 0,
 	net_total NUMERIC(19, 4) NOT NULL DEFAULT 0,
-	paysheet_status_id INTEGER NOT NULL REFERENCES hr_schema.paysheet_status(status_id),
+	status_id INTEGER NOT NULL REFERENCES hr_schema.paysheet_status(status_id),
 	created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 

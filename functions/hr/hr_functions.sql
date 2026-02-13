@@ -1,25 +1,26 @@
 SET SEARCH_PATH = hr_schema;
 
 CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
-  -- Parametros para la creacion del contrato
-  p_start_date DATE,
-  p_end_date DATE,
-  p_hours INTEGER,
-  p_base_salary DECIMAL(10, 2),
-  p_duties TEXT,
-
-  -- Parametros para la crecaion del empleado
-  p_user_id UUID,
-  p_tenant_id UUID,
-  p_branch_id UUID,  
-  p_first_name VARCHAR(100),
-  p_last_name VARCHAR(100),
-  p_doc_number VARCHAR(100),
-  p_phone VARCHAR(100),
-  p_email VARCHAR(100),
-  p_schedule_id INTEGER
-)
-RETURNS UUID AS $$
+    p_start_date DATE,
+    p_end_date DATE,
+    p_hours INTEGER,
+    p_base_salary NUMERIC,
+    p_duties TEXT,
+    p_turn_type INTEGER,
+    p_turn_id INTEGER,
+    p_user_id UUID,
+    p_tenant_id UUID,
+    p_first_name CHARACTER VARYING,
+    p_last_name CHARACTER VARYING,
+    p_doc_number CHARACTER VARYING,
+    p_phone CHARACTER VARYING,
+    p_email CHARACTER VARYING,
+    p_schedule_id INTEGER,
+    p_branch_id UUID
+  )
+ RETURNS UUID
+ LANGUAGE plpgsql
+AS $function$
 
 DECLARE
   v_new_contract_id UUID;
@@ -30,13 +31,13 @@ BEGIN
     RAISE EXCEPTION 'Integrity error: schedule_id (schedule_id: %) doesnt exists', p_schedule_id;
   END IF;
 
-  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties)
-  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties)
+  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id)
+  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties, p_turn_type, p_turn_id)
   RETURNING contract_id INTO v_new_contract_id;
 
   v_new_employee_id := gen_random_uuid();
 
-  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id)
+  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id, branch_id)
   VALUES (
     v_new_employee_id,
     p_user_id,
@@ -47,7 +48,8 @@ BEGIN
     p_email,
     v_new_contract_id,
     p_schedule_id,
-    p_tenant_id
+    p_tenant_id,
+    p_branch_id
   );
 
   RETURN v_new_employee_id;
@@ -60,40 +62,7 @@ EXCEPTION
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;
-$$ LANGUAGE plpgsql; 
-
-CREATE OR REPLACE FUNCTION update_gross_salary()
-RETURNS TRIGGER AS $$
-DECLARE
-	v_detail_id UUID;
-	v_new_gross_salary DECIMAL(10, 2);
-BEGIN
-	IF(TG_OP = 'DELETE') THEN 
-		v_detail_id := OLD.detail_id;
-	ELSE
-		v_detail_id := NEW.detail_id;
-	END IF;
-
-	SELECT COALESCE(SUM(calculated_amount), 0)
-	INTO v_new_gross_salary
-	FROM hr_schema.income_register
-	WHERE detail_id = v_detail_id;
-
-	UPDATE hr_schema.paysheet_detail
-	SET gross_salary = v_new_gross_salary,
-  recalc_needed = TRUE
-	WHERE detail_id = v_detail_id;
-
-	RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
--- FIXME: relation "hr_schema.income_register" does not exist
--- DROP TRIGGER IF EXISTS update_gross_salary on hr_schema.income_register;
--- CREATE TRIGGER update_gross_salary
--- 	AFTER INSERT OR UPDATE OR DELETE ON hr_schema.income_register
--- 	FOR EACH ROW
--- 	EXECUTE FUNCTION update_gross_salary();
+$function$; 
 
 CREATE OR REPLACE FUNCTION hr_schema.update_paysheet_state (
     p_paysheet_id UUID
@@ -115,7 +84,7 @@ BEGIN
     END IF;
 
     -- Obtenemos el id de estado actual de la nómina
-    SELECT paysheet_status_id INTO v_current_status_id
+    SELECT status_id INTO v_current_status_id
     FROM hr_schema.paysheet
     WHERE paysheet_id = p_paysheet_id;
 
@@ -143,7 +112,7 @@ BEGIN
     --Si no hay pendientes, actualizamos el estado a 'Completed'
     UPDATE hr_schema.paysheet
     SET
-        paysheet_status_id = v_completed_status_id
+      status_id = v_completed_status_id
     WHERE paysheet_id = p_paysheet_id;
 
     RETURN 'Paysheet finished ' || p_paysheet_id;
@@ -184,7 +153,7 @@ BEGIN
 	WHERE
 		EXTRACT(YEAR FROM p.payment_day) = p_year
 		AND EXTRACT(MONTH FROM p.payment_day) = p_month
-		AND p.paysheet_status_id = v_status_completed_id;
+		AND p.status_id = v_status_completed_id;
 
 END;
 $$ LANGUAGE plpgsql;
@@ -211,7 +180,7 @@ RETURNS TRIGGER AS $$
 BEGIN
     IF OLD.net_salary IS DISTINCT FROM NEW.net_salary THEN
         PERFORM 1 FROM hr_schema.paysheet p
-        	INNER JOIN hr_schema.paysheet_status ps ON p.paysheet_status_id = ps.status_id
+        	INNER JOIN hr_schema.paysheet_status ps ON p.status_id = ps.status_id
         	WHERE p.paysheet_id = NEW.paysheet_id AND ps.status_description = 'Completed';
         
         IF FOUND THEN
@@ -228,3 +197,37 @@ CREATE TRIGGER protect_net_salary
 BEFORE INSERT OR UPDATE ON hr_schema.paysheet_detail
 FOR EACH ROW
 EXECUTE FUNCTION hr_schema.protect_net_salary();
+
+CREATE OR REPLACE FUNCTION hr_schema.close_suspention()
+RETURNS INTEGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_count INTEGER := 0;
+BEGIN
+  UPDATE hr_schema.suspention
+  SET is_active = false
+  WHERE suspention_end IS NOT NULL
+    AND suspention_end <= NOW()
+    AND is_active = TRUE
+  RETURNING 1 INTO v_count;
+
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hr_schema.close_suspention_trigger()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  
+  IF NEW.suspention_end IS NOT NULL AND NEW.suspention_end <= NOW() THEN
+    NEW.is_active := FALSE;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_close_suspention_on_write
+BEFORE INSERT OR UPDATE ON hr_schema.suspention
+FOR EACH ROW
+EXECUTE FUNCTION hr_schema.close_suspention_trigger();
