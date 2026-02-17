@@ -1,10 +1,10 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-02-16 13:21:34
+-- Generated: 2026-02-16 17:16:12
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
--- ROLLBACK
+
 BEGIN;
 
 DROP SCHEMA IF EXISTS general_schema CASCADE;
@@ -136,9 +136,7 @@ CREATE TABLE IF NOT EXISTS users(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
--- insert into general_schema.users (tenant_id, email, password_hash, role_id) values 
---     ('55d2d454-13ab-4ae5-88ca-8b9ab3c23636', 'david@amh.com', '$2a$12$RNOmpH99N5Mto3f2zYXJBumFP2jIL2pTq7a7USp5cGLMwu/y9ptk2', 1);
--- select * from hr_schema.contract
+
 CREATE TABLE IF NOT EXISTS currency(
     currency_id SERIAL PRIMARY KEY,
     currency_code char(3) unique not null,
@@ -1238,8 +1236,8 @@ CREATE TABLE IF NOT EXISTS hr_schema.config (
 CREATE TABLE IF NOT EXISTS hr_schema.turn (
   turn_id SERIAL PRIMARY KEY,
   branch_id UUID REFERENCES general_schema.branch(branch_id) NOT NULL,
-  entry TIMESTAMP NOT NULL,
-  out TIMESTAMP NOT NULL
+  entry TIME NOT NULL,
+  out TIME NOT NULL
 );
 
 CREATE INDEX branch_turn_idx ON hr_schema.turn(branch_id);
@@ -1269,7 +1267,7 @@ CREATE TABLE IF NOT EXISTS employee(
 	phone VARCHAR(100) NOT NULL,
 	email VARCHAR(100) NOT NULL UNIQUE,
 	contract_id UUID NOT NULL REFERENCES hr_schema.contract(contract_id) ON DELETE CASCADE,
-	schedule_id INTEGER NOT NULL REFERENCES hr_schema.payment_schedule(payment_schedule_id),
+	payment_schedule_id INTEGER NOT NULL REFERENCES hr_schema.payment_schedule(payment_schedule_id),
 	is_active BOOLEAN DEFAULT true,
 	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -1284,10 +1282,11 @@ CREATE UNIQUE INDEX idx_employee_email ON hr_schema.employee (email);
 --Indices destinados para la aceleracion de los JOINS
 CREATE INDEX idx_employee_user_id ON hr_schema.employee (user_id);
 CREATE INDEX idx_employee_contract_id ON hr_schema.employee (contract_id);
-CREATE INDEX idx_employee_scheduled_id ON hr_schema.employee (schedule_id);
+CREATE INDEX idx_employee_payment_schedule_id ON hr_schema.employee (payment_schedule_id);
 
 --Indice que se utilizara unicamente para el proceso de nomina y generacion de reportes
 CREATE INDEX idx_employee_is_active ON hr_schema.employee (is_active);
+
 CREATE TABLE IF NOT EXISTS hr_schema.foul(
   foul_id SERIAL PRIMARY KEY,
   employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
@@ -4154,7 +4153,7 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
     p_doc_number CHARACTER VARYING,
     p_phone CHARACTER VARYING,
     p_email CHARACTER VARYING,
-    p_schedule_id INTEGER,
+    p_payment_schedule_id INTEGER,
     p_branch_id UUID
   )
  RETURNS UUID
@@ -4166,8 +4165,8 @@ DECLARE
   v_new_employee_id UUID;
 BEGIN
 
-  IF NOT EXISTS (SELECT 1 FROM hr_schema.payment_schedule WHERE payment_schedule_id = p_schedule_id) THEN
-    RAISE EXCEPTION 'Integrity error: schedule_id (schedule_id: %) doesnt exists', p_schedule_id;
+  IF NOT EXISTS (SELECT 1 FROM hr_schema.payment_schedule WHERE payment_schedule_id = p_payment_schedule_id) THEN
+    RAISE EXCEPTION 'Integrity error: payment_schedule_id (payment_schedule_id: %) doesnt exists', p_payment_schedule_id;
   END IF;
 
   INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id)
@@ -4176,7 +4175,7 @@ BEGIN
 
   v_new_employee_id := gen_random_uuid();
 
-  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id, branch_id)
+  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, payment_schedule_id, tenant_id, branch_id)
   VALUES (
     v_new_employee_id,
     p_user_id,
@@ -4186,7 +4185,7 @@ BEGIN
     p_phone,
     p_email,
     v_new_contract_id,
-    p_schedule_id,
+    p_payment_schedule_id,
     p_tenant_id,
     p_branch_id
   );
@@ -4197,7 +4196,7 @@ EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
   WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id or schedule_id).';
+    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id or payment_schedule_id).';
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;

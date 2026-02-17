@@ -107,8 +107,6 @@ CREATE TABLE IF NOT EXISTS users(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
--- insert into general_schema.users (tenant_id, email, password_hash, role_id) values 
---     ('dcc97d64-a2e8-42af-8dec-3bee77413ba8', 'david@amh.com', '$2a$12$RNOmpH99N5Mto3f2zYXJBumFP2jIL2pTq7a7USp5cGLMwu/y9ptk2', 1);
 
 CREATE TABLE IF NOT EXISTS currency(
     currency_id SERIAL PRIMARY KEY,

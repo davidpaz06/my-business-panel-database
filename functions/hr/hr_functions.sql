@@ -15,7 +15,7 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
     p_doc_number CHARACTER VARYING,
     p_phone CHARACTER VARYING,
     p_email CHARACTER VARYING,
-    p_schedule_id INTEGER,
+    p_payment_schedule_id INTEGER,
     p_branch_id UUID
   )
  RETURNS UUID
@@ -27,8 +27,8 @@ DECLARE
   v_new_employee_id UUID;
 BEGIN
 
-  IF NOT EXISTS (SELECT 1 FROM hr_schema.payment_schedule WHERE payment_schedule_id = p_schedule_id) THEN
-    RAISE EXCEPTION 'Integrity error: schedule_id (schedule_id: %) doesnt exists', p_schedule_id;
+  IF NOT EXISTS (SELECT 1 FROM hr_schema.payment_schedule WHERE payment_schedule_id = p_payment_schedule_id) THEN
+    RAISE EXCEPTION 'Integrity error: payment_schedule_id (payment_schedule_id: %) doesnt exists', p_payment_schedule_id;
   END IF;
 
   INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id)
@@ -37,7 +37,7 @@ BEGIN
 
   v_new_employee_id := gen_random_uuid();
 
-  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, schedule_id, tenant_id, branch_id)
+  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, payment_schedule_id, tenant_id, branch_id)
   VALUES (
     v_new_employee_id,
     p_user_id,
@@ -47,7 +47,7 @@ BEGIN
     p_phone,
     p_email,
     v_new_contract_id,
-    p_schedule_id,
+    p_payment_schedule_id,
     p_tenant_id,
     p_branch_id
   );
@@ -58,7 +58,7 @@ EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
   WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id or schedule_id).';
+    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id or payment_schedule_id).';
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;

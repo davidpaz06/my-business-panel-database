@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS employee(
 	phone VARCHAR(100) NOT NULL,
 	email VARCHAR(100) NOT NULL UNIQUE,
 	contract_id UUID NOT NULL REFERENCES hr_schema.contract(contract_id) ON DELETE CASCADE,
-	schedule_id INTEGER NOT NULL REFERENCES hr_schema.payment_schedule(payment_schedule_id),
+	payment_schedule_id INTEGER NOT NULL REFERENCES hr_schema.payment_schedule(payment_schedule_id),
 	is_active BOOLEAN DEFAULT true,
 	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -65,7 +65,7 @@ CREATE UNIQUE INDEX idx_employee_email ON hr_schema.employee (email);
 --Indices destinados para la aceleracion de los JOINS
 CREATE INDEX idx_employee_user_id ON hr_schema.employee (user_id);
 CREATE INDEX idx_employee_contract_id ON hr_schema.employee (contract_id);
-CREATE INDEX idx_employee_scheduled_id ON hr_schema.employee (schedule_id);
+CREATE INDEX idx_employee_payment_schedule_id ON hr_schema.employee (payment_schedule_id);
 
 --Indice que se utilizara unicamente para el proceso de nomina y generacion de reportes
 CREATE INDEX idx_employee_is_active ON hr_schema.employee (is_active);

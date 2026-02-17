@@ -75,9 +75,10 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- -----------------
 \i seeds/catalog/hr/001-insert-payment-schedules.sql
 \i seeds/catalog/hr/002-insert-paysheet-status.sql
+\i seeds/catalog/hr/003-insert-holidays.sql
 
 
-
+SELECT * FROM hr_schema.payment_schedule WHERE payment_schedule_id = 1;
 -- -----------------
 -- INTEGRITY CHECKS
 -- -----------------
@@ -109,7 +110,8 @@ BEGIN
             'purchase_schema.purchase_order_status',
             'purchase_schema.purchase_order_payment_alert_type',
             'hr_schema.payment_schedule',
-            'hr_schema.paysheet_status'
+            'hr_schema.paysheet_status',
+            'hr_schema.holiday'
         ])
     LOOP
         EXECUTE format('SELECT COUNT(*) FROM %s', v_table_name) INTO v_count;
