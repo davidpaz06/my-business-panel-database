@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS subscription(
 
 CREATE TABLE IF NOT EXISTS product_category(
     product_category_id VARCHAR(13) PRIMARY KEY NOT NULL,
-    category_name VARCHAR(100) not null,
+    category_name VARCHAR(255) not null,
     parent_category_id VARCHAR(13)                                    
         REFERENCES general_schema.product_category(product_category_id)
         ON DELETE CASCADE,

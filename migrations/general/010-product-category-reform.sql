@@ -1,13 +1,14 @@
 -- ============================================================================
--- MIGRATION: 010-remove-unique-constraint-from-product-category.sql
+-- MIGRATION: 010-product-category-reform.sql
 -- ============================================================================
 -- Author: David
 -- Date: 2026-02-18
--- Description: Removes the unique constraint from the category_name column in the
---              product_category table.
+-- Description: Removes the unique constraint from category_name and ensures
+--              category_name length is VARCHAR(255) in product_category table.
 --
 -- Changes:
 --   1. Removes the unique constraint on general_schema.product_category.category_name
+--   2. Sets general_schema.product_category.category_name to VARCHAR(255)
 --
 -- Dependencies: None
 -- Breaking Changes: NO
@@ -37,6 +38,13 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- STEP 2: Ensure category_name length is 255
+-- ============================================================================
+
+ALTER TABLE general_schema.product_category
+    ALTER COLUMN category_name TYPE VARCHAR(255);
 
 COMMIT;
 
