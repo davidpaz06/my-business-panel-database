@@ -1,3 +1,4 @@
+
 -- ======================================================
 -- SCHEMA BOOTSTRAP FILE
 -- ======================================================
@@ -80,63 +81,6 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- -----------------
 \i seeds/catalog/hr/001-insert-payment-schedules.sql
 \i seeds/catalog/hr/002-insert-paysheet-status.sql
-
--- -----------------
--- RESTORE CABYS DATA
--- Restaurar en orden: categorías primero (FK), luego productos
--- Usamos session_replication_role = replica para deshabilitar triggers
--- y FK checks durante la carga masiva (27k+ filas)
--- -----------------
-SET session_replication_role = replica;
-
-DO $$
-DECLARE v_count INT;
-BEGIN
-    SELECT COUNT(*) INTO v_count FROM _backup_product_category;
-    RAISE NOTICE 'Restaurando % categorías CABYS...', v_count;
-END $$;
-
-INSERT INTO general_schema.product_category
-    (product_category_id, category_name, parent_category_id, hierarchy_level, created_at, updated_at)
-SELECT
-    product_category_id,
-    category_name,
-    parent_category_id,
-    hierarchy_level,
-    created_at,
-    updated_at
-FROM _backup_product_category
-ORDER BY hierarchy_level ASC
-ON CONFLICT (product_category_id) DO NOTHING;
-
-DO $$
-DECLARE v_count INT;
-BEGIN
-    SELECT COUNT(*) INTO v_count FROM _backup_product;
-    RAISE NOTICE 'Restaurando % productos CABYS...', v_count;
-END $$;
-
-INSERT INTO general_schema.product
-    (cabys_code, product_name, product_category_id, tax_rate_id, is_exonerated, created_at, updated_at)
-SELECT
-    b.cabys_code,
-    b.product_name,
-    b.product_category_id,
-    tr.tax_rate_id,
-    b.is_exonerated,
-    b.created_at,
-    b.updated_at
-FROM _backup_product b
-LEFT JOIN general_schema.tax_rate tr
-    ON tr.rate_percentage = (
-        SELECT btr.rate_percentage
-        FROM _backup_tax_rate btr
-        WHERE btr.tax_rate_id = b.tax_rate_id
-    )
-ON CONFLICT (cabys_code) DO NOTHING;
-
-SET session_replication_role = DEFAULT;
-
 -- -----------------
 -- INTEGRITY CHECKS
 -- -----------------
@@ -188,7 +132,3 @@ BEGIN
 END $$;
 
 COMMIT;
-
-DROP TABLE IF EXISTS _backup_product_category;
-DROP TABLE IF EXISTS _backup_product;
-DROP TABLE IF EXISTS _backup_tax_rate;
