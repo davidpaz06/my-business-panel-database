@@ -15,6 +15,7 @@ DROP SCHEMA IF EXISTS pos_schema CASCADE;
 DROP SCHEMA IF EXISTS inventory_schema CASCADE;
 DROP SCHEMA IF EXISTS purchase_schema CASCADE;
 DROP SCHEMA IF EXISTS hr_schema CASCADE;
+DROP SCHEMA IF EXISTS accounting_schema CASCADE;
 
 -- -----------------
 -- EXTENSIONS
@@ -29,6 +30,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 \i schemas/inventory/inventory_schema.sql
 \i schemas/purchase/purchase_schema.sql
 \i schemas/hr/hr_schema.sql
+\i schemas/accounting/accounting_schema.sql
 
 -- -----------------
 -- FUNCTIONS
@@ -38,6 +40,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 \i functions/inventory/inventory_functions.sql
 \i functions/purchase/purchase_functions.sql
 \i functions/hr/hr_functions.sql
+\i functions/accounting/accounting_functions.sql
 
 -- -----------------
 -- SEEDS - CATALOG GENERAL
@@ -81,6 +84,15 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- -----------------
 \i seeds/catalog/hr/001-insert-payment-schedules.sql
 \i seeds/catalog/hr/002-insert-paysheet-status.sql
+
+-- -----------------
+-- SEEDS - CATALOG ACCOUNTING
+-- -----------------
+\i seeds/catalog/accounting/001-insert-account-types.sql
+\i seeds/catalog/accounting/002-insert-journal-entry-statuses.sql
+\i seeds/catalog/accounting/003-insert-source-types.sql
+\i seeds/catalog/accounting/004-insert-chart-of-accounts-template.sql
+
 -- -----------------
 -- INTEGRITY CHECKS
 -- -----------------
@@ -114,7 +126,11 @@ BEGIN
             'purchase_schema.purchase_order_status',
             'purchase_schema.purchase_order_payment_alert_type',
             'hr_schema.payment_schedule',
-            'hr_schema.paysheet_status'
+            'hr_schema.paysheet_status',
+            'accounting_schema.account_type',
+            'accounting_schema.journal_entry_status',
+            'accounting_schema.source_type',
+            'accounting_schema.chart_of_accounts_template'
         ])
     LOOP
         EXECUTE format('SELECT COUNT(*) FROM %s', v_table_name) INTO v_count;

@@ -75,6 +75,7 @@ Add-FileContent "schemas/pos/pos_schema.sql" "SCHEMA: POS"
 Add-FileContent "schemas/inventory/inventory_schema.sql" "SCHEMA: INVENTORY"
 Add-FileContent "schemas/purchase/purchase_schema.sql" "SCHEMA: PURCHASE"
 Add-FileContent "schemas/hr/hr_schema.sql" "SCHEMA: HR"
+Add-FileContent "schemas/accounting/accounting_schema.sql" "SCHEMA: ACCOUNTING"
 
 # FUNCTIONS
 Write-Host "`nAdding functions..." -ForegroundColor Yellow
@@ -90,6 +91,7 @@ if (Test-Path "functions/inventory/inventory_functions.sql") {
 
 Add-FileContent "functions/purchase/purchase_functions.sql" "FUNCTIONS: PURCHASE"
 Add-FileContent "functions/hr/hr_functions.sql" "FUNCTIONS: HR"
+Add-FileContent "functions/accounting/accounting_functions.sql" "FUNCTIONS: ACCOUNTING"
 
 # SEEDS - GENERAL
 Write-Host "`nAdding general catalog seeds..." -ForegroundColor Yellow
@@ -126,6 +128,14 @@ Add-FileContent "seeds/catalog/inventory/001-insert-inventory_log_types.sql" "SE
 Write-Host "`nAdding HR catalog seeds..." -ForegroundColor Yellow
 Add-FileContent "seeds/catalog/hr/001-insert-payment-schedules.sql" "SEED: PAYMENT SCHEDULES"
 Add-FileContent "seeds/catalog/hr/002-insert-paysheet-status.sql" "SEED: PAYSHEET STATUS"
+
+# SEEDS - ACCOUNTING
+Write-Host "`nAdding accounting catalog seeds..." -ForegroundColor Yellow
+Add-FileContent "seeds/catalog/accounting/001-insert-account-types.sql" "SEED: ACCOUNTING ENTRY TYPES"
+Add-FileContent "seeds/catalog/accounting/002-insert-journal-entry-statuses.sql" "SEED: JOURNAL ENTRY STATUSES"
+Add-FileContent "seeds/catalog/accounting/003-insert-source-types.sql" "SEED: SOURCE TYPES"
+Add-FileContent "seeds/catalog/accounting/004-insert-chart-of-accounts-template.sql" "SEED: CHART OF ACCOUNTS TEMPLATE"
+
 
 # INTEGRITY CHECKS
 Write-Host "`nAdding integrity checks..." -ForegroundColor Yellow
