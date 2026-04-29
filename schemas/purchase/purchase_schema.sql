@@ -176,16 +176,6 @@ CREATE TABLE IF NOT EXISTS purchase_schema.purchase_order_payment_alert(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS purchase_order_payment_alert(
-    payment_alert_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    purchase_account_payable_id uuid not null REFERENCES purchase_schema.purchase_account_payable(purchase_account_payable_id) on delete cascade,
-    payment_alert_type_id INTEGER not null REFERENCES purchase_schema.purchase_order_payment_alert_type(payment_alert_type_id),
-    alert_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_resolved BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS purchase_order_payment_alert_config(
     payment_alert_config_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id uuid unique not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,

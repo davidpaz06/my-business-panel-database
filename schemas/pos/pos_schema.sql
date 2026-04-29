@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS sale_item(
     total_price numeric(10,2) not null,
     cost_price_at_sale NUMERIC(12,3),
     sale_price_type VARCHAR(20) DEFAULT 'NORMAL' CHECK (sale_price_type IN ('NORMAL', 'PROMO', 'SEGMENT', 'MANUAL')),
-    promotion_id uuid REFERENCES pos_schema.promotion(promotion_id) ON DELETE SET NULL,
+    promotion_id uuid, -- FK to pos_schema.promotion added via ALTER TABLE below (forward reference)
     original_price NUMERIC(10,2),
     discount_applied NUMERIC(10,2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -195,7 +195,7 @@ CREATE TABLE IF NOT EXISTS return_status(
 CREATE TABLE IF NOT EXISTS return_transaction(
     return_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
     digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
-    electronic_sale_invoice_id uuid REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id) on delete cascade,
+    electronic_sale_invoice_id uuid, -- FK to pos_schema.electronic_sale_invoice added via ALTER TABLE below (forward reference)
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
@@ -245,6 +245,21 @@ CREATE TABLE IF NOT EXISTS promotion(
 
     check (promotion_end_date > promotion_start_date)
 );
+
+-- FK deferred: sale_item.promotion_id -> promotion (promotion defined after sale_item)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sale_item_promotion_id_fkey'
+          AND conrelid = 'pos_schema.sale_item'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.sale_item
+            ADD CONSTRAINT sale_item_promotion_id_fkey
+            FOREIGN KEY (promotion_id)
+            REFERENCES pos_schema.promotion(promotion_id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS promotion_rule(
     promotion_rule_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -445,6 +460,21 @@ CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number
 -- #2: columna issue_date no existe en esta versión del schema; se indexa created_at
 CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_created_at
     ON pos_schema.electronic_sale_invoice(created_at);
+
+-- FK deferred: return_transaction.electronic_sale_invoice_id -> electronic_sale_invoice
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'return_transaction_electronic_sale_invoice_id_fkey'
+          AND conrelid = 'pos_schema.return_transaction'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.return_transaction
+            ADD CONSTRAINT return_transaction_electronic_sale_invoice_id_fkey
+            FOREIGN KEY (electronic_sale_invoice_id)
+            REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id)
+            ON DELETE CASCADE;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
     electronic_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

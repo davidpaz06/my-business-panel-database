@@ -8,4 +8,4 @@ INSERT INTO hr_schema.holiday (date, holiday_name) VALUES
 ('2026-08-02', 'Dia de la Virgen de los Ángeles'),
 ('2026-08-15', 'Dia de la Madre'),
 ('2026-09-15', 'Dia de la Independencia'),
-('2026-12-25', 'Navidad')
+('2026-12-25', 'Navidad');

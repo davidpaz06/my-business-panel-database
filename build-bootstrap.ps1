@@ -39,6 +39,7 @@ DROP SCHEMA IF EXISTS pos_schema CASCADE;
 DROP SCHEMA IF EXISTS inventory_schema CASCADE;
 DROP SCHEMA IF EXISTS purchase_schema CASCADE;
 DROP SCHEMA IF EXISTS hr_schema CASCADE;
+DROP SCHEMA IF EXISTS accounting_schema CASCADE;
 
 -- -----------------
 -- EXTENSIONS
@@ -106,6 +107,7 @@ Add-FileContent "seeds/catalog/general/008-insert-subscription-types.sql" "SEED:
 Add-FileContent "seeds/catalog/general/009-insert-payment_methods.sql" "SEED: PAYMENT METHODS"
 Add-FileContent "seeds/catalog/general/010-insert-account-payable-status.sql" "SEED: ACCOUNT PAYABLE STATUS"
 Add-FileContent "seeds/catalog/general/011-insert-account-payable-types.sql" "SEED: ACCOUNT PAYABLE TYPES"
+Add-FileContent "seeds/catalog/general/012-insert-branch-locations.sql" "SEED: BRANCH LOCATIONS"
 
 # SEEDS - POS
 Write-Host "`nAdding POS catalog seeds..." -ForegroundColor Yellow
@@ -114,6 +116,8 @@ Add-FileContent "seeds/catalog/pos/002-insert-return-status.sql" "SEED: RETURN S
 Add-FileContent "seeds/catalog/pos/003-insert-promotion-types.sql" "SEED: PROMOTION TYPES"
 Add-FileContent "seeds/catalog/pos/004-insert-score-redemption-status.sql" "SEED: SCORE REDEMPTION STATUS"
 Add-FileContent "seeds/catalog/pos/005-insert-score-transaction-types.sql" "SEED: SCORE TRANSACTION TYPES"
+Add-FileContent "seeds/catalog/pos/006-insert-sale-conditions.sql" "SEED: SALE CONDITIONS"
+Add-FileContent "seeds/catalog/pos/007-insert-invoice-status.sql" "SEED: INVOICE STATUS"
 
 # SEEDS - PURCHASE
 Write-Host "`nAdding purchase catalog seeds..." -ForegroundColor Yellow
@@ -128,6 +132,7 @@ Add-FileContent "seeds/catalog/inventory/001-insert-inventory_log_types.sql" "SE
 Write-Host "`nAdding HR catalog seeds..." -ForegroundColor Yellow
 Add-FileContent "seeds/catalog/hr/001-insert-payment-schedules.sql" "SEED: PAYMENT SCHEDULES"
 Add-FileContent "seeds/catalog/hr/002-insert-paysheet-status.sql" "SEED: PAYSHEET STATUS"
+Add-FileContent "seeds/catalog/hr/003-insert-holidays.sql" "SEED: HOLIDAYS"
 
 # SEEDS - ACCOUNTING
 Write-Host "`nAdding accounting catalog seeds..." -ForegroundColor Yellow
@@ -154,7 +159,7 @@ BEGIN
         SELECT unnest(ARRAY[
             'general_schema.region',
             'general_schema.role',
-            'general_schema.document_type',
+            'general_schema.identification_type',
             'general_schema.currency',
             'general_schema.payment_method',
             'general_schema.subscription_type',
@@ -163,16 +168,23 @@ BEGIN
             'general_schema.tax_rate',
             'general_schema.account_payable_status',
             'general_schema.account_payable_type',
+            'general_schema.territorio_catalog',
             'pos_schema.return_reason',
             'pos_schema.return_status',
             'pos_schema.promotion_type',
             'pos_schema.score_redemption_status',
             'pos_schema.score_transaction_type',
+            'pos_schema.sale_condition',
+            'pos_schema.invoice_status',
             'inventory_schema.inventory_log_type',
             'purchase_schema.purchase_order_status',
             'purchase_schema.purchase_order_payment_alert_type',
             'hr_schema.payment_schedule',
-            'hr_schema.paysheet_status'
+            'hr_schema.paysheet_status',
+            'hr_schema.holiday',
+            'accounting_schema.account_type',
+            'accounting_schema.journal_entry_status',
+            'accounting_schema.source_type'
         ])
     LOOP
         EXECUTE format('SELECT COUNT(*) FROM %s', v_table_name) INTO v_count;
