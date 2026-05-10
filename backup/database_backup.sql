@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-04-29 20:07:06
+-- Generated: 2026-05-10 06:08:00
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS branch(
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     branch_name VARCHAR(100) not null,
     branch_address text,
-    branch_number VARCHAR(4),   
+    branch_number VARCHAR(20),
     contact_email VARCHAR(100),
     is_main_branch BOOLEAN default false,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS tenant_customer(
     birthdate date,
     address text,
     is_tenant BOOLEAN default false,
+    is_wholesale BOOLEAN DEFAULT false,
     customer_segment_id int default 4 REFERENCES general_schema.customer_segment(customer_segment_id) on delete set null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -220,6 +221,7 @@ CREATE TABLE IF NOT EXISTS exchange_rate (
     effective_date   DATE NOT NULL,
     source           VARCHAR(50) DEFAULT 'MANUAL',
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE(from_currency_id, to_currency_id, effective_date),
     CHECK (from_currency_id <> to_currency_id)
@@ -228,8 +230,6 @@ CREATE TABLE IF NOT EXISTS exchange_rate (
 CREATE INDEX IF NOT EXISTS idx_exchange_rate_lookup
     ON general_schema.exchange_rate(from_currency_id, to_currency_id, effective_date DESC);
 
--- TODO: AGREGAR SEED DE TAX RATES DE CABYS (0, 1, 2, 4, 13, 15, 18, 27)
--- DONE: Ya en el cabys_loader se agregan
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,
     region VARCHAR(100),
@@ -290,9 +290,38 @@ CREATE TABLE IF NOT EXISTS subscription(
     is_active BOOLEAN default true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     check (end_date > start_date)
 );
+
+-- Códigos de un solo uso que el superusuario emite para que ciertas
+-- personas se registren en el onboarding sin pagar Stripe. La
+-- transacción de onboarding marca is_used = TRUE y deja el tenant_id
+-- que consumió el código.
+CREATE TABLE IF NOT EXISTS special_code (
+    special_code_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(64) UNIQUE NOT NULL,
+    description TEXT,
+    created_by UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    is_used BOOLEAN NOT NULL DEFAULT FALSE,
+    tenant_id UUID REFERENCES general_schema.tenant(tenant_id) ON DELETE SET NULL,
+    used_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT special_code_used_consistency
+        CHECK (
+            (is_used = FALSE AND tenant_id IS NULL AND used_at IS NULL) OR
+            (is_used = TRUE  AND tenant_id IS NOT NULL AND used_at IS NOT NULL)
+        )
+);
+
+CREATE INDEX IF NOT EXISTS idx_special_code_is_used
+    ON general_schema.special_code(is_used);
+CREATE INDEX IF NOT EXISTS idx_special_code_tenant
+    ON general_schema.special_code(tenant_id)
+    WHERE tenant_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_category(
     product_category_id VARCHAR(13) PRIMARY KEY NOT NULL,
@@ -411,6 +440,9 @@ CREATE TABLE IF NOT EXISTS product_variant (
     last_purchase_date TIMESTAMP,
     is_active BOOLEAN DEFAULT true,
     is_composite BOOLEAN NOT NULL DEFAULT false,
+    supplier_id UUID,
+    giftable BOOLEAN DEFAULT FALSE,
+    giftable_from NUMERIC(10,2) CHECK (giftable_from IS NULL OR giftable_from >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
@@ -438,9 +470,12 @@ CREATE INDEX IF NOT EXISTS idx_product_variant_cabys
     ON general_schema.product_variant(cabys_code);
 CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
     ON general_schema.product_variant(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_product_variant_active 
-    ON general_schema.product_variant(tenant_id, is_active) 
+CREATE INDEX IF NOT EXISTS idx_product_variant_active
+    ON general_schema.product_variant(tenant_id, is_active)
     WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_product_variant_supplier
+    ON general_schema.product_variant(supplier_id)
+    WHERE supplier_id IS NOT NULL;
 
 COMMENT ON TABLE general_schema.product_variant IS
     'Tenant-specific sellable product variants linked to a CABYS catalog entry.
@@ -695,7 +730,7 @@ CREATE TABLE IF NOT EXISTS sale_condition (
 CREATE TABLE IF NOT EXISTS sale(
     sale_id uuid PRIMARY KEY default gen_random_uuid(),
     branch_id uuid not null REFERENCES general_schema.branch(branch_id) on delete cascade,
-    tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id),
+    tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id),
     sale_condition VARCHAR(3) not null REFERENCES pos_schema.sale_condition(condition_code),
     sale_date timestamp not null default current_timestamp,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -704,12 +739,14 @@ CREATE TABLE IF NOT EXISTS sale(
     total_amount numeric(10,2) not null,
     is_completed BOOLEAN default false,
     has_electronic_invoice BOOLEAN DEFAULT FALSE,
+    is_refunded BOOLEAN NOT NULL DEFAULT false,
     seller_user_id uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at timestamp not null default current_timestamp,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sale_branch_id on pos_schema.sale(branch_id);
 CREATE INDEX IF NOT EXISTS idx_sale_sale_date on pos_schema.sale(sale_date);
+CREATE INDEX IF NOT EXISTS idx_sale_is_refunded on pos_schema.sale(branch_id, is_refunded);
 
 CREATE TABLE IF NOT EXISTS sale_item(
     sale_item_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -743,9 +780,12 @@ CREATE TABLE IF NOT EXISTS cash_register(
     branch_id uuid not null REFERENCES general_schema.branch(branch_id) on delete cascade,
     register_name VARCHAR(100),
     is_active BOOLEAN default true,
+    cash_register_key VARCHAR(64),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+COMMENT ON COLUMN pos_schema.cash_register.cash_register_key IS
+    'Optional plain-text key required for non-admin users to open/close a session. NULL = no key required.';
 
 CREATE TABLE IF NOT EXISTS cash_register_session(
     cash_register_session_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -771,7 +811,8 @@ CREATE TABLE IF NOT EXISTS cash_register_sale(
 
 CREATE TABLE IF NOT EXISTS customer_payment(
     customer_payment_id uuid PRIMARY KEY not null default gen_random_uuid(),
-    tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,   
+    -- nullable: walk-in/anonymous sales pay without a registered customer
+    tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     payment_method_id INTEGER REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     is_points_redemption BOOLEAN default false,
@@ -786,7 +827,7 @@ CREATE TABLE IF NOT EXISTS customer_payment(
 
     constraint check_points_redemption
     check (
-        (is_points_redemption = true and points_redeemed is not null and points_redeemed > 0 and payment_method_id = 4) or
+        (is_points_redemption = true and points_redeemed is not null and points_redeemed > 0 and payment_method_id = 5) or
         (is_points_redemption = false)
     )
 );
@@ -798,13 +839,11 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice(
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
     subtotal_amount numeric(10,2) not null check (subtotal_amount >= 0),
     tax_amount numeric(10,2) not null check (tax_amount >= 0),
-    total_amount numeric(10,2) not null,    
-    due_date DATE,
-    seller_name VARCHAR(150),
-    cash_register_id UUID REFERENCES pos_schema.cash_register(cash_register_id) ON DELETE SET NULL,
+    total_amount numeric(10,2) not null,
+    due_date DATE DEFAULT CURRENT_DATE,
+    cash_register_session_id UUID REFERENCES pos_schema.cash_register_session(cash_register_session_id) ON DELETE SET NULL,
     points_accumulated INTEGER DEFAULT 0,
     ad_message TEXT,
-    invoice_number VARCHAR(50),
     amount_paid NUMERIC(10,2) DEFAULT 0,
     change_amount NUMERIC(10,2) DEFAULT 0,
     invoiced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -812,8 +851,8 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice(
 );
 
 CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_sale_id on pos_schema.digital_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_cash_register
-    ON pos_schema.digital_sale_invoice(cash_register_id);
+CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_cash_register_session
+    ON pos_schema.digital_sale_invoice(cash_register_session_id);
 
 CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     digital_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -886,6 +925,7 @@ CREATE TABLE IF NOT EXISTS return_transaction(
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     return_status_id INTEGER REFERENCES pos_schema.return_status(return_status_id) on delete set null,
+    description TEXT NOT NULL,
     return_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_return_transaction_invoice CHECK (
@@ -922,15 +962,34 @@ CREATE TABLE IF NOT EXISTS promotion(
     promotion_code VARCHAR(50) not null,
     promotion_description text,
     promotion_type_id int REFERENCES pos_schema.promotion_type(promotion_type_id) on delete set null,
-    customer_segment_id int REFERENCES general_schema.customer_segment(customer_segment_id) on delete set null,
+    is_universal BOOLEAN NOT NULL DEFAULT TRUE,
     promotion_start_date date not null,
     promotion_end_date date not null,
     is_active BOOLEAN default false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    is_stackable BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     check (promotion_end_date > promotion_start_date)
 );
+
+-- Junction table: specific segment targeting when is_universal = false
+CREATE TABLE IF NOT EXISTS promotion_customer_segment (
+    promotion_id        uuid    NOT NULL REFERENCES pos_schema.promotion(promotion_id) ON DELETE CASCADE,
+    customer_segment_id INTEGER NOT NULL REFERENCES general_schema.customer_segment(customer_segment_id) ON DELETE CASCADE,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (promotion_id, customer_segment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_promo_seg_promo
+    ON pos_schema.promotion_customer_segment(promotion_id);
+CREATE INDEX IF NOT EXISTS idx_promo_seg_segment
+    ON pos_schema.promotion_customer_segment(customer_segment_id);
+
+CREATE INDEX IF NOT EXISTS idx_promotion_active_default
+    ON pos_schema.promotion(tenant_id, is_active, is_default)
+    WHERE is_active = TRUE AND is_default = TRUE;
 
 -- FK deferred: sale_item.promotion_id -> promotion (promotion defined after sale_item)
 DO $$ BEGIN
@@ -1213,6 +1272,45 @@ CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_invoice
 CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_variant
     ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
 
+-- ── Royalties ─────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS pos_schema.royalty_rule (
+    royalty_rule_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id         UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    min_amount        NUMERIC(14,2) NOT NULL CHECK (min_amount > 0),
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_rule_tenant
+    ON pos_schema.royalty_rule(tenant_id, min_amount ASC);
+
+CREATE TABLE IF NOT EXISTS pos_schema.royalty_option (
+    royalty_option_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    royalty_rule_id           UUID NOT NULL REFERENCES pos_schema.royalty_rule(royalty_rule_id) ON DELETE CASCADE,
+    tenant_id                 UUID NOT NULL,
+    tenant_product_group_id   UUID NOT NULL,
+    quantity                  INT NOT NULL CHECK (quantity > 0),
+    scope                     TEXT NOT NULL DEFAULT 'any' CHECK (scope IN ('any', 'specific')),
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (royalty_rule_id, tenant_product_group_id),
+    FOREIGN KEY (tenant_id, tenant_product_group_id)
+        REFERENCES general_schema.tenant_product_group(tenant_id, tenant_product_group_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_option_rule
+    ON pos_schema.royalty_option(royalty_rule_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.royalty_option_product (
+    royalty_option_product_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    royalty_option_id           UUID NOT NULL REFERENCES pos_schema.royalty_option(royalty_option_id) ON DELETE CASCADE,
+    product_variant_id          UUID NOT NULL,
+    UNIQUE (royalty_option_id, product_variant_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_option_product_option
+    ON pos_schema.royalty_option_product(royalty_option_id);
+
 
 
 -- =============================================
@@ -1494,6 +1592,7 @@ CREATE TABLE IF NOT EXISTS purchase_schema.purchase_order_payment(
     purchase_order_payment_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_account_payable_id uuid NOT NULL REFERENCES purchase_schema.purchase_account_payable(purchase_account_payable_id) ON DELETE CASCADE,
     payment_method_id INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    currency_id INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
     amount_paid NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     payment_reference VARCHAR(100),
@@ -1550,6 +1649,15 @@ CREATE TABLE IF NOT EXISTS three_way_matching(
 
 
 -- =============================================
+-- CROSS-SCHEMA CONSTRAINTS
+-- Applied after all referenced schemas exist
+-- =============================================
+ALTER TABLE general_schema.product_variant
+    ADD CONSTRAINT fk_product_variant_supplier
+    FOREIGN KEY (supplier_id) REFERENCES purchase_schema.supplier(supplier_id) ON DELETE SET NULL;
+
+
+-- =============================================
 -- SCHEMA: HR
 -- Source: schemas/hr/hr_schema.sql
 -- =============================================
@@ -1591,7 +1699,7 @@ CREATE TABLE IF NOT EXISTS contract(
 	base_salary NUMERIC(19, 4) NOT NULL,
 	duties TEXT,
 	turn_type INTEGER,
-	turn_id INTEGER REFERENCES hr_schema.turn(turn_id) NOT NULL
+	turn_id INTEGER REFERENCES hr_schema.turn(turn_id)
 );
 --Indice para filtracion o busqueda por rango de precios
 CREATE INDEX idx_contract_base_salary ON hr_schema.contract (base_salary);
@@ -1604,6 +1712,7 @@ CREATE TABLE IF NOT EXISTS employee(
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,
+	identification_type_id INTEGER REFERENCES general_schema.identification_type(identification_type_id) ON DELETE SET NULL,
 	phone VARCHAR(100) NOT NULL,
 	email VARCHAR(100) NOT NULL UNIQUE,
 	contract_id UUID NOT NULL REFERENCES hr_schema.contract(contract_id) ON DELETE CASCADE,
@@ -1615,6 +1724,9 @@ CREATE TABLE IF NOT EXISTS employee(
 	
 --Indice para que se pueda garantizar que no haya empleados duplicados
 CREATE UNIQUE INDEX idx_employee_doc_number ON hr_schema.employee (doc_number);
+
+--Indice para JOINs de tipo de documento
+CREATE INDEX idx_employee_identification_type ON hr_schema.employee (identification_type_id);
 
 --Inidice para la recuperacion de cuentas o autenticacion del empleado
 CREATE UNIQUE INDEX idx_employee_email ON hr_schema.employee (email);
@@ -4135,6 +4247,41 @@ BEGIN
                 v_unit
             );
         end loop;
+
+        -- ✅ MC1: Actualizar supplier_id en product_variant si no tiene proveedor asignado
+        -- Para cada product_variant que se está comprando y que no tiene supplier_id,
+        -- asignar el supplier_id de esta orden de compra
+        UPDATE general_schema.product_variant
+        SET 
+            supplier_id = p_supplier_id,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE 
+            tenant_id = v_tenant_id
+            AND product_variant_id IN (
+                SELECT (value ->> 'product_variant_id')::uuid 
+                FROM jsonb_array_elements(p_items)
+            )
+            AND supplier_id IS NULL;
+
+        -- ✅ MC1 (Extended): Si el producto es compuesto, heredar supplier_id a componentes
+        -- Para cada producto compuesto que recibió supplier_id, asignar el mismo supplier_id
+        -- a todos sus componentes que no tengan proveedor asignado
+        UPDATE general_schema.product_variant child
+        SET 
+            supplier_id = p_supplier_id,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE 
+            child.tenant_id = v_tenant_id
+            AND child.supplier_id IS NULL
+            AND child.product_variant_id IN (
+                SELECT pvc.child_product_variant_id
+                FROM general_schema.product_variant_composition pvc
+                WHERE pvc.tenant_id = v_tenant_id
+                  AND pvc.parent_product_variant_id IN (
+                      SELECT (value ->> 'product_variant_id')::uuid 
+                      FROM jsonb_array_elements(p_items)
+                  )
+            );
     end if;
 
     -- Calcular subtotal de la orden
@@ -4382,6 +4529,118 @@ create trigger update_invoice_paid_status_trigger
     for each row
     execute function purchase_schema.update_invoice_paid_status();
 
+CREATE OR REPLACE FUNCTION purchase_schema.upsert_inventory_stock(
+    p_tenant_id UUID,
+    p_product_variant_id UUID,
+    p_warehouse_id UUID,
+    p_quantity INTEGER,
+    p_log_in_type_id INTEGER
+) RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_existing_id UUID;
+BEGIN
+    IF p_quantity IS NULL OR p_quantity <= 0 THEN
+        RETURN;
+    END IF;
+
+    SELECT inventory_id INTO v_existing_id
+    FROM inventory_schema.inventory
+    WHERE tenant_id = p_tenant_id
+      AND product_variant_id = p_product_variant_id
+      AND warehouse_id = p_warehouse_id
+    LIMIT 1;
+
+    IF v_existing_id IS NOT NULL THEN
+        UPDATE inventory_schema.inventory
+        SET stock = stock + p_quantity,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE inventory_id = v_existing_id;
+    ELSE
+        INSERT INTO inventory_schema.inventory(
+            tenant_id, product_variant_id, warehouse_id, stock
+        ) VALUES (
+            p_tenant_id, p_product_variant_id, p_warehouse_id, p_quantity
+        );
+    END IF;
+
+    IF p_log_in_type_id IS NOT NULL THEN
+        INSERT INTO inventory_schema.inventory_log(
+            inventory_log_type_id, warehouse_id, tenant_id,
+            product_variant_id, quantity
+        ) VALUES (
+            p_log_in_type_id, p_warehouse_id, p_tenant_id,
+            p_product_variant_id, p_quantity
+        );
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(
+    p_purchase_order_id UUID
+) RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_warehouse_id UUID;
+    v_log_in_type_id INTEGER;
+    v_item RECORD;
+    v_component RECORD;
+    v_is_composite BOOLEAN;
+    v_total_qty INTEGER;
+BEGIN
+    SELECT po.warehouse_id INTO v_warehouse_id
+    FROM purchase_schema.purchase_order po
+    WHERE po.purchase_order_id = p_purchase_order_id;
+
+    IF v_warehouse_id IS NULL THEN
+        RAISE EXCEPTION 'apply_inventory_on_delivery: warehouse not found for PO %', p_purchase_order_id;
+    END IF;
+
+    SELECT inventory_log_type_id INTO v_log_in_type_id
+    FROM inventory_schema.inventory_log_type
+    WHERE inventory_log_type_name = 'IN'
+    LIMIT 1;
+
+    FOR v_item IN
+        SELECT poi.tenant_id, poi.product_variant_id, poi.quantity_ordered
+        FROM purchase_schema.purchase_order_item poi
+        WHERE poi.purchase_order_id = p_purchase_order_id
+    LOOP
+        SELECT pv.is_composite INTO v_is_composite
+        FROM general_schema.product_variant pv
+        WHERE pv.tenant_id = v_item.tenant_id
+          AND pv.product_variant_id = v_item.product_variant_id;
+
+        IF v_is_composite IS TRUE THEN
+            FOR v_component IN
+                SELECT pvc.child_product_variant_id, pvc.quantity AS component_qty
+                FROM general_schema.product_variant_composition pvc
+                WHERE pvc.tenant_id = v_item.tenant_id
+                  AND pvc.parent_product_variant_id = v_item.product_variant_id
+            LOOP
+                v_total_qty := v_item.quantity_ordered * v_component.component_qty;
+
+                PERFORM purchase_schema.upsert_inventory_stock(
+                    v_item.tenant_id,
+                    v_component.child_product_variant_id,
+                    v_warehouse_id,
+                    v_total_qty,
+                    v_log_in_type_id
+                );
+            END LOOP;
+        ELSE
+            PERFORM purchase_schema.upsert_inventory_stock(
+                v_item.tenant_id,
+                v_item.product_variant_id,
+                v_warehouse_id,
+                v_item.quantity_ordered,
+                v_log_in_type_id
+            );
+        END IF;
+    END LOOP;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION create_goods_receipt()
 returns trigger as $$
 declare
@@ -4391,54 +4650,57 @@ declare
     v_item record;
 BEGIN
     if new.purchase_order_status_id = 3 and old.purchase_order_status_id is distinct from 3 then
-        if exists(
-            select 1 
-            from purchase_schema.goods_receipt 
+        if not exists(
+            select 1
+            from purchase_schema.goods_receipt
             where purchase_order_id = new.purchase_order_id
         ) then
-            return new;
+            select
+                ap.subtotal,
+                sap.tax_amount
+            into v_subtotal, v_tax_amount
+            from general_schema.account_payable ap
+            join purchase_schema.purchase_account_payable sap
+                on ap.account_payable_id = sap.account_payable_id
+            where sap.purchase_order_id = new.purchase_order_id;
+
+            INSERT INTO purchase_schema.goods_receipt(
+                purchase_order_id,
+                received_date,
+                subtotal_amount,
+                tax_amount
+            ) VALUES (
+                new.purchase_order_id,
+                current_timestamp,
+                v_subtotal,
+                v_tax_amount
+            ) returning goods_receipt_id into v_goods_receipt_id;
+
+            for v_item in
+                select tenant_id, product_variant_id, quantity_ordered
+                from purchase_schema.purchase_order_item
+                where purchase_order_id = new.purchase_order_id
+            loop
+                INSERT INTO purchase_schema.goods_receipt_item(
+                    goods_receipt_id,
+                    tenant_id,
+                    product_variant_id,
+                    quantity_received
+                ) VALUES (
+                    v_goods_receipt_id,
+                    v_item.tenant_id,
+                    v_item.product_variant_id,
+                    v_item.quantity_ordered
+                );
+            end loop;
+
+            perform purchase_schema.execute_three_way_matching(new.purchase_order_id, v_goods_receipt_id);
         end if;
 
-        select 
-            ap.subtotal,
-            sap.tax_amount
-        into v_subtotal, v_tax_amount
-        from general_schema.account_payable ap
-        join purchase_schema.purchase_account_payable sap 
-            on ap.account_payable_id = sap.account_payable_id
-        where sap.purchase_order_id = new.purchase_order_id;
-
-        INSERT INTO purchase_schema.goods_receipt(
-            purchase_order_id,
-            received_date,
-            subtotal_amount,
-            tax_amount
-        ) VALUES (
-            new.purchase_order_id,
-            current_timestamp,
-            v_subtotal,
-            v_tax_amount
-        ) returning goods_receipt_id into v_goods_receipt_id;
-
-        for v_item in 
-            select tenant_id, product_variant_id, quantity_ordered
-            from purchase_schema.purchase_order_item
-            where purchase_order_id = new.purchase_order_id
-        loop
-            INSERT INTO purchase_schema.goods_receipt_item(
-                goods_receipt_id,
-                tenant_id,
-                product_variant_id,
-                quantity_received
-            ) VALUES (
-                v_goods_receipt_id,
-                v_item.tenant_id,
-                v_item.product_variant_id,
-                v_item.quantity_ordered
-            );
-        end loop;
-
-        perform purchase_schema.execute_three_way_matching(new.purchase_order_id, v_goods_receipt_id);
+        -- Push items into inventory at the destination warehouse. The
+        -- 'IS DISTINCT FROM 3' guard above ensures this only runs once
+        -- per real status transition.
+        perform purchase_schema.apply_inventory_on_delivery(new.purchase_order_id);
     end if;
 
     return new;
@@ -4902,7 +5164,8 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
     p_phone CHARACTER VARYING,
     p_email CHARACTER VARYING,
     p_payment_schedule_id INTEGER,
-    p_branch_id UUID
+    p_branch_id UUID,
+    p_identification_type_id INTEGER DEFAULT 1
   )
  RETURNS UUID
  LANGUAGE plpgsql
@@ -4923,13 +5186,18 @@ BEGIN
 
   v_new_employee_id := gen_random_uuid();
 
-  INSERT INTO hr_schema.employee (employee_id, user_id, first_name, last_name, doc_number, phone, email, contract_id, payment_schedule_id, tenant_id, branch_id)
+  INSERT INTO hr_schema.employee (
+    employee_id, user_id, first_name, last_name, doc_number,
+    identification_type_id, phone, email, contract_id,
+    payment_schedule_id, tenant_id, branch_id
+  )
   VALUES (
     v_new_employee_id,
     p_user_id,
     p_first_name,
     p_last_name,
     p_doc_number,
+    p_identification_type_id,
     p_phone,
     p_email,
     v_new_contract_id,
@@ -4944,11 +5212,11 @@ EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
   WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id or payment_schedule_id).';
+    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id, payment_schedule_id, or identification_type_id).';
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;
-$function$; 
+$function$;
 
 CREATE OR REPLACE FUNCTION hr_schema.update_paysheet_state (
     p_paysheet_id UUID
@@ -5486,7 +5754,8 @@ INSERT INTO general_schema.payment_method(name, description) VALUES
 ('debit_card', 'Payment made with debit card'),
 ('credit_card', 'Payment made with credit card'),
 ('loyalty_points', 'Payment made via loyalty points'),
-('credit', 'Payment made through a credit account')
+('credit', 'Payment made through a credit account'),
+('bank_transfer', 'Payment made through bank transfer')
 ON CONFLICT DO NOTHING;
 
 

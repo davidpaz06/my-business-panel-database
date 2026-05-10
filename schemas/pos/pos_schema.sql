@@ -589,4 +589,3 @@ CREATE TABLE IF NOT EXISTS pos_schema.royalty_option_product (
 
 CREATE INDEX IF NOT EXISTS idx_royalty_option_product_option
     ON pos_schema.royalty_option_product(royalty_option_id);
-    ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);

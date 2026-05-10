@@ -75,6 +75,21 @@ Add-FileContent "schemas/general/general_schema.sql" "SCHEMA: GENERAL"
 Add-FileContent "schemas/pos/pos_schema.sql" "SCHEMA: POS"
 Add-FileContent "schemas/inventory/inventory_schema.sql" "SCHEMA: INVENTORY"
 Add-FileContent "schemas/purchase/purchase_schema.sql" "SCHEMA: PURCHASE"
+
+# Cross-schema FK applied after purchase_schema exists
+Write-Host "  [+] Cross-schema constraints" -ForegroundColor Green
+@"
+
+-- =============================================
+-- CROSS-SCHEMA CONSTRAINTS
+-- Applied after all referenced schemas exist
+-- =============================================
+ALTER TABLE general_schema.product_variant
+    ADD CONSTRAINT fk_product_variant_supplier
+    FOREIGN KEY (supplier_id) REFERENCES purchase_schema.supplier(supplier_id) ON DELETE SET NULL;
+
+"@ | Out-File -FilePath $outputFile -Append -Encoding UTF8
+
 Add-FileContent "schemas/hr/hr_schema.sql" "SCHEMA: HR"
 Add-FileContent "schemas/accounting/accounting_schema.sql" "SCHEMA: ACCOUNTING"
 
