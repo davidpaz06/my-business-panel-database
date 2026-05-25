@@ -710,5 +710,71 @@ CREATE TABLE IF NOT EXISTS pos_schema.expense (
 
 CREATE INDEX IF NOT EXISTS idx_expense_type_fk ON pos_schema.expense(expense_type_id);
 CREATE INDEX IF NOT EXISTS idx_expense_branch   ON pos_schema.expense(branch_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_account_receivable (
+    sale_account_receivable_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_receivable_id      UUID NOT NULL UNIQUE REFERENCES general_schema.account_receivable(account_receivable_id) ON DELETE CASCADE,
+    sale_id                    UUID NOT NULL UNIQUE REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
+    tax_amount                 NUMERIC(12,3) DEFAULT 0,
+    account_receivable_status  INTEGER REFERENCES general_schema.account_receivable_status(status_id),
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
+    sale_collection_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    -- currency_id: currency the customer paid in (original currency).
+    currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    -- amount_paid: CRC-equivalent of the payment. Used by recalc SUM().
+    amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
+    -- original_amount: amount stated in currency_id (what the customer handed over).
+    original_amount            NUMERIC(12,3) DEFAULT 0
+        CHECK (original_amount IS NULL OR original_amount > 0),
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (CRC).
+    exchange_rate              NUMERIC(18,8) DEFAULT 1
+        CHECK (exchange_rate IS NULL OR exchange_rate > 0),
+    payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    payment_reference          VARCHAR(100),
+    notes                      TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_receivable
+    ON pos_schema.sale_collection(sale_account_receivable_id);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_date
+    ON pos_schema.sale_collection(payment_date);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_type (
+    collection_alert_type_id   SERIAL PRIMARY KEY,
+    collection_alert_type_name VARCHAR(50) NOT NULL,
+    description                TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert (
+    collection_alert_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    collection_alert_type_id   INTEGER NOT NULL REFERENCES pos_schema.sale_collection_alert_type(collection_alert_type_id),
+    alert_date                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_resolved                BOOLEAN DEFAULT FALSE,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_config (
+    collection_alert_config_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id                   UUID UNIQUE NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    warning_days_before_due     INTEGER DEFAULT 7,
+    urgent_days_before_due      INTEGER DEFAULT 3,
+    email_notifications_enabled BOOLEAN DEFAULT TRUE,
+    sms_notifications_enabled   BOOLEAN DEFAULT FALSE,
+    created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_expense_user     ON pos_schema.expense(user_id);
 CREATE INDEX IF NOT EXISTS idx_expense_status   ON pos_schema.expense(status);

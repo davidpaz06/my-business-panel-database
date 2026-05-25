@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-05-10 17:48:55
+-- Generated: 2026-05-22 03:37:15
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -442,6 +442,7 @@ CREATE TABLE IF NOT EXISTS product_variant (
     last_purchase_date TIMESTAMP,
     is_active BOOLEAN DEFAULT true,
     is_composite BOOLEAN NOT NULL DEFAULT false,
+    includes_iva BOOLEAN NOT NULL DEFAULT false,
     supplier_id UUID,
     giftable BOOLEAN DEFAULT FALSE,
     giftable_from NUMERIC(10,2) CHECK (giftable_from IS NULL OR giftable_from >= 0),
@@ -555,6 +556,41 @@ CREATE INDEX IF NOT EXISTS idx_pvc_child
 
 COMMENT ON TABLE general_schema.product_variant_composition IS
     'Composite product variants: parent explodes into N children with a quantity ratio.';
+
+-- ── Composite delete cascade trigger ─────────────────────────────────────────
+CREATE OR REPLACE FUNCTION general_schema.cascade_delete_composite_children()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_child_id UUID;
+BEGIN
+    IF OLD.is_composite THEN
+        FOR v_child_id IN
+            SELECT child_product_variant_id
+            FROM general_schema.product_variant_composition
+            WHERE tenant_id = OLD.tenant_id
+              AND parent_product_variant_id = OLD.product_variant_id
+        LOOP
+            -- Remove ALL composition rows where this variant appears as a child
+            -- (from any parent). Required to satisfy ON DELETE RESTRICT before
+            -- deleting the variant row itself.
+            DELETE FROM general_schema.product_variant_composition
+            WHERE tenant_id = OLD.tenant_id
+              AND child_product_variant_id = v_child_id;
+
+            -- Delete the child variant. If the child is_composite, this DELETE
+            -- fires the trigger recursively, cascading to its own children.
+            DELETE FROM general_schema.product_variant
+            WHERE tenant_id = OLD.tenant_id
+              AND product_variant_id = v_child_id;
+        END LOOP;
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_cascade_delete_composite_children
+    BEFORE DELETE ON general_schema.product_variant
+    FOR EACH ROW EXECUTE FUNCTION general_schema.cascade_delete_composite_children();
 
 -- ============================================================================
 -- TENANT PRODUCT GROUPING (departments, families, brands, etc.)
@@ -712,6 +748,52 @@ CREATE TABLE IF NOT EXISTS product_cost_history (
 CREATE INDEX IF NOT EXISTS idx_product_cost_history_variant
     ON general_schema.product_cost_history(tenant_id, product_variant_id, effective_date DESC);
 
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable_status (
+    status_id   SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable_type (
+    account_receivable_type_id SERIAL PRIMARY KEY,
+    type_name                  VARCHAR(50) UNIQUE NOT NULL,
+    description                TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable (
+    account_receivable_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_receivable_type_id INT REFERENCES general_schema.account_receivable_type(account_receivable_type_id) ON DELETE SET NULL,
+    account_status             INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.account_receivable_status(status_id),
+    tenant_id                  UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    tenant_customer_id         UUID REFERENCES general_schema.tenant_customer(tenant_customer_id) ON DELETE SET NULL,
+    has_invoice                BOOLEAN DEFAULT TRUE,
+    has_tax                    BOOLEAN DEFAULT FALSE,
+    subtotal                   NUMERIC(12,3) NOT NULL CHECK (subtotal >= 0),
+    amount_paid                NUMERIC(12,3) DEFAULT 0 CHECK (amount_paid >= 0),
+    balance_remaining          NUMERIC(12,3) GENERATED ALWAYS AS (subtotal - amount_paid) STORED,
+    is_paid                    BOOLEAN DEFAULT FALSE,
+    due_date                   DATE NOT NULL,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_tenant
+    ON general_schema.account_receivable(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_status
+    ON general_schema.account_receivable(tenant_id, account_status);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_due_date
+    ON general_schema.account_receivable(tenant_id, due_date);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_customer
+    ON general_schema.account_receivable(tenant_customer_id)
+    WHERE tenant_customer_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_product_cost_history_purchase
     ON general_schema.product_cost_history(purchase_order_id);
 
@@ -754,28 +836,37 @@ CREATE TABLE IF NOT EXISTS sale_item(
     sale_item_id uuid PRIMARY KEY default gen_random_uuid(),
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     tenant_id uuid not null,
-    product_variant_id uuid not null,
+    product_variant_id uuid,
     quantity INTEGER not null check (quantity > 0),
     unit_price numeric(10,2) not null check (unit_price >= 0),
     total_price numeric(10,2) not null,
     cost_price_at_sale NUMERIC(12,3),
-    sale_price_type VARCHAR(20) DEFAULT 'NORMAL' CHECK (sale_price_type IN ('NORMAL', 'PROMO', 'SEGMENT', 'MANUAL')),
+    sale_price_type VARCHAR(20) DEFAULT 'NORMAL' CHECK (sale_price_type IN ('NORMAL', 'PROMO', 'SEGMENT', 'MANUAL', 'ROYALTY')),
     promotion_id uuid, -- FK to pos_schema.promotion added via ALTER TABLE below (forward reference)
+    royalty_option_id uuid, -- FK to pos_schema.royalty_option added via ALTER TABLE below (forward reference)
+    royalty_rule_id uuid, -- FK to pos_schema.royalty_rule added via ALTER TABLE below (forward reference)
     original_price NUMERIC(10,2),
     discount_applied NUMERIC(10,2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT sale_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        on delete restrict
+        ON DELETE SET NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sale_item_product_variant 
+CREATE INDEX IF NOT EXISTS idx_sale_item_product_variant
     ON pos_schema.sale_item(tenant_id, product_variant_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id 
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id
     ON pos_schema.sale_item(sale_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_sale_variant 
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_variant
     ON pos_schema.sale_item(sale_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_royalty_option
+    ON pos_schema.sale_item(royalty_option_id)
+    WHERE royalty_option_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sale_item_royalty_rule
+    ON pos_schema.sale_item(royalty_rule_id)
+    WHERE royalty_rule_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS cash_register(
     cash_register_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -804,6 +895,10 @@ CREATE TABLE IF NOT EXISTS cash_register_session(
     transfer_sales_amount NUMERIC(14, 2),
     points_sales_amount   NUMERIC(14, 2),
     total_sales_amount    NUMERIC(14, 2),
+    user_cash_amount      NUMERIC(14, 2),
+    user_debit_amount     NUMERIC(14, 2),
+    user_credit_amount    NUMERIC(14, 2),
+    user_transfer_amount  NUMERIC(14, 2),
     mismatch              BOOLEAN DEFAULT FALSE,
     mismatch_amount       NUMERIC(14, 2),
     mismatch_type         VARCHAR(10) CHECK (mismatch_type IN ('surplus', 'shortage')),
@@ -872,7 +967,7 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     sale_item_id UUID NOT NULL
         REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
-    product_variant_id UUID NOT NULL,
+    product_variant_id UUID,
     cabys_code VARCHAR(13)
         REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
     tax_rate_id INTEGER
@@ -887,9 +982,10 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT digital_sale_invoice_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE RESTRICT
+        ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_invoice
@@ -1203,19 +1299,26 @@ CREATE TABLE IF NOT EXISTS electronic_sale_invoice (
     -- Hacienda response
     hacienda_response_xml TEXT,
     hacienda_response_date TIMESTAMP,
+    -- Async status polling (cron-based reconciliation, migration 011 + 032)
+    check_attempts INT NOT NULL DEFAULT 0,
+    next_check_at TIMESTAMP,
     -- Metadata
     -- currency_id INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_sale_id 
+CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_sale_id
     ON pos_schema.electronic_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number 
+CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number
     ON pos_schema.electronic_sale_invoice(key_number);
 -- #2: columna issue_date no existe en esta versión del schema; se indexa created_at
 CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_created_at
     ON pos_schema.electronic_sale_invoice(created_at);
+-- Cron picks pending invoices due for re-check; partial index keeps it tiny.
+CREATE INDEX IF NOT EXISTS idx_electronic_invoice_pending_check
+    ON pos_schema.electronic_sale_invoice(next_check_at)
+    WHERE status_id = 1;
 
 -- FK deferred: return_transaction.electronic_sale_invoice_id -> electronic_sale_invoice
 DO $$ BEGIN
@@ -1236,7 +1339,7 @@ CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
     electronic_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     electronic_sale_invoice_id UUID NOT NULL REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
-    product_variant_id UUID NOT NULL,
+    product_variant_id UUID,
     sale_item_id uuid NOT NULL REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
     line_number INTEGER NOT NULL,
     -- cabys_code VARCHAR(13) NOT NULL REFERENCES general_schema.product(cabys_code) ON DELETE RESTRICT,
@@ -1273,9 +1376,10 @@ CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT fk_electronic_item_product_variant
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE RESTRICT
+        ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_invoice
@@ -1284,17 +1388,48 @@ CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_variant
     ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
 
 -- ── Royalties ─────────────────────────────────────────────────────────────────
+-- A royalty_rule defines a minimum purchase amount. It is not bound to a
+-- single dimension: any of its options may target any tenant_product_group
+-- across dimensions. Selecting a group implicitly includes its descendants
+-- in the tenant_product_group hierarchy at query time (resolved via
+-- recursive CTE in the application layer).
+--
+-- A variant becomes eligible as a gift when product_variant.giftable = true
+-- AND the variant is assigned (directly or transitively) to a group selected
+-- by the option. There is no specific-product targeting table.
 
 CREATE TABLE IF NOT EXISTS pos_schema.royalty_rule (
-    royalty_rule_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id         UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    min_amount        NUMERIC(14,2) NOT NULL CHECK (min_amount > 0),
-    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    royalty_rule_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    min_amount       NUMERIC(14,2) NOT NULL CHECK (min_amount > 0),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_royalty_rule_tenant
     ON pos_schema.royalty_rule(tenant_id, min_amount ASC);
+
+-- Explicit dimensions the rule applies to. Without this row in
+-- royalty_rule_dimension, the dimension is excluded from the rule
+-- regardless of any leftover options.
+CREATE TABLE IF NOT EXISTS pos_schema.royalty_rule_dimension (
+    royalty_rule_id              UUID NOT NULL
+        REFERENCES pos_schema.royalty_rule(royalty_rule_id) ON DELETE CASCADE,
+    tenant_id                    UUID NOT NULL,
+    tenant_product_group_type_id UUID NOT NULL,
+    created_at                   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (royalty_rule_id, tenant_product_group_type_id),
+    CONSTRAINT fk_royalty_rule_dim_type
+        FOREIGN KEY (tenant_id, tenant_product_group_type_id)
+        REFERENCES general_schema.tenant_product_group_type(tenant_id, tenant_product_group_type_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_rule_dimension_rule
+    ON pos_schema.royalty_rule_dimension(royalty_rule_id);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_rule_dimension_type
+    ON pos_schema.royalty_rule_dimension(tenant_id, tenant_product_group_type_id);
 
 CREATE TABLE IF NOT EXISTS pos_schema.royalty_option (
     royalty_option_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1302,25 +1437,43 @@ CREATE TABLE IF NOT EXISTS pos_schema.royalty_option (
     tenant_id                 UUID NOT NULL,
     tenant_product_group_id   UUID NOT NULL,
     quantity                  INT NOT NULL CHECK (quantity > 0),
-    scope                     TEXT NOT NULL DEFAULT 'any' CHECK (scope IN ('any', 'specific')),
     created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (royalty_rule_id, tenant_product_group_id),
-    FOREIGN KEY (tenant_id, tenant_product_group_id)
-        REFERENCES general_schema.tenant_product_group(tenant_id, tenant_product_group_id) ON DELETE CASCADE
+    CONSTRAINT fk_royalty_option_group FOREIGN KEY (tenant_id, tenant_product_group_id)
+        REFERENCES general_schema.tenant_product_group(tenant_id, tenant_product_group_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_royalty_option_rule
     ON pos_schema.royalty_option(royalty_rule_id);
 
-CREATE TABLE IF NOT EXISTS pos_schema.royalty_option_product (
-    royalty_option_product_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    royalty_option_id           UUID NOT NULL REFERENCES pos_schema.royalty_option(royalty_option_id) ON DELETE CASCADE,
-    product_variant_id          UUID NOT NULL,
-    UNIQUE (royalty_option_id, product_variant_id)
-);
+-- FK deferred: sale_item.royalty_option_id / royalty_rule_id (defined here, applied to sale_item above)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sale_item_royalty_option_id_fkey'
+          AND conrelid = 'pos_schema.sale_item'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.sale_item
+            ADD CONSTRAINT sale_item_royalty_option_id_fkey
+            FOREIGN KEY (royalty_option_id)
+            REFERENCES pos_schema.royalty_option(royalty_option_id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_royalty_option_product_option
-    ON pos_schema.royalty_option_product(royalty_option_id);
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sale_item_royalty_rule_id_fkey'
+          AND conrelid = 'pos_schema.sale_item'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.sale_item
+            ADD CONSTRAINT sale_item_royalty_rule_id_fkey
+            FOREIGN KEY (royalty_rule_id)
+            REFERENCES pos_schema.royalty_rule(royalty_rule_id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS pos_schema.session_group_sales (
     session_group_sales_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1362,6 +1515,64 @@ CREATE TABLE IF NOT EXISTS pos_schema.expense (
 
 CREATE INDEX IF NOT EXISTS idx_expense_type_fk ON pos_schema.expense(expense_type_id);
 CREATE INDEX IF NOT EXISTS idx_expense_branch   ON pos_schema.expense(branch_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_account_receivable (
+    sale_account_receivable_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_receivable_id      UUID NOT NULL UNIQUE REFERENCES general_schema.account_receivable(account_receivable_id) ON DELETE CASCADE,
+    sale_id                    UUID NOT NULL UNIQUE REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
+    tax_amount                 NUMERIC(12,3) DEFAULT 0,
+    account_receivable_status  INTEGER REFERENCES general_schema.account_receivable_status(status_id),
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
+    sale_collection_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
+    payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    payment_reference          VARCHAR(100),
+    notes                      TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_receivable
+    ON pos_schema.sale_collection(sale_account_receivable_id);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_date
+    ON pos_schema.sale_collection(payment_date);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_type (
+    collection_alert_type_id   SERIAL PRIMARY KEY,
+    collection_alert_type_name VARCHAR(50) NOT NULL,
+    description                TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert (
+    collection_alert_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    collection_alert_type_id   INTEGER NOT NULL REFERENCES pos_schema.sale_collection_alert_type(collection_alert_type_id),
+    alert_date                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_resolved                BOOLEAN DEFAULT FALSE,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_config (
+    collection_alert_config_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id                   UUID UNIQUE NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    warning_days_before_due     INTEGER DEFAULT 7,
+    urgent_days_before_due      INTEGER DEFAULT 3,
+    email_notifications_enabled BOOLEAN DEFAULT TRUE,
+    sms_notifications_enabled   BOOLEAN DEFAULT FALSE,
+    created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_expense_user     ON pos_schema.expense(user_id);
 CREATE INDEX IF NOT EXISTS idx_expense_status   ON pos_schema.expense(status);
 
@@ -1777,14 +1988,14 @@ CREATE TABLE IF NOT EXISTS payment_schedule(
 );
 
 CREATE TABLE IF NOT EXISTS hr_schema.config (
-  branch_id UUID PRIMARY KEY REFERENCES general_schema.branch(branch_id),
+  branch_id UUID PRIMARY KEY REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   foul_expiration_months INTEGER DEFAULT 6,
   updated_at TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS hr_schema.turn (
   turn_id SERIAL PRIMARY KEY,
-  branch_id UUID REFERENCES general_schema.branch(branch_id) NOT NULL,
+  branch_id UUID REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE NOT NULL,
   entry TIME NOT NULL,
   out TIME NOT NULL
 );
@@ -1792,6 +2003,17 @@ CREATE TABLE IF NOT EXISTS hr_schema.turn (
 -- ('64ff2bad-4012-42a6-8aa9-48dd67bfb8c6', '08:00:00', '16:00:00');
 
 CREATE INDEX branch_turn_idx ON hr_schema.turn(branch_id);
+
+CREATE TABLE IF NOT EXISTS hr_schema.duties_type (
+	duties_type_id SERIAL PRIMARY KEY,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	name VARCHAR(150) NOT NULL,
+	description TEXT,
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_duties_type_tenant ON hr_schema.duties_type(tenant_id);
 
 CREATE TABLE IF NOT EXISTS contract(
 	contract_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
@@ -1801,17 +2023,18 @@ CREATE TABLE IF NOT EXISTS contract(
 	hours INTEGER NOT NULL,
 	base_salary NUMERIC(19, 4) NOT NULL,
 	duties TEXT,
+	duties_type_id INTEGER REFERENCES hr_schema.duties_type(duties_type_id) ON DELETE SET NULL,
 	turn_type INTEGER,
-	turn_id INTEGER REFERENCES hr_schema.turn(turn_id)
+	turn_id INTEGER REFERENCES hr_schema.turn(turn_id) ON DELETE SET NULL
 );
 --Indice para filtracion o busqueda por rango de precios
 CREATE INDEX idx_contract_base_salary ON hr_schema.contract (base_salary);
 
 CREATE TABLE IF NOT EXISTS employee(
 	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
-	user_id UUID NOT NULL REFERENCES general_schema.users(user_id) ON DELETE CASCADE,
+	user_id UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,
@@ -1845,7 +2068,7 @@ CREATE INDEX idx_employee_is_active ON hr_schema.employee (is_active);
 CREATE TABLE IF NOT EXISTS hr_schema.foul(
   foul_id SERIAL PRIMARY KEY,
   employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
-  branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+  branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   identificator VARCHAR(50) UNIQUE NOT NULL, 
   foul_date DATE NOT NULL,
   foul_hour TIME NOT NULL,
@@ -1859,7 +2082,7 @@ CREATE INDEX idx_identificator_foul ON hr_schema.foul(identificator);
 CREATE TABLE IF NOT EXISTS hr_schema.suspention (
   suspention_id SERIAL PRIMARY KEY,
   employee_id UUID REFERENCES hr_schema.employee(employee_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   suspention_start DATE NOT NULL,
   suspention_end DATE NOT NULL,
   reason TEXT NOT NULL,
@@ -1874,7 +2097,7 @@ CREATE INDEX idx_branch_suspention ON hr_schema.suspention(branch_id);
 CREATE TABLE IF NOT EXISTS clocking(
 	clocking_id SERIAL PRIMARY KEY NOT NULL,
 	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	clock_in TIMESTAMP,
 	clock_out TIMESTAMP,
 	turn_hours NUMERIC NOT NULL DEFAULT 0
@@ -1888,7 +2111,7 @@ CREATE INDEX idx_track_hours_branch_id ON hr_schema.clocking (branch_id);
 CREATE TABLE IF NOT EXISTS hr_schema.tardiness (
   tardiness_id SERIAL PRIMARY KEY,
   employee_id UUID REFERENCES hr_schema.employee(employee_id),
-  branch_id UUID REFERENCES general_schema.branch(branch_id),
+  branch_id UUID REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   type VARCHAR(20) NOT NULL, -- "late" | "early"
   log TEXT,
   registered_at DATE DEFAULT NOW()
@@ -1908,7 +2131,7 @@ CREATE TABLE IF NOT EXISTS hr_schema.holiday (
 
 CREATE TABLE IF NOT EXISTS hr_schema.incapacity (
     incapacity_id SERIAL PRIMARY KEY,
-    branch_id UUID  REFERENCES general_schema.branch(branch_id),
+    branch_id UUID  REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
     employee_id UUID  REFERENCES hr_schema.employee(employee_id),
     type VARCHAR(50),
     period_start DATE NOT NULL,
@@ -1948,7 +2171,7 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 CREATE TABLE IF NOT EXISTS paysheet(
 	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	period_start DATE NOT NULL,
 	period_end DATE NOT NULL,
 	payment_date TIMESTAMP,
@@ -2236,7 +2459,7 @@ COMMENT ON COLUMN accounting_schema.expense_category.account_code IS
 CREATE TABLE IF NOT EXISTS expense (
     expense_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+    branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
     category_id UUID NOT NULL REFERENCES accounting_schema.expense_category(category_id),
     description TEXT,
     amount NUMERIC(14,4) NOT NULL CHECK (amount > 0),
@@ -4257,22 +4480,29 @@ for each row execute function general_schema.update_timestamp();
 
 CREATE OR REPLACE FUNCTION pos_schema.close_cash_register_session(
     p_session_id     uuid,
-    p_closing_amount numeric
+    p_closing_amount numeric,
+    p_user_cash      numeric DEFAULT 0,
+    p_user_debit     numeric DEFAULT 0,
+    p_user_credit    numeric DEFAULT 0,
+    p_user_transfer  numeric DEFAULT 0
 )
 RETURNS pos_schema.cash_register_session
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_session             pos_schema.cash_register_session%ROWTYPE;
-    v_cash_sales          NUMERIC(14, 2) := 0;
-    v_debit_sales         NUMERIC(14, 2) := 0;
-    v_credit_sales        NUMERIC(14, 2) := 0;
-    v_transfer_sales      NUMERIC(14, 2) := 0;
-    v_points_sales        NUMERIC(14, 2) := 0;
-    v_total_sales         NUMERIC(14, 2) := 0;
-    v_expected_cash       NUMERIC(14, 2);
+    v_system_cash         NUMERIC(14, 2) := 0;
+    v_system_debit        NUMERIC(14, 2) := 0;
+    v_system_credit       NUMERIC(14, 2) := 0;
+    v_system_transfer     NUMERIC(14, 2) := 0;
+    v_system_points       NUMERIC(14, 2) := 0;
+    v_system_total_sales  NUMERIC(14, 2) := 0;
+    v_diff_cash           NUMERIC(14, 2);
+    v_diff_debit          NUMERIC(14, 2);
+    v_diff_credit         NUMERIC(14, 2);
+    v_diff_transfer       NUMERIC(14, 2);
     v_mismatch            BOOLEAN        := FALSE;
-    v_mismatch_amt        NUMERIC(14, 2) := NULL;
+    v_mismatch_amt        NUMERIC(14, 2) := 0;
     v_mismatch_type       VARCHAR(10)    := NULL;
 BEGIN
     SELECT * INTO v_session
@@ -4288,28 +4518,51 @@ BEGIN
         RAISE EXCEPTION 'Session % is already closed', p_session_id;
     END IF;
 
+    INSERT INTO pos_schema.session_payment_method_sales
+        (cash_register_session_id, payment_method_id, total_amount)
     SELECT
-        COALESCE(SUM(cp.payment_amount) FILTER (WHERE cp.payment_method_id = 1), 0),
-        COALESCE(SUM(cp.payment_amount) FILTER (WHERE cp.payment_method_id = 2), 0),
-        COALESCE(SUM(cp.payment_amount) FILTER (WHERE cp.payment_method_id = 3), 0),
-        COALESCE(SUM(cp.payment_amount) FILTER (WHERE cp.payment_method_id = 4), 0),
-        COALESCE(SUM(cp.payment_amount) FILTER (WHERE cp.payment_method_id = 5), 0)
-    INTO v_cash_sales, v_debit_sales, v_credit_sales, v_transfer_sales, v_points_sales
+        p_session_id,
+        cp.payment_method_id,
+        COALESCE(SUM(cp.payment_amount), 0)
     FROM pos_schema.customer_payment cp
     INNER JOIN pos_schema.cash_register_sale crs ON crs.sale_id = cp.sale_id
-    WHERE crs.cash_register_session_id = p_session_id;
+    WHERE crs.cash_register_session_id = p_session_id
+    GROUP BY cp.payment_method_id
+    ON CONFLICT (cash_register_session_id, payment_method_id)
+    DO UPDATE SET total_amount = EXCLUDED.total_amount;
 
-    v_total_sales := v_cash_sales + v_debit_sales + v_credit_sales
-                     + v_transfer_sales + v_points_sales;
+    -- Single aggregate: guaranteed one row, zero for missing methods
+    SELECT
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 1), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 2), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 3), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 4), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 5), 0),
+        COALESCE(SUM(total_amount), 0)
+    INTO
+        v_system_cash,
+        v_system_debit,
+        v_system_credit,
+        v_system_transfer,
+        v_system_points,
+        v_system_total_sales
+    FROM pos_schema.session_payment_method_sales
+    WHERE cash_register_session_id = p_session_id;
 
-    v_expected_cash := v_session.opening_amount + v_cash_sales;
-    IF ABS(p_closing_amount - v_expected_cash) > 0.01 THEN
-        v_mismatch      := TRUE;
-        v_mismatch_amt  := ROUND(ABS(p_closing_amount - v_expected_cash), 2);
-        v_mismatch_type := CASE
-            WHEN p_closing_amount > v_expected_cash THEN 'surplus'
-            ELSE 'shortage'
-        END;
+    -- Per-method diff (cash must cover opening float + cash sales)
+    v_diff_cash     := p_user_cash     - (v_session.opening_amount + v_system_cash);
+    v_diff_debit    := p_user_debit    - v_system_debit;
+    v_diff_credit   := p_user_credit   - v_system_credit;
+    v_diff_transfer := p_user_transfer - v_system_transfer;
+
+    IF ABS(v_diff_cash)     > 0.01
+    OR ABS(v_diff_debit)    > 0.01
+    OR ABS(v_diff_credit)   > 0.01
+    OR ABS(v_diff_transfer) > 0.01
+    THEN
+        v_mismatch     := TRUE;
+        v_mismatch_amt := v_diff_cash + v_diff_debit + v_diff_credit + v_diff_transfer;
+        v_mismatch_type := CASE WHEN v_mismatch_amt > 0 THEN 'surplus' ELSE 'shortage' END;
     END IF;
 
     INSERT INTO pos_schema.session_group_sales
@@ -4337,15 +4590,19 @@ BEGIN
         closed_at             = NOW(),
         closing_amount        = p_closing_amount,
         is_active             = FALSE,
-        cash_sales_amount     = v_cash_sales,
-        debit_sales_amount    = v_debit_sales,
-        credit_sales_amount   = v_credit_sales,
-        transfer_sales_amount = v_transfer_sales,
-        points_sales_amount   = v_points_sales,
-        total_sales_amount    = v_total_sales,
+        cash_sales_amount     = v_system_cash,
+        debit_sales_amount    = v_system_debit,
+        credit_sales_amount   = v_system_credit,
+        transfer_sales_amount = v_system_transfer,
+        points_sales_amount   = v_system_points,
+        total_sales_amount    = v_system_total_sales,
+        user_cash_amount      = p_user_cash,
+        user_debit_amount     = p_user_debit,
+        user_credit_amount    = p_user_credit,
+        user_transfer_amount  = p_user_transfer,
         mismatch              = v_mismatch,
-        mismatch_amount       = CASE WHEN v_mismatch THEN v_mismatch_amt  ELSE NULL END,
-        mismatch_type         = CASE WHEN v_mismatch THEN v_mismatch_type ELSE NULL END,
+        mismatch_amount       = ABS(v_mismatch_amt),
+        mismatch_type         = v_mismatch_type,
         updated_at            = NOW()
     WHERE cash_register_session_id = p_session_id
     RETURNING * INTO v_session;
@@ -4355,6 +4612,357 @@ END;
 $$;
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- CxC (Cuentas por Cobrar) — Collection subsystem functions
+-- Mirror of the AP alert functions in functions/purchase/purchase_functions.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS check_account_receivable_completion(UUID);
+
+CREATE OR REPLACE FUNCTION check_account_receivable_completion(_account_receivable_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+    _subtotal       NUMERIC(12,3);
+    _tax_amount     NUMERIC(12,3);
+    _amount_due     NUMERIC(12,3);
+    _payments_total NUMERIC(12,3);
+    _balance        NUMERIC(12,3);
+    _target_sar_id  UUID;
+BEGIN
+    SELECT
+        ar.subtotal,
+        sar.tax_amount,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0)) AS amount_due,
+        sar.sale_account_receivable_id
+    INTO
+        _subtotal,
+        _tax_amount,
+        _amount_due,
+        _target_sar_id
+    FROM general_schema.account_receivable ar
+    JOIN pos_schema.sale_account_receivable sar
+        ON ar.account_receivable_id = sar.account_receivable_id
+    WHERE ar.account_receivable_id = _account_receivable_id;
+
+    IF _amount_due IS NULL THEN
+        RAISE EXCEPTION 'Account receivable not found: %', _account_receivable_id;
+    END IF;
+
+    SELECT COALESCE(SUM(sc.amount_paid), 0) INTO _payments_total
+    FROM pos_schema.sale_collection sc
+    WHERE sc.sale_account_receivable_id = _target_sar_id;
+
+    _balance := _amount_due - _payments_total;
+
+    UPDATE general_schema.account_receivable
+    SET amount_paid = _payments_total,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE account_receivable_id = _account_receivable_id;
+
+    IF ABS(_balance) <= 0.01 OR _payments_total >= _amount_due THEN
+        UPDATE general_schema.account_receivable
+        SET is_paid    = TRUE,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 3,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN TRUE;
+
+    ELSIF _payments_total > 0 THEN
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 2,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN FALSE;
+
+    ELSE
+        RETURN FALSE;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION recalc_account_receivable_on_collection() RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pos_schema.check_account_receivable_completion(
+        (SELECT ar.account_receivable_id
+         FROM general_schema.account_receivable ar
+         JOIN pos_schema.sale_account_receivable sar
+             ON ar.account_receivable_id = sar.account_receivable_id
+         WHERE sar.sale_account_receivable_id = NEW.sale_account_receivable_id)
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS recalc_account_receivable_on_collection_trigger ON pos_schema.sale_collection;
+
+CREATE TRIGGER recalc_account_receivable_on_collection_trigger
+AFTER INSERT OR UPDATE OF amount_paid ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION pos_schema.recalc_account_receivable_on_collection();
+
+
+CREATE OR REPLACE FUNCTION auto_resolve_collection_alerts() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.account_receivable_status = 3 AND OLD.account_receivable_status IS DISTINCT FROM 3 THEN
+        UPDATE pos_schema.sale_collection_alert
+        SET is_resolved = TRUE,
+            updated_at  = CURRENT_TIMESTAMP
+        WHERE sale_account_receivable_id = NEW.sale_account_receivable_id
+          AND is_resolved = FALSE;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS auto_resolve_collection_alerts_trigger ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER auto_resolve_collection_alerts_trigger
+AFTER UPDATE OF account_receivable_status ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION pos_schema.auto_resolve_collection_alerts();
+
+
+CREATE OR REPLACE FUNCTION generate_collection_alerts() RETURNS VOID AS $$
+DECLARE
+    v_config        RECORD;
+    v_account       RECORD;
+    v_days_until_due INTEGER;
+    v_alert_type_id INTEGER;
+    v_existing_id   UUID;
+BEGIN
+    FOR v_config IN
+        SELECT tenant_id, warning_days_before_due, urgent_days_before_due
+        FROM pos_schema.sale_collection_alert_config
+    LOOP
+        FOR v_account IN
+            SELECT
+                ar.account_receivable_id,
+                ar.due_date,
+                ar.is_paid,
+                ar.amount_paid,
+                ar.subtotal,
+                sar.sale_account_receivable_id,
+                sar.tax_amount,
+                (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining
+            FROM general_schema.account_receivable ar
+            JOIN pos_schema.sale_account_receivable sar
+                ON ar.account_receivable_id = sar.account_receivable_id
+            WHERE ar.tenant_id = v_config.tenant_id
+              AND ar.is_paid = FALSE
+              AND (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) > 0
+        LOOP
+            v_days_until_due := v_account.due_date - CURRENT_DATE;
+
+            IF v_days_until_due < 0 THEN
+                v_alert_type_id := 3;
+            ELSIF v_days_until_due <= v_config.urgent_days_before_due THEN
+                v_alert_type_id := 2;
+            ELSIF v_days_until_due <= v_config.warning_days_before_due THEN
+                v_alert_type_id := 1;
+            ELSE
+                CONTINUE;
+            END IF;
+
+            SELECT collection_alert_id INTO v_existing_id
+            FROM pos_schema.sale_collection_alert
+            WHERE sale_account_receivable_id = v_account.sale_account_receivable_id
+              AND collection_alert_type_id = v_alert_type_id
+              AND is_resolved = FALSE
+            LIMIT 1;
+
+            IF v_existing_id IS NULL THEN
+                INSERT INTO pos_schema.sale_collection_alert(
+                    sale_account_receivable_id,
+                    collection_alert_type_id,
+                    alert_date,
+                    is_resolved
+                ) VALUES (
+                    v_account.sale_account_receivable_id,
+                    v_alert_type_id,
+                    CURRENT_TIMESTAMP,
+                    FALSE
+                );
+            END IF;
+        END LOOP;
+    END LOOP;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error generating collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP FUNCTION IF EXISTS get_pending_collection_alerts(UUID);
+
+CREATE OR REPLACE FUNCTION get_pending_collection_alerts(p_tenant_id UUID)
+RETURNS TABLE(
+    collection_alert_id        UUID,
+    sale_account_receivable_id UUID,
+    sale_id                    UUID,
+    customer_name              VARCHAR,
+    alert_type                 VARCHAR,
+    alert_type_description     TEXT,
+    due_date                   DATE,
+    days_until_due             INTEGER,
+    balance_remaining          NUMERIC,
+    alert_date                 TIMESTAMP,
+    created_at                 TIMESTAMP
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sca.collection_alert_id,
+        sar.sale_account_receivable_id,
+        sar.sale_id,
+        (tc.first_name || ' ' || tc.last_name)::VARCHAR AS customer_name,
+        scat.collection_alert_type_name,
+        scat.description,
+        ar.due_date,
+        (ar.due_date - CURRENT_DATE)::INTEGER AS days_until_due,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining,
+        sca.alert_date,
+        sca.created_at
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    LEFT JOIN general_schema.tenant_customer tc
+        ON ar.tenant_customer_id = tc.tenant_customer_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE
+    ORDER BY ar.due_date ASC, sca.alert_date DESC;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error fetching pending collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION resolve_collection_alert(p_alert_id UUID) RETURNS VOID AS $$
+BEGIN
+    UPDATE pos_schema.sale_collection_alert
+    SET is_resolved = TRUE,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE collection_alert_id = p_alert_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION initialize_collection_alert_config(
+    p_tenant_id     UUID,
+    p_warning_days  INTEGER DEFAULT 7,
+    p_urgent_days   INTEGER DEFAULT 3,
+    p_email_enabled BOOLEAN DEFAULT TRUE,
+    p_sms_enabled   BOOLEAN DEFAULT FALSE
+) RETURNS UUID AS $$
+DECLARE
+    v_config_id UUID;
+BEGIN
+    INSERT INTO pos_schema.sale_collection_alert_config(
+        tenant_id,
+        warning_days_before_due,
+        urgent_days_before_due,
+        email_notifications_enabled,
+        sms_notifications_enabled
+    ) VALUES (
+        p_tenant_id,
+        p_warning_days,
+        p_urgent_days,
+        p_email_enabled,
+        p_sms_enabled
+    )
+    ON CONFLICT (tenant_id) DO UPDATE
+    SET warning_days_before_due     = EXCLUDED.warning_days_before_due,
+        urgent_days_before_due      = EXCLUDED.urgent_days_before_due,
+        email_notifications_enabled = EXCLUDED.email_notifications_enabled,
+        sms_notifications_enabled   = EXCLUDED.sms_notifications_enabled,
+        updated_at                  = CURRENT_TIMESTAMP
+    RETURNING collection_alert_config_id INTO v_config_id;
+
+    RETURN v_config_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION get_collection_alert_stats(p_tenant_id UUID)
+RETURNS TABLE(
+    total_alerts        INTEGER,
+    overdue_count       INTEGER,
+    urgent_count        INTEGER,
+    warning_count       INTEGER,
+    total_amount_at_risk NUMERIC
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::INTEGER AS total_alerts,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 3)::INTEGER AS overdue_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 2)::INTEGER AS urgent_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 1)::INTEGER AS warning_count,
+        COALESCE(SUM(ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid), 0) AS total_amount_at_risk
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error calculating collection alert stats: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS update_sale_account_receivable_timestamp ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER update_sale_account_receivable_timestamp
+BEFORE UPDATE ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_timestamp ON pos_schema.sale_collection;
+
+CREATE TRIGGER update_sale_collection_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_timestamp ON pos_schema.sale_collection_alert;
+
+CREATE TRIGGER update_sale_collection_alert_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_config_timestamp ON pos_schema.sale_collection_alert_config;
+
+CREATE TRIGGER update_sale_collection_alert_config_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert_config
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_account_receivable_timestamp ON general_schema.account_receivable;
+
+CREATE TRIGGER update_account_receivable_timestamp
+BEFORE UPDATE ON general_schema.account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
 
 
 
@@ -4362,11 +4970,11 @@ $$;
 -- FUNCTIONS: PURCHASE
 -- Source: functions/purchase/purchase_functions.sql
 -- =============================================
+
 SET SEARCH_PATH = purchase_schema;
 
-CREATE OR REPLACE FUNCTION calculate_purchase_order_total(
-    p_purchase_order_id uuid
-) returns numeric as $$
+
+CREATE OR REPLACE FUNCTION calculate_purchase_order_total(p_purchase_order_id uuid) returns numeric as $$
 declare
     v_total numeric(12,3);
 BEGIN
@@ -4379,14 +4987,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION create_purchase_order(
-    p_supplier_id uuid,
-    p_warehouse_id uuid,
-    p_expected_delivery_date date,
-    p_items jsonb default '[]'::jsonb,
-    p_has_invoice BOOLEAN default true,
-    p_payment_condition VARCHAR(10) default 'CREDIT'
-) returns uuid as $$
+
+CREATE OR REPLACE FUNCTION create_purchase_order(p_supplier_id uuid, p_warehouse_id uuid, p_expected_delivery_date date, p_items jsonb default '[]'::jsonb, p_has_invoice BOOLEAN default true, p_payment_condition VARCHAR(10) default 'CREDIT') returns uuid as $$
 declare
     v_purchase_order_id uuid;
     v_supplier_invoice_id uuid;
@@ -4403,10 +5005,8 @@ declare
     v_due_date date;
 BEGIN
     -- Obtener tenant_id desde la relación supplier -> supplier_branch -> branch
-    select b.tenant_id into v_tenant_id
+    select s.added_by into v_tenant_id
     from purchase_schema.supplier s
-    join purchase_schema.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general_schema.branch b on b.branch_id = sb.branch_id
     where s.supplier_id = p_supplier_id
     limit 1;
 
@@ -4454,13 +5054,13 @@ BEGIN
         -- Para cada product_variant que se está comprando y que no tiene supplier_id,
         -- asignar el supplier_id de esta orden de compra
         UPDATE general_schema.product_variant
-        SET 
+        SET
             supplier_id = p_supplier_id,
             updated_at = CURRENT_TIMESTAMP
-        WHERE 
+        WHERE
             tenant_id = v_tenant_id
             AND product_variant_id IN (
-                SELECT (value ->> 'product_variant_id')::uuid 
+                SELECT (value ->> 'product_variant_id')::uuid
                 FROM jsonb_array_elements(p_items)
             )
             AND supplier_id IS NULL;
@@ -4469,10 +5069,10 @@ BEGIN
         -- Para cada producto compuesto que recibió supplier_id, asignar el mismo supplier_id
         -- a todos sus componentes que no tengan proveedor asignado
         UPDATE general_schema.product_variant child
-        SET 
+        SET
             supplier_id = p_supplier_id,
             updated_at = CURRENT_TIMESTAMP
-        WHERE 
+        WHERE
             child.tenant_id = v_tenant_id
             AND child.supplier_id IS NULL
             AND child.product_variant_id IN (
@@ -4480,7 +5080,7 @@ BEGIN
                 FROM general_schema.product_variant_composition pvc
                 WHERE pvc.tenant_id = v_tenant_id
                   AND pvc.parent_product_variant_id IN (
-                      SELECT (value ->> 'product_variant_id')::uuid 
+                      SELECT (value ->> 'product_variant_id')::uuid
                       FROM jsonb_array_elements(p_items)
                   )
             );
@@ -4572,7 +5172,7 @@ BEGIN
             quantity_billed,
             unit_price
         )
-        select 
+        select
             v_supplier_invoice_id,
             tenant_id,
             product_variant_id,
@@ -4586,8 +5186,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION update_order_status()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION update_order_status() returns trigger as $$
 BEGIN
     INSERT INTO purchase_schema.purchase_order_tracking(
         purchase_order_id,
@@ -4607,16 +5207,19 @@ BEGIN
 end;
 $$ language plpgsql;
 
+
 drop trigger if exists on_order_status_update on purchase_schema.purchase_order;
-create trigger on_order_status_update
-after update of purchase_order_status_id on purchase_schema.purchase_order
+
+
+create trigger on_order_status_update after
+update of purchase_order_status_id on purchase_schema.purchase_order
 for each row execute function update_order_status();
+
 
 DROP FUNCTION IF EXISTS check_account_payable_completion(UUID);
 
-CREATE OR REPLACE FUNCTION check_account_payable_completion(
-    _account_payable_id UUID
-) RETURNS BOOLEAN AS $$
+
+CREATE OR REPLACE FUNCTION check_account_payable_completion(_account_payable_id UUID) RETURNS BOOLEAN AS $$
 DECLARE
     _subtotal NUMERIC(12,3);
     _tax_amount NUMERIC(12,3);
@@ -4626,20 +5229,20 @@ DECLARE
     _balance NUMERIC(12,3);
     _target_purchase_ap_id UUID;
 BEGIN
-    SELECT 
+    SELECT
         ap.subtotal,
         sap.tax_amount,
         (ap.subtotal + COALESCE(sap.tax_amount, 0)) AS amount_due,
         ap.amount_paid,
         sap.purchase_account_payable_id
-    INTO 
+    INTO
         _subtotal,
         _tax_amount,
         _amount_due,
         _current_amount_paid,
         _target_purchase_ap_id
     FROM general_schema.account_payable ap
-    JOIN purchase_schema.purchase_account_payable sap 
+    JOIN purchase_schema.purchase_account_payable sap
         ON ap.account_payable_id = sap.account_payable_id
     WHERE ap.account_payable_id = _account_payable_id;
 
@@ -4685,26 +5288,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION recalc_account_payable_on_payment()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION recalc_account_payable_on_payment() returns trigger as $$
 BEGIN
     perform purchase_schema.check_account_payable_completion(
-        (select account_payable_id 
-         from purchase_schema.purchase_account_payable 
+        (select account_payable_id
+         from purchase_schema.purchase_account_payable
          where purchase_account_payable_id = new.purchase_account_payable_id)
     );
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists recalc_account_payable_on_payment_trigger on purchase_schema.purchase_order_payment;
-create trigger recalc_account_payable_on_payment_trigger
-    after insert or update of amount_paid on purchase_schema.purchase_order_payment
-    for each row
-    execute function recalc_account_payable_on_payment();
 
-CREATE OR REPLACE FUNCTION update_invoice_paid_status()
-returns trigger as $$
+drop trigger if exists recalc_account_payable_on_payment_trigger on purchase_schema.purchase_order_payment;
+
+
+create trigger recalc_account_payable_on_payment_trigger after
+insert
+or
+update of amount_paid on purchase_schema.purchase_order_payment
+for each row execute function recalc_account_payable_on_payment();
+
+
+CREATE OR REPLACE FUNCTION update_invoice_paid_status() returns trigger as $$
 declare
     v_is_paid BOOLEAN;
 BEGIN
@@ -4712,7 +5319,7 @@ BEGIN
         select is_paid into v_is_paid
         from general_schema.account_payable
         where account_payable_id = new.account_payable_id;
-        
+
         if v_is_paid = true then
             update purchase_schema.supplier_invoice
             set paid = true,
@@ -4720,25 +5327,21 @@ BEGIN
             where purchase_order_id = new.purchase_order_id;
         end if;
     end if;
-    
+
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists update_invoice_paid_status_trigger on purchase_schema.purchase_account_payable;
-create trigger update_invoice_paid_status_trigger
-    after update of account_payable_status on purchase_schema.purchase_account_payable
-    for each row
-    execute function purchase_schema.update_invoice_paid_status();
 
-CREATE OR REPLACE FUNCTION purchase_schema.upsert_inventory_stock(
-    p_tenant_id UUID,
-    p_product_variant_id UUID,
-    p_warehouse_id UUID,
-    p_quantity INTEGER,
-    p_log_in_type_id INTEGER
-) RETURNS VOID
-LANGUAGE plpgsql AS $$
+drop trigger if exists update_invoice_paid_status_trigger on purchase_schema.purchase_account_payable;
+
+
+create trigger update_invoice_paid_status_trigger after
+update of account_payable_status on purchase_schema.purchase_account_payable
+for each row execute function purchase_schema.update_invoice_paid_status();
+
+
+CREATE OR REPLACE FUNCTION purchase_schema.upsert_inventory_stock(p_tenant_id UUID, p_product_variant_id UUID, p_warehouse_id UUID, p_quantity INTEGER, p_log_in_type_id INTEGER) RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     v_existing_id UUID;
 BEGIN
@@ -4778,10 +5381,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(
-    p_purchase_order_id UUID
-) RETURNS VOID
-LANGUAGE plpgsql AS $$
+
+CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(p_purchase_order_id UUID) RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     v_warehouse_id UUID;
     v_log_in_type_id INTEGER;
@@ -4789,6 +5390,7 @@ DECLARE
     v_component RECORD;
     v_is_composite BOOLEAN;
     v_total_qty INTEGER;
+    v_target_is_branch BOOLEAN;
 BEGIN
     SELECT po.warehouse_id INTO v_warehouse_id
     FROM purchase_schema.purchase_order po
@@ -4797,6 +5399,14 @@ BEGIN
     IF v_warehouse_id IS NULL THEN
         RAISE EXCEPTION 'apply_inventory_on_delivery: warehouse not found for PO %', p_purchase_order_id;
     END IF;
+
+    -- Determine if the target warehouse is a branch (sales floor).
+    -- Composite products (lotes) are only expanded into their components
+    -- when delivered to a branch warehouse. A regular warehouse (bodega)
+    -- receives the lot as a single intact unit.
+    SELECT w.is_branch INTO v_target_is_branch
+    FROM inventory_schema.warehouse w
+    WHERE w.warehouse_id = v_warehouse_id;
 
     SELECT inventory_log_type_id INTO v_log_in_type_id
     FROM inventory_schema.inventory_log_type
@@ -4813,7 +5423,10 @@ BEGIN
         WHERE pv.tenant_id = v_item.tenant_id
           AND pv.product_variant_id = v_item.product_variant_id;
 
-        IF v_is_composite IS TRUE THEN
+        -- Only disaggregate (expand) the lot if the product is composite
+        -- AND the destination warehouse is a branch (is_branch = true).
+        -- Non-branch warehouses (bodegas) store the lot as a whole unit.
+        IF v_is_composite IS TRUE AND v_target_is_branch IS TRUE THEN
             FOR v_component IN
                 SELECT pvc.child_product_variant_id, pvc.quantity AS component_qty
                 FROM general_schema.product_variant_composition pvc
@@ -4831,6 +5444,7 @@ BEGIN
                 );
             END LOOP;
         ELSE
+            -- Non-branch warehouse OR non-composite product: insert as-is.
             PERFORM purchase_schema.upsert_inventory_stock(
                 v_item.tenant_id,
                 v_item.product_variant_id,
@@ -4843,8 +5457,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION create_goods_receipt()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION create_goods_receipt() returns trigger as $$
 declare
     v_goods_receipt_id uuid;
     v_subtotal numeric(12,3);
@@ -4909,16 +5523,16 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists create_goods_receipt_trigger on purchase_schema.purchase_order;
-create trigger create_goods_receipt_trigger
-    after update of purchase_order_status_id on purchase_schema.purchase_order
-    for each row
-    execute function purchase_schema.create_goods_receipt();
 
-CREATE OR REPLACE FUNCTION execute_three_way_matching(
-    p_purchase_order_id uuid,
-    p_goods_receipt_id uuid
-) returns void as $$
+drop trigger if exists create_goods_receipt_trigger on purchase_schema.purchase_order;
+
+
+create trigger create_goods_receipt_trigger after
+update of purchase_order_status_id on purchase_schema.purchase_order
+for each row execute function purchase_schema.create_goods_receipt();
+
+
+CREATE OR REPLACE FUNCTION execute_three_way_matching(p_purchase_order_id uuid, p_goods_receipt_id uuid) returns void as $$
 declare
     v_supplier_invoice_id uuid;
     v_order_subtotal numeric(12,3);
@@ -4945,42 +5559,42 @@ BEGIN
     end if;
 
     if exists(
-        select 1 
-        from purchase_schema.three_way_matching 
+        select 1
+        from purchase_schema.three_way_matching
         where purchase_order_id = p_purchase_order_id
     ) then
         return;
     end if;
 
-    select 
+    select
         ap.subtotal,
         sap.tax_amount,
         (ap.subtotal + sap.tax_amount) AS total_amount
-    into 
+    into
         v_order_subtotal,
         v_order_tax,
         v_order_total
     from general_schema.account_payable ap
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on ap.account_payable_id = sap.account_payable_id
     where sap.purchase_order_id = p_purchase_order_id;
 
-    select 
+    select
         subtotal_amount,
         tax_amount,
         total_amount
-    into 
+    into
         v_invoice_subtotal,
         v_invoice_tax,
         v_invoice_total
     from purchase_schema.supplier_invoice
     where supplier_invoice_id = v_supplier_invoice_id;
 
-    select 
+    select
         subtotal_amount,
         tax_amount,
         total_amount
-    into 
+    into
         v_receipt_subtotal,
         v_receipt_tax,
         v_receipt_total
@@ -4999,7 +5613,7 @@ BEGIN
     from purchase_schema.goods_receipt_item
     where goods_receipt_id = p_goods_receipt_id;
 
-    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and 
+    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and
                          (abs(v_order_subtotal - v_receipt_subtotal) <= 0.01) and
                          (abs(v_invoice_subtotal - v_receipt_subtotal) <= 0.01) and
                          (abs(v_order_tax - v_invoice_tax) <= 0.01) and
@@ -5008,8 +5622,8 @@ BEGIN
                          (abs(v_order_total - v_invoice_total) <= 0.01) and
                          (abs(v_order_total - v_receipt_total) <= 0.01) and
                          (abs(v_invoice_total - v_receipt_total) <= 0.01);
-    
-    v_quantities_matched := (v_order_qty = v_invoice_qty) and 
+
+    v_quantities_matched := (v_order_qty = v_invoice_qty) and
                             (v_order_qty = v_receipt_qty);
 
     INSERT INTO purchase_schema.three_way_matching(
@@ -5029,15 +5643,15 @@ BEGIN
         v_amounts_matched and v_quantities_matched,
         current_timestamp
     );
-    
+
 exception
     when others then
         raise exception 'Error executing three-way matching: %', sqlerrm;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION generate_payment_alerts()
-returns void as $$
+
+CREATE OR REPLACE FUNCTION generate_payment_alerts() returns void as $$
 declare
     v_config record;
     v_account record;
@@ -5045,15 +5659,15 @@ declare
     v_alert_type_id INTEGER;
     v_existing_alert_id uuid;
 BEGIN
-    for v_config in 
-        select 
+    for v_config in
+        select
             pac.tenant_id,
             pac.warning_days_before_due,
             pac.urgent_days_before_due
         from purchase_schema.purchase_order_payment_alert_config pac
     loop
         for v_account in
-            select 
+            select
                 ap.account_payable_id,
                 ap.due_date,
                 ap.is_paid,
@@ -5064,40 +5678,40 @@ BEGIN
                 (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) as balance_remaining,
                 so.purchase_order_id
             from general_schema.account_payable ap
-            join purchase_schema.purchase_account_payable sap 
+            join purchase_schema.purchase_account_payable sap
                 on ap.account_payable_id = sap.account_payable_id
-            join purchase_schema.purchase_order so 
+            join purchase_schema.purchase_order so
                 on sap.purchase_order_id = so.purchase_order_id
-            join purchase_schema.supplier s 
+            join purchase_schema.supplier s
                 on so.supplier_id = s.supplier_id
-            join purchase_schema.supplier_branch sb 
+            join purchase_schema.supplier_branch sb
                 on s.supplier_id = sb.supplier_id
-            join general_schema.branch b 
+            join general_schema.branch b
                 on sb.branch_id = b.branch_id
             where b.tenant_id = v_config.tenant_id
             and ap.is_paid = false
             and (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) > 0
         loop
             v_days_until_due := v_account.due_date - current_date;
-            
-  
+
+
             if v_days_until_due < 0 then
-                v_alert_type_id := 3; 
+                v_alert_type_id := 3;
             elsif v_days_until_due <= v_config.urgent_days_before_due then
-                v_alert_type_id := 2; 
+                v_alert_type_id := 2;
             elsif v_days_until_due <= v_config.warning_days_before_due then
-                v_alert_type_id := 1; 
+                v_alert_type_id := 1;
             else
-                continue; 
+                continue;
             end if;
-            
+
             select payment_alert_id into v_existing_alert_id
             from purchase_schema.purchase_order_payment_alert
             where purchase_account_payable_id = v_account.purchase_account_payable_id
             and payment_alert_type_id = v_alert_type_id
             and is_resolved = false
             limit 1;
-            
+
             if v_existing_alert_id is null then
                 INSERT INTO purchase_schema.purchase_order_payment_alert(
                     purchase_account_payable_id,
@@ -5113,33 +5727,21 @@ BEGIN
             end if;
         end loop;
     end loop;
-    
+
 exception
     when others then
         raise exception 'Error generating payment alerts: %', sqlerrm;
 end;
 $$ language plpgsql;
 
+
 drop function if exists get_pending_payment_alerts(uuid);
 
-CREATE OR REPLACE FUNCTION get_pending_payment_alerts(p_tenant_id uuid)
-returns table(
-    payment_alert_id uuid,
-    purchase_account_payable_id uuid,
-    purchase_order_id uuid,
-    supplier_name VARCHAR,
-    invoice_number VARCHAR,
-    alert_type VARCHAR,
-    alert_type_description text,
-    due_date date,
-    days_until_due INTEGER,
-    balance_remaining numeric,
-    alert_date timestamp,
-    created_at timestamp
-) as $$
+
+CREATE OR REPLACE FUNCTION get_pending_payment_alerts(p_tenant_id uuid) returns table(payment_alert_id uuid, purchase_account_payable_id uuid, purchase_order_id uuid, supplier_name VARCHAR, invoice_number VARCHAR, alert_type VARCHAR, alert_type_description text, due_date date, days_until_due INTEGER, balance_remaining numeric, alert_date timestamp, created_at timestamp) as $$
 BEGIN
     return query
-    select 
+    select
         spa.payment_alert_id,
         sap.purchase_account_payable_id,
         so.purchase_order_id,
@@ -5153,34 +5755,34 @@ BEGIN
         spa.alert_date,
         spa.created_at
     from purchase_schema.purchase_order_payment_alert spa
-    join purchase_schema.purchase_order_payment_alert_type spat 
+    join purchase_schema.purchase_order_payment_alert_type spat
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on spa.purchase_account_payable_id = sap.purchase_account_payable_id
-    join general_schema.account_payable ap 
+    join general_schema.account_payable ap
         on sap.account_payable_id = ap.account_payable_id
-    join purchase_schema.purchase_order so 
+    join purchase_schema.purchase_order so
         on sap.purchase_order_id = so.purchase_order_id
-    join purchase_schema.supplier s 
+    join purchase_schema.supplier s
         on so.supplier_id = s.supplier_id
-    left join purchase_schema.supplier_invoice si 
+    left join purchase_schema.supplier_invoice si
         on so.purchase_order_id = si.purchase_order_id
-    join purchase_schema.supplier_branch sb 
+    join purchase_schema.supplier_branch sb
         on s.supplier_id = sb.supplier_id
-    join general_schema.branch b 
+    join general_schema.branch b
         on sb.branch_id = b.branch_id
     where b.tenant_id = p_tenant_id
     and spa.is_resolved = false
     order by ap.due_date asc, spa.alert_date desc;
-    
+
 exception
     when others then
         raise exception 'Error fetching pending payment alerts: %', sqlerrm;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION resolve_payment_alert(p_alert_id uuid)
-returns void as $$
+
+CREATE OR REPLACE FUNCTION resolve_payment_alert(p_alert_id uuid) returns void as $$
 BEGIN
     update purchase_schema.purchase_order_payment_alert
     set is_resolved = true,
@@ -5189,8 +5791,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts() returns trigger as $$
 declare
     v_is_paid BOOLEAN;
 BEGIN
@@ -5198,7 +5800,7 @@ BEGIN
         select is_paid into v_is_paid
         from general_schema.account_payable
         where account_payable_id = new.account_payable_id;
-        
+
         if v_is_paid = true then
             update purchase_schema.purchase_order_payment_alert
             set is_resolved = true,
@@ -5207,24 +5809,21 @@ BEGIN
             and is_resolved = false;
         end if;
     end if;
-    
+
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists auto_resolve_payment_alerts_trigger on purchase_schema.purchase_account_payable;
-create trigger auto_resolve_payment_alerts_trigger
-    after update of account_payable_status on purchase_schema.purchase_account_payable
-    for each row
-    execute function purchase_schema.auto_resolve_payment_alerts();
 
-CREATE OR REPLACE FUNCTION initialize_payment_alert_config(
-    p_tenant_id uuid,
-    p_warning_days INTEGER default 7,
-    p_urgent_days INTEGER default 3,
-    p_email_enabled BOOLEAN default true,
-    p_sms_enabled BOOLEAN default false
-) returns uuid as $$
+drop trigger if exists auto_resolve_payment_alerts_trigger on purchase_schema.purchase_account_payable;
+
+
+create trigger auto_resolve_payment_alerts_trigger after
+update of account_payable_status on purchase_schema.purchase_account_payable
+for each row execute function purchase_schema.auto_resolve_payment_alerts();
+
+
+CREATE OR REPLACE FUNCTION initialize_payment_alert_config(p_tenant_id uuid, p_warning_days INTEGER default 7, p_urgent_days INTEGER default 3, p_email_enabled BOOLEAN default true, p_sms_enabled BOOLEAN default false) returns uuid as $$
 declare
     v_config_id uuid;
 BEGIN
@@ -5248,45 +5847,39 @@ BEGIN
         sms_notifications_enabled = excluded.sms_notifications_enabled,
         updated_at = current_timestamp
     returning payment_alert_config_id into v_config_id;
-    
+
     return v_config_id;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid)
-returns table(
-    total_alerts INTEGER,
-    overdue_count INTEGER,
-    urgent_count INTEGER,
-    warning_count INTEGER,
-    total_amount_at_risk numeric
-) as $$
+
+CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid) returns table(total_alerts INTEGER, overdue_count INTEGER, urgent_count INTEGER, warning_count INTEGER, total_amount_at_risk numeric) as $$
 BEGIN
     return query
-    select 
+    select
         count(*)::INTEGER as total_alerts,
         count(*) filter (where spat.payment_alert_type_id = 3)::INTEGER as overdue_count,
         count(*) filter (where spat.payment_alert_type_id = 2)::INTEGER as urgent_count,
         count(*) filter (where spat.payment_alert_type_id = 1)::INTEGER as warning_count,
         coalesce(sum(ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid), 0) as total_amount_at_risk
     from purchase_schema.purchase_order_payment_alert spa
-    join purchase_schema.purchase_order_payment_alert_type spat 
+    join purchase_schema.purchase_order_payment_alert_type spat
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on spa.purchase_account_payable_id = sap.purchase_account_payable_id
-    join general_schema.account_payable ap 
+    join general_schema.account_payable ap
         on sap.account_payable_id = ap.account_payable_id
-    join purchase_schema.purchase_order so 
+    join purchase_schema.purchase_order so
         on sap.purchase_order_id = so.purchase_order_id
-    join purchase_schema.supplier s 
+    join purchase_schema.supplier s
         on so.supplier_id = s.supplier_id
-    join purchase_schema.supplier_branch sb 
+    join purchase_schema.supplier_branch sb
         on s.supplier_id = sb.supplier_id
-    join general_schema.branch b 
+    join general_schema.branch b
         on sb.branch_id = b.branch_id
     where b.tenant_id = p_tenant_id
     and spa.is_resolved = false;
-    
+
 EXCEPTION
     WHEN OTHERS THEN
         RAISE EXCEPTION 'Error calculating payment alert stats: %', SQLERRM;
@@ -5295,51 +5888,110 @@ $$ LANGUAGE plpgsql;
 
 
 drop trigger if exists update_supplier_timestamp on purchase_schema.supplier;
-create trigger update_supplier_timestamp before update on purchase_schema.supplier
+
+
+create trigger update_supplier_timestamp
+before
+update on purchase_schema.supplier
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_timestamp on purchase_schema.purchase_order;
-create trigger update_purchase_order_timestamp before update on purchase_schema.purchase_order
+
+
+create trigger update_purchase_order_timestamp
+before
+update on purchase_schema.purchase_order
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_item_timestamp on purchase_schema.purchase_order_item;
-create trigger update_purchase_order_item_timestamp before update on purchase_schema.purchase_order_item
+
+
+create trigger update_purchase_order_item_timestamp
+before
+update on purchase_schema.purchase_order_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_supplier_invoice_timestamp on purchase_schema.supplier_invoice;
-create trigger update_supplier_invoice_timestamp before update on purchase_schema.supplier_invoice
+
+
+create trigger update_supplier_invoice_timestamp
+before
+update on purchase_schema.supplier_invoice
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_supplier_invoice_item_timestamp on purchase_schema.supplier_invoice_item;
-create trigger update_supplier_invoice_item_timestamp before update on purchase_schema.supplier_invoice_item
+
+
+create trigger update_supplier_invoice_item_timestamp
+before
+update on purchase_schema.supplier_invoice_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_goods_receipt_timestamp on purchase_schema.goods_receipt;
-create trigger update_goods_receipt_timestamp before update on purchase_schema.goods_receipt
+
+
+create trigger update_goods_receipt_timestamp
+before
+update on purchase_schema.goods_receipt
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_goods_receipt_item_timestamp on purchase_schema.goods_receipt_item;
-create trigger update_goods_receipt_item_timestamp before update on purchase_schema.goods_receipt_item
+
+
+create trigger update_goods_receipt_item_timestamp
+before
+update on purchase_schema.goods_receipt_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_account_payable_timestamp on purchase_schema.purchase_account_payable;
-create trigger update_account_payable_timestamp before update on purchase_schema.purchase_account_payable
+
+
+create trigger update_account_payable_timestamp
+before
+update on purchase_schema.purchase_account_payable
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_timestamp on purchase_schema.purchase_order_payment;
-create trigger update_purchase_order_payment_timestamp before update on purchase_schema.purchase_order_payment
+
+
+create trigger update_purchase_order_payment_timestamp
+before
+update on purchase_schema.purchase_order_payment
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_alert_timestamp on purchase_schema.purchase_order_payment_alert;
-create trigger update_purchase_order_payment_alert_timestamp before update on purchase_schema.purchase_order_payment_alert
+
+
+create trigger update_purchase_order_payment_alert_timestamp
+before
+update on purchase_schema.purchase_order_payment_alert
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_alert_config_timestamp on purchase_schema.purchase_order_payment_alert_config;
-create trigger update_purchase_order_payment_alert_config_timestamp before update on purchase_schema.purchase_order_payment_alert_config
+
+
+create trigger update_purchase_order_payment_alert_config_timestamp
+before
+update on purchase_schema.purchase_order_payment_alert_config
 for each row execute function general_schema.update_timestamp();
 
+
 drop trigger if exists update_three_way_matching_timestamp on purchase_schema.three_way_matching;
-create trigger update_three_way_matching_timestamp before update on purchase_schema.three_way_matching
+
+
+create trigger update_three_way_matching_timestamp
+before
+update on purchase_schema.three_way_matching
 for each row execute function general_schema.update_timestamp();
 
 
@@ -5367,7 +6019,8 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
     p_email CHARACTER VARYING,
     p_payment_schedule_id INTEGER,
     p_branch_id UUID,
-    p_identification_type_id INTEGER DEFAULT 1
+    p_identification_type_id INTEGER DEFAULT 1,
+    p_duties_type_id INTEGER DEFAULT NULL
   )
  RETURNS UUID
  LANGUAGE plpgsql
@@ -5382,8 +6035,8 @@ BEGIN
     RAISE EXCEPTION 'Integrity error: payment_schedule_id (payment_schedule_id: %) doesnt exists', p_payment_schedule_id;
   END IF;
 
-  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id)
-  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties, p_turn_type, p_turn_id)
+  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id, duties_type_id)
+  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties, p_turn_type, p_turn_id, p_duties_type_id)
   RETURNING contract_id INTO v_new_contract_id;
 
   v_new_employee_id := gen_random_uuid();
@@ -5414,7 +6067,7 @@ EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
   WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id, payment_schedule_id, or identification_type_id).';
+    RAISE EXCEPTION 'Integrity Error: Insert failed due to a non-existent FOREIGN KEY (payment_schedule_id, identification_type_id, or duties_type_id).';
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;
@@ -6603,6 +7256,30 @@ COMMIT;
 
 
 -- =============================================
+-- SEED: ACCOUNT RECEIVABLE STATUS
+-- Source: seeds/catalog/general/013-insert-account-receivable-status.sql
+-- =============================================
+INSERT INTO general_schema.account_receivable_status (status_name, description) VALUES
+    ('Pending',      'Payment is pending'),
+    ('Partial Paid', 'Partial payment has been received'),
+    ('Paid',         'Payment has been received in full'),
+    ('Overdue',      'Payment is overdue')
+ON CONFLICT DO NOTHING;
+
+
+
+-- =============================================
+-- SEED: ACCOUNT RECEIVABLE TYPES
+-- Source: seeds/catalog/general/014-insert-account-receivable-types.sql
+-- =============================================
+INSERT INTO general_schema.account_receivable_type (type_name, description) VALUES
+    ('venta_credito', 'Venta a crédito a cliente registrado'),
+    ('venta_apartado', 'Venta con apartado — inventario reservado hasta liquidar saldo')
+ON CONFLICT (type_name) DO NOTHING;
+
+
+
+-- =============================================
 -- SEED: RETURN REASONS
 -- Source: seeds/catalog/pos/001-insert-return-reason.sql
 -- =============================================
@@ -6711,13 +7388,27 @@ ON CONFLICT DO NOTHING;
 --   1 = pendiente  → recién generada, aún no enviada o sin respuesta de Hacienda
 --   2 = aceptada   → Hacienda confirmó la factura
 --   3 = rechazada  → Hacienda rechazó la factura
+--   4 = timeout    → agotó los reintentos del cron sin resolución
 
 INSERT INTO pos_schema.invoice_status (status_id, description)
 VALUES
   (1, 'pendiente'),
   (2, 'aceptada'),
-  (3, 'rechazada')
+  (3, 'rechazada'),
+  (4, 'timeout')
 ON CONFLICT (status_id) DO NOTHING;
+
+
+
+-- =============================================
+-- SEED: COLLECTION ALERT TYPES
+-- Source: seeds/catalog/pos/008-insert-collection-alert-types.sql
+-- =============================================
+INSERT INTO pos_schema.sale_collection_alert_type (collection_alert_type_name, description) VALUES
+    ('Upcoming Due Date', 'Alert for upcoming collection due date'),
+    ('Urgent Collection', 'Alert for urgent collections near due date'),
+    ('Overdue Collection', 'Alert for overdue collections past due date')
+ON CONFLICT DO NOTHING;
 
 
 
@@ -7077,6 +7768,8 @@ BEGIN
             'general_schema.tax_rate',
             'general_schema.account_payable_status',
             'general_schema.account_payable_type',
+            'general_schema.account_receivable_status',
+            'general_schema.account_receivable_type',
             'general_schema.territorio_catalog',
             'pos_schema.return_reason',
             'pos_schema.return_status',
@@ -7085,6 +7778,7 @@ BEGIN
             'pos_schema.score_transaction_type',
             'pos_schema.sale_condition',
             'pos_schema.invoice_status',
+            'pos_schema.sale_collection_alert_type',
             'inventory_schema.inventory_log_type',
             'purchase_schema.purchase_order_status',
             'purchase_schema.purchase_order_payment_alert_type',

@@ -1582,3 +1582,354 @@ END;
 $$;
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- CxC (Cuentas por Cobrar) — Collection subsystem functions
+-- Mirror of the AP alert functions in functions/purchase/purchase_functions.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS check_account_receivable_completion(UUID);
+
+CREATE OR REPLACE FUNCTION check_account_receivable_completion(_account_receivable_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+    _subtotal       NUMERIC(12,3);
+    _tax_amount     NUMERIC(12,3);
+    _amount_due     NUMERIC(12,3);
+    _payments_total NUMERIC(12,3);
+    _balance        NUMERIC(12,3);
+    _target_sar_id  UUID;
+BEGIN
+    SELECT
+        ar.subtotal,
+        sar.tax_amount,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0)) AS amount_due,
+        sar.sale_account_receivable_id
+    INTO
+        _subtotal,
+        _tax_amount,
+        _amount_due,
+        _target_sar_id
+    FROM general_schema.account_receivable ar
+    JOIN pos_schema.sale_account_receivable sar
+        ON ar.account_receivable_id = sar.account_receivable_id
+    WHERE ar.account_receivable_id = _account_receivable_id;
+
+    IF _amount_due IS NULL THEN
+        RAISE EXCEPTION 'Account receivable not found: %', _account_receivable_id;
+    END IF;
+
+    SELECT COALESCE(SUM(sc.amount_paid), 0) INTO _payments_total
+    FROM pos_schema.sale_collection sc
+    WHERE sc.sale_account_receivable_id = _target_sar_id;
+
+    _balance := _amount_due - _payments_total;
+
+    UPDATE general_schema.account_receivable
+    SET amount_paid = _payments_total,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE account_receivable_id = _account_receivable_id;
+
+    IF ABS(_balance) <= 0.01 OR _payments_total >= _amount_due THEN
+        UPDATE general_schema.account_receivable
+        SET is_paid    = TRUE,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 3,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN TRUE;
+
+    ELSIF _payments_total > 0 THEN
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 2,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN FALSE;
+
+    ELSE
+        RETURN FALSE;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION recalc_account_receivable_on_collection() RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pos_schema.check_account_receivable_completion(
+        (SELECT ar.account_receivable_id
+         FROM general_schema.account_receivable ar
+         JOIN pos_schema.sale_account_receivable sar
+             ON ar.account_receivable_id = sar.account_receivable_id
+         WHERE sar.sale_account_receivable_id = NEW.sale_account_receivable_id)
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS recalc_account_receivable_on_collection_trigger ON pos_schema.sale_collection;
+
+CREATE TRIGGER recalc_account_receivable_on_collection_trigger
+AFTER INSERT OR UPDATE OF amount_paid ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION pos_schema.recalc_account_receivable_on_collection();
+
+
+CREATE OR REPLACE FUNCTION auto_resolve_collection_alerts() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.account_receivable_status = 3 AND OLD.account_receivable_status IS DISTINCT FROM 3 THEN
+        UPDATE pos_schema.sale_collection_alert
+        SET is_resolved = TRUE,
+            updated_at  = CURRENT_TIMESTAMP
+        WHERE sale_account_receivable_id = NEW.sale_account_receivable_id
+          AND is_resolved = FALSE;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS auto_resolve_collection_alerts_trigger ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER auto_resolve_collection_alerts_trigger
+AFTER UPDATE OF account_receivable_status ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION pos_schema.auto_resolve_collection_alerts();
+
+
+CREATE OR REPLACE FUNCTION generate_collection_alerts() RETURNS VOID AS $$
+DECLARE
+    v_config        RECORD;
+    v_account       RECORD;
+    v_days_until_due INTEGER;
+    v_alert_type_id INTEGER;
+    v_existing_id   UUID;
+BEGIN
+    FOR v_config IN
+        SELECT tenant_id, warning_days_before_due, urgent_days_before_due
+        FROM pos_schema.sale_collection_alert_config
+    LOOP
+        FOR v_account IN
+            SELECT
+                ar.account_receivable_id,
+                ar.due_date,
+                ar.is_paid,
+                ar.amount_paid,
+                ar.subtotal,
+                sar.sale_account_receivable_id,
+                sar.tax_amount,
+                (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining
+            FROM general_schema.account_receivable ar
+            JOIN pos_schema.sale_account_receivable sar
+                ON ar.account_receivable_id = sar.account_receivable_id
+            WHERE ar.tenant_id = v_config.tenant_id
+              AND ar.is_paid = FALSE
+              AND (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) > 0
+        LOOP
+            v_days_until_due := v_account.due_date - CURRENT_DATE;
+
+            IF v_days_until_due < 0 THEN
+                v_alert_type_id := 3;
+            ELSIF v_days_until_due <= v_config.urgent_days_before_due THEN
+                v_alert_type_id := 2;
+            ELSIF v_days_until_due <= v_config.warning_days_before_due THEN
+                v_alert_type_id := 1;
+            ELSE
+                CONTINUE;
+            END IF;
+
+            SELECT collection_alert_id INTO v_existing_id
+            FROM pos_schema.sale_collection_alert
+            WHERE sale_account_receivable_id = v_account.sale_account_receivable_id
+              AND collection_alert_type_id = v_alert_type_id
+              AND is_resolved = FALSE
+            LIMIT 1;
+
+            IF v_existing_id IS NULL THEN
+                INSERT INTO pos_schema.sale_collection_alert(
+                    sale_account_receivable_id,
+                    collection_alert_type_id,
+                    alert_date,
+                    is_resolved
+                ) VALUES (
+                    v_account.sale_account_receivable_id,
+                    v_alert_type_id,
+                    CURRENT_TIMESTAMP,
+                    FALSE
+                );
+            END IF;
+        END LOOP;
+    END LOOP;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error generating collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP FUNCTION IF EXISTS get_pending_collection_alerts(UUID);
+
+CREATE OR REPLACE FUNCTION get_pending_collection_alerts(p_tenant_id UUID)
+RETURNS TABLE(
+    collection_alert_id        UUID,
+    sale_account_receivable_id UUID,
+    sale_id                    UUID,
+    customer_name              VARCHAR,
+    alert_type                 VARCHAR,
+    alert_type_description     TEXT,
+    due_date                   DATE,
+    days_until_due             INTEGER,
+    balance_remaining          NUMERIC,
+    alert_date                 TIMESTAMP,
+    created_at                 TIMESTAMP
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sca.collection_alert_id,
+        sar.sale_account_receivable_id,
+        sar.sale_id,
+        (tc.first_name || ' ' || tc.last_name)::VARCHAR AS customer_name,
+        scat.collection_alert_type_name,
+        scat.description,
+        ar.due_date,
+        (ar.due_date - CURRENT_DATE)::INTEGER AS days_until_due,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining,
+        sca.alert_date,
+        sca.created_at
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    LEFT JOIN general_schema.tenant_customer tc
+        ON ar.tenant_customer_id = tc.tenant_customer_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE
+    ORDER BY ar.due_date ASC, sca.alert_date DESC;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error fetching pending collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION resolve_collection_alert(p_alert_id UUID) RETURNS VOID AS $$
+BEGIN
+    UPDATE pos_schema.sale_collection_alert
+    SET is_resolved = TRUE,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE collection_alert_id = p_alert_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION initialize_collection_alert_config(
+    p_tenant_id     UUID,
+    p_warning_days  INTEGER DEFAULT 7,
+    p_urgent_days   INTEGER DEFAULT 3,
+    p_email_enabled BOOLEAN DEFAULT TRUE,
+    p_sms_enabled   BOOLEAN DEFAULT FALSE
+) RETURNS UUID AS $$
+DECLARE
+    v_config_id UUID;
+BEGIN
+    INSERT INTO pos_schema.sale_collection_alert_config(
+        tenant_id,
+        warning_days_before_due,
+        urgent_days_before_due,
+        email_notifications_enabled,
+        sms_notifications_enabled
+    ) VALUES (
+        p_tenant_id,
+        p_warning_days,
+        p_urgent_days,
+        p_email_enabled,
+        p_sms_enabled
+    )
+    ON CONFLICT (tenant_id) DO UPDATE
+    SET warning_days_before_due     = EXCLUDED.warning_days_before_due,
+        urgent_days_before_due      = EXCLUDED.urgent_days_before_due,
+        email_notifications_enabled = EXCLUDED.email_notifications_enabled,
+        sms_notifications_enabled   = EXCLUDED.sms_notifications_enabled,
+        updated_at                  = CURRENT_TIMESTAMP
+    RETURNING collection_alert_config_id INTO v_config_id;
+
+    RETURN v_config_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION get_collection_alert_stats(p_tenant_id UUID)
+RETURNS TABLE(
+    total_alerts        INTEGER,
+    overdue_count       INTEGER,
+    urgent_count        INTEGER,
+    warning_count       INTEGER,
+    total_amount_at_risk NUMERIC
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::INTEGER AS total_alerts,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 3)::INTEGER AS overdue_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 2)::INTEGER AS urgent_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 1)::INTEGER AS warning_count,
+        COALESCE(SUM(ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid), 0) AS total_amount_at_risk
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error calculating collection alert stats: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS update_sale_account_receivable_timestamp ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER update_sale_account_receivable_timestamp
+BEFORE UPDATE ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_timestamp ON pos_schema.sale_collection;
+
+CREATE TRIGGER update_sale_collection_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_timestamp ON pos_schema.sale_collection_alert;
+
+CREATE TRIGGER update_sale_collection_alert_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_config_timestamp ON pos_schema.sale_collection_alert_config;
+
+CREATE TRIGGER update_sale_collection_alert_config_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert_config
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_account_receivable_timestamp ON general_schema.account_receivable;
+
+CREATE TRIGGER update_account_receivable_timestamp
+BEFORE UPDATE ON general_schema.account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+

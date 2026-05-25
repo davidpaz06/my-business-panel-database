@@ -1,3 +1,4 @@
 docker-compose.yml
 /output
 /schema_exec_order.md
+playground.sql
