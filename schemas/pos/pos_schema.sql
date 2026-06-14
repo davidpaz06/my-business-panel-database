@@ -689,6 +689,7 @@ CREATE TABLE IF NOT EXISTS pos_schema.expense_type (
     tenant_id           uuid NOT NULL,
     expense_type_name   VARCHAR(100) NOT NULL,
     expense_type_detail TEXT,
+    is_fixed            BOOLEAN NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -697,15 +698,17 @@ CREATE INDEX IF NOT EXISTS idx_expense_type_tenant
     ON pos_schema.expense_type(tenant_id);
 
 CREATE TABLE IF NOT EXISTS pos_schema.expense (
-    expense_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    expense_type_id   uuid NOT NULL REFERENCES pos_schema.expense_type(expense_type_id) ON DELETE RESTRICT,
-    expense_amount    NUMERIC(14, 2) NOT NULL CHECK (expense_amount > 0),
-    branch_id         uuid NOT NULL,
-    user_id           uuid NOT NULL,
-    status            TEXT DEFAULT 'approved',
-    rejection_reason  TEXT,
-    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    expense_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    expense_type_id         uuid NOT NULL REFERENCES pos_schema.expense_type(expense_type_id) ON DELETE RESTRICT,
+    expense_amount          NUMERIC(14, 2) NOT NULL CHECK (expense_amount > 0),
+    currency_id             INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
+    branch_id               uuid NOT NULL,
+    user_id                 uuid NOT NULL,
+    accounting_expense_id   uuid REFERENCES accounting_schema.expense(expense_id) ON DELETE SET NULL,
+    status                  TEXT DEFAULT 'approved',
+    rejection_reason        TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_expense_type_fk ON pos_schema.expense(expense_type_id);
