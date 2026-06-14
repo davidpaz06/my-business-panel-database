@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-05-22 03:37:15
+-- Generated: 2026-06-13 20:51:02
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -1494,6 +1494,7 @@ CREATE TABLE IF NOT EXISTS pos_schema.expense_type (
     tenant_id           uuid NOT NULL,
     expense_type_name   VARCHAR(100) NOT NULL,
     expense_type_detail TEXT,
+    is_fixed            BOOLEAN NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1502,15 +1503,17 @@ CREATE INDEX IF NOT EXISTS idx_expense_type_tenant
     ON pos_schema.expense_type(tenant_id);
 
 CREATE TABLE IF NOT EXISTS pos_schema.expense (
-    expense_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    expense_type_id   uuid NOT NULL REFERENCES pos_schema.expense_type(expense_type_id) ON DELETE RESTRICT,
-    expense_amount    NUMERIC(14, 2) NOT NULL CHECK (expense_amount > 0),
-    branch_id         uuid NOT NULL,
-    user_id           uuid NOT NULL,
-    status            TEXT DEFAULT 'approved',
-    rejection_reason  TEXT,
-    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    expense_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    expense_type_id         uuid NOT NULL REFERENCES pos_schema.expense_type(expense_type_id) ON DELETE RESTRICT,
+    expense_amount          NUMERIC(14, 2) NOT NULL CHECK (expense_amount > 0),
+    currency_id             INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
+    branch_id               uuid NOT NULL,
+    user_id                 uuid NOT NULL,
+    accounting_expense_id   uuid REFERENCES accounting_schema.expense(expense_id) ON DELETE SET NULL,
+    status                  TEXT DEFAULT 'approved',
+    rejection_reason        TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_expense_type_fk ON pos_schema.expense(expense_type_id);
@@ -1530,8 +1533,16 @@ CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
     sale_collection_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
     payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    -- currency_id: currency the customer paid in (original currency).
     currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    -- amount_paid: CRC-equivalent of the payment. Used by recalc SUM().
     amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
+    -- original_amount: amount stated in currency_id (what the customer handed over).
+    original_amount            NUMERIC(12,3) DEFAULT 0
+        CHECK (original_amount IS NULL OR original_amount > 0),
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (CRC).
+    exchange_rate              NUMERIC(18,8) DEFAULT 1
+        CHECK (exchange_rate IS NULL OR exchange_rate > 0),
     payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     payment_reference          VARCHAR(100),
     notes                      TEXT,
