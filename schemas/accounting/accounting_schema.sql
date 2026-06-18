@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS expense_category (
     category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
-    account_code VARCHAR(20) NOT NULL,
+    account_code VARCHAR(20),
     parent_category_id UUID REFERENCES accounting_schema.expense_category(category_id) ON DELETE SET NULL,
     is_fixed BOOLEAN DEFAULT TRUE,
     is_active BOOLEAN DEFAULT TRUE,
