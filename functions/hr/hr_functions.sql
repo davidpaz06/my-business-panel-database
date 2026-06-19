@@ -238,3 +238,40 @@ CREATE TRIGGER trg_close_suspention_on_write
 BEFORE INSERT OR UPDATE ON hr_schema.suspention
 FOR EACH ROW
 EXECUTE FUNCTION hr_schema.close_suspention_trigger();
+
+-- ============================================================
+-- provision_tenant_payroll_concepts
+-- Copia la plantilla payroll_concept_template a un tenant.
+-- Idempotente: si el tenant ya tiene conceptos, no inserta nada.
+-- Llamada durante el onboarding del tenant o bajo demanda.
+-- ============================================================
+CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_concepts(_tenant_id UUID)
+RETURNS INT AS $$
+DECLARE
+	_inserted INT := 0;
+BEGIN
+	-- Verificar que el tenant existe
+	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
+		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
+	END IF;
+
+	-- Si el tenant ya tiene conceptos, no re-provisionar
+	IF EXISTS (SELECT 1 FROM hr_schema.payroll_concept WHERE tenant_id = _tenant_id LIMIT 1) THEN
+		RAISE NOTICE 'Tenant % already has payroll concepts provisioned', _tenant_id;
+		RETURN 0;
+	END IF;
+
+	INSERT INTO hr_schema.payroll_concept(
+		tenant_id, name, type, calculation_method, is_taxable, is_active, base_value, code
+	)
+	SELECT
+		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, TRUE, t.base_value, t.code
+	FROM hr_schema.payroll_concept_template t
+	ORDER BY t.template_id;
+
+	GET DIAGNOSTICS _inserted = ROW_COUNT;
+
+	RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	RETURN _inserted;
+END;
+$$ LANGUAGE plpgsql;

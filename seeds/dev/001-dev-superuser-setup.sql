@@ -414,7 +414,7 @@ BEGIN
        is_taxable, base_value, code)
     VALUES
       (v_tenant_id, 'CCSS Empleado', 'deduction', 'percentage',
-       false, 10.67, 'CCSS-EMP');
+       false, 0.1067, 'CCSS-EMP'); -- fraccion: 0.1067 = 10.67% (PercentageStrategy hace base * valor)
   END IF;
 
   -- 15b. Marcado de asistencia (entrada + salida en un solo registro)

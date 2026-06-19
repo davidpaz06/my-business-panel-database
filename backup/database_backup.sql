@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-05-22 03:37:15
+-- Generated: 2026-06-18 22:52:51
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -1530,8 +1530,16 @@ CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
     sale_collection_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
     payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    -- currency_id: currency the customer paid in (original currency).
     currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    -- amount_paid: CRC-equivalent of the payment. Used by recalc SUM().
     amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
+    -- original_amount: amount stated in currency_id (what the customer handed over).
+    original_amount            NUMERIC(12,3) DEFAULT 0
+        CHECK (original_amount IS NULL OR original_amount > 0),
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (CRC).
+    exchange_rate              NUMERIC(18,8) DEFAULT 1
+        CHECK (exchange_rate IS NULL OR exchange_rate > 0),
     payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     payment_reference          VARCHAR(100),
     notes                      TEXT,
@@ -2165,8 +2173,23 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 );
 
 -- Indice para filtracion por conceptos
--- FIXME: column "ccss_apply" does not exist 
+-- FIXME: column "ccss_apply" does not exist
 -- CREATE INDEX IF NOT EXISTS idx_payroll_concept_apply ON hr_schema.payroll_concept(ccss_apply, tax_apply);
+
+-- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
+-- La funcion provision_tenant_payroll_concepts() la copia a payroll_concept por tenant.
+CREATE TABLE IF NOT EXISTS hr_schema.payroll_concept_template(
+	template_id SERIAL PRIMARY KEY NOT NULL,
+	name VARCHAR(100) NOT NULL,
+	type VARCHAR(20) NOT NULL, -- 'earning' o 'deduction'
+	calculation_method VARCHAR(30) NOT NULL, -- 'fixed', 'percentage', 'formula', 'manual'
+	is_taxable BOOLEAN DEFAULT TRUE,
+	base_value NUMERIC(19, 4) DEFAULT 0,
+	code VARCHAR(10) NOT NULL UNIQUE
+);
+
+COMMENT ON TABLE hr_schema.payroll_concept_template IS
+	'Plantilla de conceptos de nomina (Costa Rica). Copiada a payroll_concept por tenant via provision_tenant_payroll_concepts(). Los valores percentage se almacenan como fraccion (ej. 0.1067 = 10.67%).';
 
 CREATE TABLE IF NOT EXISTS paysheet(
 	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
@@ -2430,7 +2453,7 @@ CREATE TABLE IF NOT EXISTS expense_category (
     category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
-    account_code VARCHAR(20) NOT NULL,
+    account_code VARCHAR(20),
     parent_category_id UUID REFERENCES accounting_schema.expense_category(category_id) ON DELETE SET NULL,
     is_fixed BOOLEAN DEFAULT TRUE,
     is_active BOOLEAN DEFAULT TRUE,
@@ -6241,6 +6264,43 @@ BEFORE INSERT OR UPDATE ON hr_schema.suspention
 FOR EACH ROW
 EXECUTE FUNCTION hr_schema.close_suspention_trigger();
 
+-- ============================================================
+-- provision_tenant_payroll_concepts
+-- Copia la plantilla payroll_concept_template a un tenant.
+-- Idempotente: si el tenant ya tiene conceptos, no inserta nada.
+-- Llamada durante el onboarding del tenant o bajo demanda.
+-- ============================================================
+CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_concepts(_tenant_id UUID)
+RETURNS INT AS $$
+DECLARE
+	_inserted INT := 0;
+BEGIN
+	-- Verificar que el tenant existe
+	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
+		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
+	END IF;
+
+	-- Si el tenant ya tiene conceptos, no re-provisionar
+	IF EXISTS (SELECT 1 FROM hr_schema.payroll_concept WHERE tenant_id = _tenant_id LIMIT 1) THEN
+		RAISE NOTICE 'Tenant % already has payroll concepts provisioned', _tenant_id;
+		RETURN 0;
+	END IF;
+
+	INSERT INTO hr_schema.payroll_concept(
+		tenant_id, name, type, calculation_method, is_taxable, is_active, base_value, code
+	)
+	SELECT
+		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, TRUE, t.base_value, t.code
+	FROM hr_schema.payroll_concept_template t
+	ORDER BY t.template_id;
+
+	GET DIAGNOSTICS _inserted = ROW_COUNT;
+
+	RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	RETURN _inserted;
+END;
+$$ LANGUAGE plpgsql;
+
 
 
 -- =============================================
@@ -7499,6 +7559,60 @@ INSERT INTO hr_schema.holiday (date, holiday_name) VALUES
 ('2026-08-15', 'Dia de la Madre'),
 ('2026-09-15', 'Dia de la Independencia'),
 ('2026-12-25', 'Navidad');
+
+
+
+-- =============================================
+-- SEED: DEFAULT PAYROLL CONCEPTS
+-- Source: seeds/catalog/hr/004-insert-default-payroll-concepts.sql
+-- =============================================
+-- ============================================================
+-- Conceptos de Nomina Predeterminados (Costa Rica)
+-- ============================================================
+-- Este seed NO inserta directamente en payroll_concept
+-- (esa tabla es por tenant). Popula la plantilla
+-- payroll_concept_template que la funcion
+-- provision_tenant_payroll_concepts() copia por tenant.
+--
+-- Convencion de valores:
+--   - percentage: fraccion del salario base (0.1067 = 10.67%)
+--   - formula:    parametro del codigo de calculo (ver mas abajo)
+--   - fixed:      monto en colones
+--   - manual:     se ingresa al procesar (base_value = 0)
+--
+-- Codigos de formula soportados (hr_schema strategy.context):
+--   he  -> Horas extra (base_value = multiplicador, ej. 1.5)
+--   vac -> Vacaciones   (base_value = divisor sobre ingresos de 50 semanas)
+--   hol -> Aguinaldo    (base_value = divisor sobre salario anual, 12)
+--   irs -> Renta/ISR    (tramos internos, base_value sin uso)
+--   sub -> Incapacidad pago      (usa dias/porcentaje, base_value sin uso)
+--   inc -> Incapacidad deduccion (usa dias, base_value sin uso)
+-- ============================================================
+
+SET SEARCH_PATH TO hr_schema;
+
+-- Limpiar plantilla para re-seed limpio
+TRUNCATE hr_schema.payroll_concept_template RESTART IDENTITY;
+
+INSERT INTO hr_schema.payroll_concept_template
+  (name, type, calculation_method, is_taxable, base_value, code)
+VALUES
+  -- -------------------------------------------------------
+  -- INGRESOS (earning)
+  -- -------------------------------------------------------
+  ('Horas extra',          'earning',   'formula',    TRUE,  1.5,    'he'),
+  ('Vacaciones',           'earning',   'formula',    TRUE,  25,     'vac'),
+  ('Aguinaldo',            'earning',   'formula',    FALSE, 12,     'hol'),
+  ('Comisiones',           'earning',   'manual',     TRUE,  0,      'COM'),
+  ('Bonificacion',         'earning',   'fixed',      TRUE,  0,      'BON'),
+  ('Subsidio incapacidad', 'earning',   'formula',    TRUE,  0,      'sub'),
+
+  -- -------------------------------------------------------
+  -- DEDUCCIONES (deduction)
+  -- -------------------------------------------------------
+  ('CCSS Empleado',        'deduction', 'percentage', FALSE, 0.1067, 'CCSS-EMP'),
+  ('Impuesto sobre Renta', 'deduction', 'formula',    FALSE, 0,      'irs'),
+  ('Deduccion incapacidad','deduction', 'formula',    FALSE, 0,      'inc');
 
 
 

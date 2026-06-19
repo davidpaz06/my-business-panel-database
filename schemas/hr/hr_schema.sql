@@ -188,8 +188,23 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 );
 
 -- Indice para filtracion por conceptos
--- FIXME: column "ccss_apply" does not exist 
+-- FIXME: column "ccss_apply" does not exist
 -- CREATE INDEX IF NOT EXISTS idx_payroll_concept_apply ON hr_schema.payroll_concept(ccss_apply, tax_apply);
+
+-- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
+-- La funcion provision_tenant_payroll_concepts() la copia a payroll_concept por tenant.
+CREATE TABLE IF NOT EXISTS hr_schema.payroll_concept_template(
+	template_id SERIAL PRIMARY KEY NOT NULL,
+	name VARCHAR(100) NOT NULL,
+	type VARCHAR(20) NOT NULL, -- 'earning' o 'deduction'
+	calculation_method VARCHAR(30) NOT NULL, -- 'fixed', 'percentage', 'formula', 'manual'
+	is_taxable BOOLEAN DEFAULT TRUE,
+	base_value NUMERIC(19, 4) DEFAULT 0,
+	code VARCHAR(10) NOT NULL UNIQUE
+);
+
+COMMENT ON TABLE hr_schema.payroll_concept_template IS
+	'Plantilla de conceptos de nomina (Costa Rica). Copiada a payroll_concept por tenant via provision_tenant_payroll_concepts(). Los valores percentage se almacenan como fraccion (ej. 0.1067 = 10.67%).';
 
 CREATE TABLE IF NOT EXISTS paysheet(
 	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
