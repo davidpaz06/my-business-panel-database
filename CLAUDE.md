@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Workspace context (sibling repos, cross-repo feature order, branching) lives in `../CLAUDE.md`. This file covers database-only conventions.
 
+**Migracion en curso (Costa Rica -> Venezuela):** normativa objetivo del proyecto pasa de Costa Rica a Venezuela (ver tabla de mapeo en `../CLAUDE.md`). El schema, funciones y seeds de `hr_schema` y `accounting_schema` en este repo todavia implementan reglas de Costa Rica (CCSS, Hacienda/DGT-R-48-2016, feriados CR, etc.) hasta que se readapten. No asumir que el DDL actual ya sigue la normativa venezolana.
+
 ## Role
 
-**Source of truth for the PostgreSQL schema.** Pure SQL — no ORM, no migrations framework. The backend reads from / mutates this schema; it does not own it. Domain: multi-tenant ERP for Costa Rica (POS, inventory, purchase, HR, accounting, Hacienda e-invoicing).
+**Source of truth for the PostgreSQL schema.** Pure SQL — no ORM, no migrations framework. The backend reads from / mutates this schema; it does not own it. Domain: multi-tenant ERP for Venezuela (POS, inventory, purchase, HR, accounting, SENIAT e-invoicing) — migrando desde una base originalmente disenada para Costa Rica.
 
 ## Folder responsibilities
 
@@ -86,9 +88,9 @@ Any change to a business process must include a test script in `test/`.
 - File name: `test/test-<name>.md` (script + expected results documented together).
 - Without a test, the change is incomplete. Without a `docs/flow-<name>.md`, it is technical debt.
 
-## Hacienda / e-invoicing context
+## E-invoicing context (legado Costa Rica, pendiente de migracion a SENIAT/Venezuela)
 
-`accounting/` schema + corresponding migrations carry Costa Rica electronic invoicing structures. Spec PDFs live in `../my-business-panel-docs/` — read them (especially `Resolucion Comprobantes Electronicos DGT-R-48-2016.pdf`) before designing or altering those tables.
+`accounting/` schema + corresponding migrations carry Costa Rica electronic invoicing structures today. Spec PDFs live in `../my-business-panel-docs/` — read them (especially `Resolucion Comprobantes Electronicos DGT-R-48-2016.pdf`) before designing or altering those tables **mientras no se hayan reemplazado por la normativa SENIAT de Venezuela**. Antes de readaptar este modulo, confirmar y documentar aqui el mecanismo real de facturacion electronica venezolano (maquina fiscal vs comprobante XML) y actualizar `my-business-panel-docs/` con las spec sheets correspondientes.
 
 ## Forbidden
 
