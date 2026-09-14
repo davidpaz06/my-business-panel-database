@@ -152,6 +152,7 @@ Add-FileContent "seeds/catalog/hr/001-insert-payment-schedules.sql" "SEED: PAYME
 Add-FileContent "seeds/catalog/hr/002-insert-paysheet-status.sql" "SEED: PAYSHEET STATUS"
 Add-FileContent "seeds/catalog/hr/003-insert-holidays.sql" "SEED: HOLIDAYS"
 Add-FileContent "seeds/catalog/hr/004-insert-default-payroll-concepts.sql" "SEED: DEFAULT PAYROLL CONCEPTS"
+Add-FileContent "seeds/catalog/hr/006-insert-payroll-parameters-defaults.sql" "SEED: PAYROLL PARAMETERS (LOTTT)"
 
 # SEEDS - ACCOUNTING
 Write-Host "`nAdding accounting catalog seeds..." -ForegroundColor Yellow

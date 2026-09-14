@@ -39,10 +39,13 @@ BEGIN
 
   v_new_employee_id := gen_random_uuid();
 
+  -- hire_date toma la fecha de inicio del contrato. Es la base del computo
+  -- de antiguedad (Art. 142 LOTTT) y vive en employee porque un trabajador
+  -- puede encadenar contratos sin perder antiguedad.
   INSERT INTO hr_schema.employee (
     employee_id, user_id, first_name, last_name, doc_number,
     identification_type_id, phone, email, contract_id,
-    payment_schedule_id, tenant_id, branch_id
+    payment_schedule_id, tenant_id, branch_id, hire_date
   )
   VALUES (
     v_new_employee_id,
@@ -56,7 +59,21 @@ BEGIN
     v_new_contract_id,
     p_payment_schedule_id,
     p_tenant_id,
-    p_branch_id
+    p_branch_id,
+    p_start_date
+  );
+
+  -- Abre el historial salarial (Art. 122): el salario integral necesita
+  -- reconstruir la base vigente en cada trimestre.
+  INSERT INTO hr_schema.salary_history (
+    employee_id, tenant_id, monthly_salary, valid_from, reason
+  )
+  VALUES (
+    v_new_employee_id,
+    p_tenant_id,
+    p_base_salary,
+    p_start_date,
+    'Salario inicial del contrato'
   );
 
   RETURN v_new_employee_id;
@@ -126,44 +143,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Funcion para la generacion de reportes ccss mensuales de periodos especificos
-CREATE OR REPLACE FUNCTION hr_schema.generate_monthly_ccss(
-	p_year INTEGER,
-	p_month INTEGER
-)
-RETURNS TABLE (
-	total_employee NUMERIC(10, 2),
-	total_tenant NUMERIC(10, 2),
-	total NUMERIC(10, 2)
-) AS $$
-DECLARE
-	v_status_completed_id INTEGER;
-	v_completed_status VARCHAR(15) := 'Completed';
-BEGIN
-	SELECT status_id INTO v_status_completed_id
-	FROM hr_schema.paysheet_status
-	WHERE status_description = v_completed_status;
-
-	IF v_status_completed_id IS NULL THEN
-		RAISE EXCEPTION 'Status Completed not found in db.';
-	END IF;
-
-	RETURN QUERY
-	SELECT
-		COALESCE(SUM(pd.ccss_employee_deduction), 0) AS total_employee,
-		COALESCE(SUM(pd.ccss_tenant_deduction), 0) AS total_tenant,
-		COALESCE(SUM(pd.ccss_employee_deduction + ccss_tenant_deduction), 0) AS total
-	FROM
-		hr_schema.paysheet_detail pd
-	INNER JOIN
-		hr_schema.paysheet p ON pd.paysheet_id = p.paysheet_id
-	WHERE
-		EXTRACT(YEAR FROM p.payment_day) = p_year
-		AND EXTRACT(MONTH FROM p.payment_day) = p_month
-		AND p.status_id = v_status_completed_id;
-
-END;
-$$ LANGUAGE plpgsql;
+-- ============================================================
+-- generate_monthly_ccss: ELIMINADA en la migracion 009.
+-- Era especifica de la Caja Costarricense de Seguro Social y ademas
+-- estaba rota: referenciaba las columnas ccss_employee_deduction,
+-- ccss_tenant_deduction y paysheet.payment_day, ninguna de las cuales
+-- existe en el esquema.
+-- Su equivalente venezolano (reporte de retenciones IVSS/INCES/FAOV)
+-- requiere una especificacion de calculo que aun no existe.
+-- ============================================================
 
 CREATE OR REPLACE FUNCTION hr_schema.validate_contract_dates()
 RETURNS TRIGGER AS $$
@@ -234,6 +222,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_close_suspention_on_write ON hr_schema.suspention;
 CREATE TRIGGER trg_close_suspention_on_write
 BEFORE INSERT OR UPDATE ON hr_schema.suspention
 FOR EACH ROW
@@ -261,11 +250,16 @@ BEGIN
 		RETURN 0;
 	END IF;
 
+	-- is_active se toma de la plantilla, no se fuerza a TRUE: hay
+	-- conceptos definidos pero no liberados (retenciones venezolanas
+	-- sin especificacion de calculo) que deben provisionarse inactivos.
 	INSERT INTO hr_schema.payroll_concept(
-		tenant_id, name, type, calculation_method, is_taxable, is_active, base_value, code
+		tenant_id, name, type, calculation_method, is_taxable, is_active, base_value, code,
+		article, salary_basis
 	)
 	SELECT
-		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, TRUE, t.base_value, t.code
+		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, t.is_active, t.base_value, t.code,
+		t.article, t.salary_basis
 	FROM hr_schema.payroll_concept_template t
 	ORDER BY t.template_id;
 
