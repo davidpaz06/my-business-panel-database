@@ -122,7 +122,6 @@ Add-FileContent "seeds/catalog/general/008-insert-subscription-types.sql" "SEED:
 Add-FileContent "seeds/catalog/general/009-insert-payment_methods.sql" "SEED: PAYMENT METHODS"
 Add-FileContent "seeds/catalog/general/010-insert-account-payable-status.sql" "SEED: ACCOUNT PAYABLE STATUS"
 Add-FileContent "seeds/catalog/general/011-insert-account-payable-types.sql" "SEED: ACCOUNT PAYABLE TYPES"
-Add-FileContent "seeds/catalog/general/012-insert-branch-locations.sql" "SEED: BRANCH LOCATIONS"
 Add-FileContent "seeds/catalog/general/013-insert-account-receivable-status.sql" "SEED: ACCOUNT RECEIVABLE STATUS"
 Add-FileContent "seeds/catalog/general/014-insert-account-receivable-types.sql" "SEED: ACCOUNT RECEIVABLE TYPES"
 
@@ -134,7 +133,6 @@ Add-FileContent "seeds/catalog/pos/003-insert-promotion-types.sql" "SEED: PROMOT
 Add-FileContent "seeds/catalog/pos/004-insert-score-redemption-status.sql" "SEED: SCORE REDEMPTION STATUS"
 Add-FileContent "seeds/catalog/pos/005-insert-score-transaction-types.sql" "SEED: SCORE TRANSACTION TYPES"
 Add-FileContent "seeds/catalog/pos/006-insert-sale-conditions.sql" "SEED: SALE CONDITIONS"
-Add-FileContent "seeds/catalog/pos/007-insert-invoice-status.sql" "SEED: INVOICE STATUS"
 Add-FileContent "seeds/catalog/pos/008-insert-collection-alert-types.sql" "SEED: COLLECTION ALERT TYPES"
 
 # SEEDS - PURCHASE
@@ -190,14 +188,12 @@ BEGIN
             'general_schema.account_payable_type',
             'general_schema.account_receivable_status',
             'general_schema.account_receivable_type',
-            'general_schema.territorio_catalog',
             'pos_schema.return_reason',
             'pos_schema.return_status',
             'pos_schema.promotion_type',
             'pos_schema.score_redemption_status',
             'pos_schema.score_transaction_type',
             'pos_schema.sale_condition',
-            'pos_schema.invoice_status',
             'pos_schema.sale_collection_alert_type',
             'inventory_schema.inventory_log_type',
             'purchase_schema.purchase_order_status',

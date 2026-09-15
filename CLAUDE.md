@@ -88,9 +88,11 @@ Any change to a business process must include a test script in `test/`.
 - File name: `test/test-<name>.md` (script + expected results documented together).
 - Without a test, the change is incomplete. Without a `docs/flow-<name>.md`, it is technical debt.
 
-## E-invoicing context (legado Costa Rica, pendiente de migracion a SENIAT/Venezuela)
+## E-invoicing context (Hacienda/Costa Rica removido; SENIAT/Venezuela pendiente de diseno)
 
-`accounting/` schema + corresponding migrations carry Costa Rica electronic invoicing structures today. Spec PDFs live in `../my-business-panel-docs/` — read them (especially `Resolucion Comprobantes Electronicos DGT-R-48-2016.pdf`) before designing or altering those tables **mientras no se hayan reemplazado por la normativa SENIAT de Venezuela**. Antes de readaptar este modulo, confirmar y documentar aqui el mecanismo real de facturacion electronica venezolano (maquina fiscal vs comprobante XML) y actualizar `my-business-panel-docs/` con las spec sheets correspondientes.
+Costa Rica's Hacienda electronic invoicing (DGT-R-48-2016 XML-signed "factura electronica") was fully removed from this schema: `pos_schema.electronic_sale_invoice(_items)`, `pos_schema.invoice_status`, `general_schema.tenant_hacienda_config`, and `general_schema.branch_location` are all dropped (see `migrations/pos/020-drop-electronic-invoicing.sql`, `migrations/pos/021-rename-digital-invoice-to-invoice.sql`, `migrations/general/022-drop-hacienda-config.sql`). `accounting_schema` never actually held e-invoicing structures — it is pure general ledger (chart of accounts, journal entries, cost centers, expenses, fiscal periods); the invoicing tables always lived in `pos_schema`. The system's only invoice concept now is `pos_schema.invoice` (`invoice_item`, `invoice_payment`) — the former "digital invoice", auto-created per completed sale via the `create_invoice()` trigger in `functions/pos/pos_functions.sql`.
+
+A future SENIAT-based electronic invoicing module is not yet designed. Before building it: confirm the real Venezuelan mechanism (maquina fiscal vs comprobante XML), obtain and add the corresponding spec sheets to `../my-business-panel-docs/` (currently only has the old CR DGT-R-48-2016 PDFs), and design new tables shaped around that mechanism rather than reusing the dropped CR-shaped ones.
 
 ## Forbidden
 

@@ -169,7 +169,7 @@ BEGIN
   -- ─────────────────────────────────────────────────────────────
   -- FASE 6 — CLIENTE
   -- ─────────────────────────────────────────────────────────────
-  -- identification_type_id 1 = Cédula Física (seed catalog/general)
+  -- identification_type_id 1 = Cedula de Identidad (seed catalog/general)
   INSERT INTO general_schema.tenant_customer
     (tenant_customer_id, tenant_id, first_name, last_name,
      identification_type_id, document_number, econ_activity,
@@ -313,16 +313,16 @@ BEGIN
   -- FASE 11 — VENTA
   -- ─────────────────────────────────────────────────────────────
   -- sale_condition '01' = Contado (seed catalog/pos)
-  -- currency_id   1    = CRC (seed catalog/general)
+  -- currency_id   1    = VES (seed catalog/general)
   -- 2x PROD-001 (1500) = subtotal 3000, IVA 13% = 390, total 3390
   INSERT INTO pos_schema.sale
     (sale_id, branch_id, tenant_customer_id, sale_condition, sale_date,
      currency_id, subtotal_amount, tax_amount, total_amount,
-     is_completed, has_electronic_invoice)
+     is_completed)
   VALUES
     (v_sale_id, v_branch_id, v_customer_id, '01',
      '2025-06-01 10:30:00'::TIMESTAMP,
-     1, 3000.00, 390.00, 3390.00, true, false)
+     1, 3000.00, 390.00, 3390.00, true)
   ON CONFLICT (sale_id) DO NOTHING;
 
   INSERT INTO pos_schema.sale_item
@@ -350,15 +350,15 @@ BEGIN
   -- La factura digital es creada por el servicio al completar la venta.
   -- Aquí se inserta directamente para el seed.
   -- ─────────────────────────────────────────────────────────────
-  INSERT INTO pos_schema.digital_sale_invoice
-    (digital_sale_invoice_id, tenant_customer_id, sale_id, currency_id,
+  INSERT INTO pos_schema.invoice
+    (invoice_id, tenant_customer_id, sale_id, currency_id,
      subtotal_amount, tax_amount, total_amount,
-     invoice_number, amount_paid, change_amount)
+     amount_paid, change_amount)
   VALUES
     (v_invoice_id, v_customer_id, v_sale_id, 1,
      3000.00, 390.00, 3390.00,
-     'F-0001', 3390.00, 0.00)
-  ON CONFLICT (digital_sale_invoice_id) DO NOTHING;
+     3390.00, 0.00)
+  ON CONFLICT (invoice_id) DO NOTHING;
 
 
   -- ─────────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ BEGIN
   -- return_status_id 1 (seed catalog/pos)
   -- refund_method   1 = Efectivo (seed catalog/general)
   INSERT INTO pos_schema.return_transaction
-    (return_transaction_id, digital_sale_invoice_id, tenant_customer_id,
+    (return_transaction_id, invoice_id, tenant_customer_id,
      total_refund_amount, refund_method, return_status_id, return_date)
   VALUES
     (v_return_id, v_invoice_id, v_customer_id,

@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-08-27 22:09:47
+-- Generated: 2026-09-15 08:48:06
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -69,22 +69,6 @@ CREATE TABLE IF NOT EXISTS tenant(
 COMMENT ON COLUMN general_schema.tenant.tax_regime IS
     'Tenant tax regime: traditional (régimen general IVA) or simplified (régimen simplificado, Decreto 38 MH).';
 
-CREATE TABLE IF NOT EXISTS tenant_hacienda_config (
-    tenant_hacienda_config_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL UNIQUE REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    hacienda_username TEXT NOT NULL,
-    hacienda_password TEXT NOT NULL,
-    hacienda_client_id VARCHAR(20) NOT NULL DEFAULT 'api-prod',
-    p12_base64 TEXT NOT NULL,
-    p12_password TEXT NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_tenant_hacienda_config_tenant
-    ON general_schema.tenant_hacienda_config(tenant_id);  
-
 CREATE TABLE IF NOT EXISTS branch(
     branch_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
@@ -100,26 +84,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS unique_main_branch_per_tenant
     on general_schema.branch (tenant_id)
     where is_main_branch = true;
 
--- Dirección estructurada del branch para facturación electrónica (DGT-R-48-2016)
-CREATE TABLE IF NOT EXISTS branch_location (
-    branch_location_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    branch_id UUID NOT NULL UNIQUE REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
-    provincia  VARCHAR(1)  NOT NULL DEFAULT '1',   -- 1=San José … 7=Limón
-    canton     VARCHAR(2)  NOT NULL DEFAULT '01',
-    distrito   VARCHAR(2)  NOT NULL DEFAULT '01',
-    otras_senas TEXT       NOT NULL DEFAULT '',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP          DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_branch_location_branch_id
-    ON general_schema.branch_location(branch_id);
-
 CREATE TABLE IF NOT EXISTS identification_type(
     identification_type_id SERIAL PRIMARY KEY,
     type_name VARCHAR(50) unique not null,
     description text,
-    ident_code VARCHAR(3) not null, -- Campo requerido para la facturacion
+    ident_code VARCHAR(3) not null, -- Codigo corto interno del tipo de identificacion
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -247,9 +216,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_rate_region_percentage
     ON general_schema.tax_rate(region, rate_percentage);
 
 COMMENT ON TABLE general_schema.tax_rate IS
-    'Stores tax rate entries for both regional taxes and CABYS product-level IVA rates.
+    'Stores tax rate entries for both regional taxes and product-level IVA rates.
      - Regional rates: region + region_id populated.
-     - CABYS IVA rates: rate_code + rate_name populated, region nullable.';
+     - Product IVA rates: rate_code + rate_name populated, region nullable.';
 
 
 
@@ -326,16 +295,16 @@ CREATE INDEX IF NOT EXISTS idx_special_code_tenant
     WHERE tenant_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_category(
-    product_category_id VARCHAR(13) PRIMARY KEY NOT NULL,
+    product_category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category_name TEXT not null,
-    parent_category_id VARCHAR(13)                                    
+    parent_category_id UUID
         REFERENCES general_schema.product_category(product_category_id)
         ON DELETE CASCADE,
-    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),  
+    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT chk_no_self_reference                              
+
+    CONSTRAINT chk_no_self_reference
         CHECK (product_category_id != parent_category_id)
 );
 
@@ -363,10 +332,10 @@ CREATE TABLE IF NOT EXISTS commercial_unit_measure(
 );
 
 CREATE TABLE IF NOT EXISTS product(
-    cabys_code VARCHAR(13) PRIMARY KEY,
+    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_name TEXT NOT NULL,
     product_name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('spanish', product_name)) STORED,
-    product_category_id VARCHAR(13) REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
+    product_category_id UUID REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
     tax_rate_id INT REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     unit_measure_id INT REFERENCES general_schema.unit_measure(unit_measure_id) ON DELETE SET NULL,
     commercial_unit_measure_id INT REFERENCES general_schema.commercial_unit_measure(commercial_unit_measure_id) ON DELETE SET NULL,
@@ -433,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_attribute_value_tenant
 CREATE TABLE IF NOT EXISTS product_variant (
     tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     product_variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    cabys_code VARCHAR(13) REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
+    product_id UUID REFERENCES general_schema.product(product_id) ON DELETE SET NULL,
     sku VARCHAR(100) NOT NULL,
     variant_name VARCHAR(255),
     unit_price numeric(10,2) CHECK (unit_price >= 0),
@@ -469,8 +438,9 @@ $$ LANGUAGE plpgsql;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variant_tenant_sku 
     ON general_schema.product_variant(tenant_id, sku);
-CREATE INDEX IF NOT EXISTS idx_product_variant_cabys 
-    ON general_schema.product_variant(cabys_code);
+CREATE INDEX IF NOT EXISTS idx_product_variant_product
+    ON general_schema.product_variant(product_id)
+    WHERE product_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
     ON general_schema.product_variant(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_product_variant_active
@@ -481,8 +451,9 @@ CREATE INDEX IF NOT EXISTS idx_product_variant_supplier
     WHERE supplier_id IS NOT NULL;
 
 COMMENT ON TABLE general_schema.product_variant IS
-    'Tenant-specific sellable product variants linked to a CABYS catalog entry.
-    Variants have unique SKUs and prices per tenant.';
+    'Tenant-specific sellable product variants, optionally linked to a national
+    product catalog entry (general_schema.product). Variants have unique SKUs
+    and prices per tenant.';
 
 CREATE TABLE IF NOT EXISTS attribute_assignation (
     tenant_id uuid NOT NULL,
@@ -822,7 +793,6 @@ CREATE TABLE IF NOT EXISTS sale(
     tax_amount numeric(10,2) not null default 0 check (tax_amount >= 0),
     total_amount numeric(10,2) not null,
     is_completed BOOLEAN default false,
-    has_electronic_invoice BOOLEAN DEFAULT FALSE,
     is_refunded BOOLEAN NOT NULL DEFAULT false,
     seller_user_id uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at timestamp not null default current_timestamp,
@@ -938,8 +908,8 @@ CREATE TABLE IF NOT EXISTS customer_payment(
     )
 );
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice(
-    digital_sale_invoice_id uuid PRIMARY KEY default gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS invoice(
+    invoice_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -956,20 +926,18 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_sale_id on pos_schema.digital_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_cash_register_session
-    ON pos_schema.digital_sale_invoice(cash_register_session_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_sale_id on pos_schema.invoice(sale_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_cash_register_session
+    ON pos_schema.invoice(cash_register_session_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
-    digital_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    digital_sale_invoice_id UUID NOT NULL
-        REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS invoice_item(
+    invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_id UUID NOT NULL
+        REFERENCES pos_schema.invoice(invoice_id) ON DELETE CASCADE,
     sale_item_id UUID NOT NULL
         REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
     product_variant_id UUID,
-    cabys_code VARCHAR(13)
-        REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
     tax_rate_id INTEGER
         REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     description VARCHAR(255),
@@ -982,30 +950,30 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT digital_sale_invoice_item_product_variant_fkey
+    CONSTRAINT invoice_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
         ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_invoice
-    ON pos_schema.digital_sale_invoice_item(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_sale_item
-    ON pos_schema.digital_sale_invoice_item(sale_item_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_variant
-    ON pos_schema.digital_sale_invoice_item(tenant_id, product_variant_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_tax_rate
-    ON pos_schema.digital_sale_invoice_item(tax_rate_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_invoice
+    ON pos_schema.invoice_item(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_sale_item
+    ON pos_schema.invoice_item(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_variant
+    ON pos_schema.invoice_item(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_tax_rate
+    ON pos_schema.invoice_item(tax_rate_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_payment(
-    digital_sale_invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid not null REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
+CREATE TABLE IF NOT EXISTS invoice_payment(
+    invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
+    invoice_id uuid not null REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     customer_payment_id uuid not null REFERENCES pos_schema.customer_payment(customer_payment_id) on delete cascade,
     payment_amount numeric(10,2) not null check (payment_amount > 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    unique (digital_sale_invoice_id, customer_payment_id)
+    unique (invoice_id, customer_payment_id)
 );
 
 CREATE TABLE IF NOT EXISTS return_reason(
@@ -1026,21 +994,16 @@ CREATE TABLE IF NOT EXISTS return_status(
 
 CREATE TABLE IF NOT EXISTS return_transaction(
     return_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
-    electronic_sale_invoice_id uuid, -- FK to pos_schema.electronic_sale_invoice added via ALTER TABLE below (forward reference)
+    invoice_id uuid NOT NULL REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     return_status_id INTEGER REFERENCES pos_schema.return_status(return_status_id) on delete set null,
     description TEXT NOT NULL,
     return_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT chk_return_transaction_invoice CHECK (
-        digital_sale_invoice_id IS NOT NULL OR electronic_sale_invoice_id IS NOT NULL
-    )
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_return_transaction_digital_sale_invoice_id on pos_schema.return_transaction(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_return_transaction_electronic_sale_invoice_id on pos_schema.return_transaction(electronic_sale_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_return_transaction_invoice_id on pos_schema.return_transaction(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_return_transaction_date on pos_schema.return_transaction(return_date);
 
 CREATE TABLE IF NOT EXISTS return_product(
@@ -1241,7 +1204,7 @@ CREATE TABLE IF NOT EXISTS score_transaction(
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
     transaction_type_id int REFERENCES pos_schema.score_transaction_type(score_transaction_type_id) on delete set null,
     points INTEGER not null,
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete set null,
+    invoice_id uuid REFERENCES pos_schema.invoice(invoice_id) on delete set null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1253,139 +1216,6 @@ CREATE TABLE IF NOT EXISTS debtor (
     missed_payments INTEGER not null default 0
 );
 
-CREATE TABLE IF NOT EXISTS invoice_status (
-    status_id INTEGER PRIMARY KEY,
-    description VARCHAR(50) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice (
-    electronic_sale_invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    sale_id UUID NOT NULL REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
-    status_id INTEGER REFERENCES pos_schema.invoice_status(status_id),
-    key_number VARCHAR(50) NOT NULL UNIQUE,
-    consecutive_number VARCHAR(20) NOT NULL,
-    -- Issuer information (required)
-    -- issue_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    -- issuer_name VARCHAR(150) NOT NULL,
-    -- issuer_identification VARCHAR(20) NOT NULL,
-    -- issuer_identification_type VARCHAR(2) NOT NULL,  -- 01=Individual, 02=Legal Entity, 03=DIMEX, 04=NITE
-    -- issuer_email VARCHAR(200),
-    -- issuer_phone VARCHAR(20),
-    -- Receiver information (optional for consumer final)
-    -- receiver_name VARCHAR(150),
-    -- receiver_identification VARCHAR(20),
-    -- receiver_identification_type VARCHAR(2),
-    -- receiver_email VARCHAR(200),
-    -- sale details
-    payment_method VARCHAR(2) NOT NULL DEFAULT '01',  -- 01=Cash, 02=Card, 03=Check, 04=Transfer
-    credit_days VARCHAR(10),
-    -- Tax breakdown (required)
-    -- total_taxed_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_services NUMERIC(18,5) DEFAULT 0,
-    -- total_taxed_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_taxable NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated NUMERIC(18,5) DEFAULT 0,
-    -- total_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_discounts NUMERIC(18,5) DEFAULT 0,
-    -- total_net_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_tax NUMERIC(18,5) DEFAULT 0,
-    -- total_voucher NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- XML digital signature
-    xml_signed TEXT,
-    -- Hacienda response
-    hacienda_response_xml TEXT,
-    hacienda_response_date TIMESTAMP,
-    -- Async status polling (cron-based reconciliation, migration 011 + 032)
-    check_attempts INT NOT NULL DEFAULT 0,
-    next_check_at TIMESTAMP,
-    -- Metadata
-    -- currency_id INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_sale_id
-    ON pos_schema.electronic_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number
-    ON pos_schema.electronic_sale_invoice(key_number);
--- #2: columna issue_date no existe en esta versión del schema; se indexa created_at
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_created_at
-    ON pos_schema.electronic_sale_invoice(created_at);
--- Cron picks pending invoices due for re-check; partial index keeps it tiny.
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_pending_check
-    ON pos_schema.electronic_sale_invoice(next_check_at)
-    WHERE status_id = 1;
-
--- FK deferred: return_transaction.electronic_sale_invoice_id -> electronic_sale_invoice
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'return_transaction_electronic_sale_invoice_id_fkey'
-          AND conrelid = 'pos_schema.return_transaction'::regclass
-    ) THEN
-        ALTER TABLE pos_schema.return_transaction
-            ADD CONSTRAINT return_transaction_electronic_sale_invoice_id_fkey
-            FOREIGN KEY (electronic_sale_invoice_id)
-            REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id)
-            ON DELETE CASCADE;
-    END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
-    electronic_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    electronic_sale_invoice_id UUID NOT NULL REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL,
-    product_variant_id UUID,
-    sale_item_id uuid NOT NULL REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
-    line_number INTEGER NOT NULL,
-    -- cabys_code VARCHAR(13) NOT NULL REFERENCES general_schema.product(cabys_code) ON DELETE RESTRICT,
-    -- description VARCHAR(200) NOT NULL,  -- Product description
-    -- Quantity and units
-    -- quantity NUMERIC(16,3) NOT NULL,
-    -- unit_of_measure VARCHAR(20) NOT NULL DEFAULT 'Unid',
-    -- commercial_unit_of_measure VARCHAR(20),
-    -- Pricing
-    -- unit_price NUMERIC(18,5) NOT NULL,
-    -- total_amount NUMERIC(18,5) NOT NULL,
-    -- Discounts (optional)
-    discount_amount NUMERIC(18,5) DEFAULT 0,
-    discount_nature VARCHAR(80),
-    -- Subtotal
-    -- subtotal NUMERIC(18,5) NOT NULL,
-    -- Tax (IVA)
-    tax_rate_id INTEGER REFERENCES general_schema.tax_rate(tax_rate_id),
-    tax_exoneration_id INTEGER REFERENCES general_schema.tax_exoneration(exoneration_id),
-    -- tax_code VARCHAR(2) DEFAULT '01',     -- 01 = IVA
-    -- tax_rate_code VARCHAR(2) DEFAULT '08', -- 08 = Standard rate 13%
-    -- tax_rate NUMERIC(5,2) DEFAULT 13.00,
-    -- tax_amount NUMERIC(18,5) DEFAULT 0,
-    -- tax_exemption_amount NUMERIC(18,5) DEFAULT 0,
-    -- Exemption (optional)
-    -- exemption_document_type VARCHAR(2),
-    -- exemption_document_number VARCHAR(40),
-    -- exemption_institution VARCHAR(160),
-    -- exemption_date TIMESTAMP,
-    -- exemption_percentage NUMERIC(3,0),
-    -- Line total
-    -- total_line_amount NUMERIC(18,5) NOT NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_electronic_item_product_variant
-    FOREIGN KEY (tenant_id, product_variant_id)
-        REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_invoice
-    ON pos_schema.electronic_sale_invoice_items(electronic_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_variant
-    ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
 
 -- ── Royalties ─────────────────────────────────────────────────────────────────
 -- A royalty_rule defines a minimum purchase amount. It is not bound to a
@@ -1532,12 +1362,12 @@ CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
     payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
     -- currency_id: currency the customer paid in (original currency).
     currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
-    -- amount_paid: CRC-equivalent of the payment. Used by recalc SUM().
+    -- amount_paid: VES-equivalent of the payment. Used by recalc SUM().
     amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
     -- original_amount: amount stated in currency_id (what the customer handed over).
     original_amount            NUMERIC(12,3) DEFAULT 0
         CHECK (original_amount IS NULL OR original_amount > 0),
-    -- exchange_rate: rate applied to convert original_amount to amount_paid (CRC).
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (VES).
     exchange_rate              NUMERIC(18,8) DEFAULT 1
         CHECK (exchange_rate IS NULL OR exchange_rate > 0),
     payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2224,10 +2054,6 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 	salary_basis VARCHAR(10) NOT NULL DEFAULT 'normal',
 	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral'))
 );
-
--- Indice para filtracion por conceptos
--- FIXME: column "ccss_apply" does not exist
--- CREATE INDEX IF NOT EXISTS idx_payroll_concept_apply ON hr_schema.payroll_concept(ccss_apply, tax_apply);
 
 -- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
 -- La funcion provision_tenant_payroll_concepts() la copia a payroll_concept por tenant.
@@ -3305,12 +3131,12 @@ CREATE TRIGGER trigger_update_category_hierarchy
 
 
 CREATE OR REPLACE FUNCTION general_schema.get_subcategories(
-    p_parent_category_id INTEGER DEFAULT NULL
+    p_parent_category_id UUID DEFAULT NULL
 )
 RETURNS TABLE(
-    category_id INTEGER,
+    category_id UUID,
     category_name VARCHAR(100),
-    parent_id INTEGER,
+    parent_id UUID,
     level INTEGER,
     full_path TEXT,
     product_count BIGINT
@@ -3348,7 +3174,7 @@ BEGIN
         ct.parent_category_id,
         ct.hierarchy_level,
         ct.path,
-        COUNT(p.cabys_code) AS product_count
+        COUNT(p.product_id) AS product_count
     FROM category_tree ct
     LEFT JOIN general_schema.product p 
         ON p.product_category_id = ct.product_category_id
@@ -3629,7 +3455,7 @@ create trigger on_sale_completed_link_sale_to_session
     when (old.is_completed is false and new.is_completed is true)
     execute function link_sale_to_session();
 
-CREATE OR REPLACE FUNCTION calculate_digital_sale_invoice_total()
+CREATE OR REPLACE FUNCTION calculate_invoice_total()
 returns trigger as $$
 BEGIN
     new.total_amount := new.subtotal_amount + new.tax_amount;
@@ -3637,11 +3463,12 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists calculate_digital_sale_invoice_total_trigger on pos_schema.digital_sale_invoice;
-create trigger calculate_digital_sale_invoice_total_trigger
-    before insert or update on pos_schema.digital_sale_invoice
+drop trigger if exists calculate_digital_sale_invoice_total_trigger on pos_schema.invoice;
+drop trigger if exists calculate_invoice_total_trigger on pos_schema.invoice;
+create trigger calculate_invoice_total_trigger
+    before insert or update on pos_schema.invoice
     for each row
-    execute function calculate_digital_sale_invoice_total();
+    execute function calculate_invoice_total();
 
 CREATE OR REPLACE FUNCTION calculate_total_price()
 returns trigger as $$
@@ -3657,39 +3484,39 @@ create trigger calculate_total_price_return_product_trigger
     for each row
     execute function calculate_total_price();
 
-CREATE OR REPLACE FUNCTION pos_schema.get_digital_sale_invoice(_sale_id uuid)
+CREATE OR REPLACE FUNCTION pos_schema.get_invoice(_sale_id uuid)
 returns table (
-    digital_sale_invoice_id uuid,
+    invoice_id uuid,
     sale_id uuid,
     tenant_customer_id uuid,
     currency_id INTEGER,
     subtotal_amount numeric(10,2),
     tax_amount numeric(10,2),
     total_amount numeric(10,2),
-    created_at timestamp,
+    invoiced_at timestamp,
     updated_at timestamp
 ) as $$
 BEGIN
     return query
-    select 
-        b.digital_sale_invoice_id,
+    select
+        b.invoice_id,
         b.sale_id,
         b.tenant_customer_id,
         b.currency_id,
         b.subtotal_amount,
         b.tax_amount,
         b.total_amount,
-        b.created_at,
+        b.invoiced_at,
         b.updated_at
-    from pos_schema.digital_sale_invoice b
+    from pos_schema.invoice b
     where b.sale_id = _sale_id;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION create_digital_sale_invoice()
+CREATE OR REPLACE FUNCTION create_invoice()
 returns trigger as $$
 declare
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _tenant_customer_id uuid;
     _tenant_id uuid;
     _currency_id INTEGER;
@@ -3697,34 +3524,34 @@ declare
     _tax numeric(10,2);
     _total numeric(10,2);
     _payment_ids uuid[];
-    _cash_register_id uuid;
+    _cash_register_session_id uuid;
     _items_count int;
 BEGIN
-        raise notice 'Creating digital sale invoice for sale: %', new.sale_id;
-        
+        raise notice 'Creating invoice for sale: %', new.sale_id;
+
         if exists(
-            select 1 from pos_schema.digital_sale_invoice
+            select 1 from pos_schema.invoice
             where sale_id = new.sale_id
         ) then
-            raise notice 'Digital sale invoice already exists for sale: %', new.sale_id;
+            raise notice 'Invoice already exists for sale: %', new.sale_id;
             return new;
         end if;
-        
+
         _tenant_customer_id := (
-            select tenant_customer_id 
-            from pos_schema.customer_payment 
-            where sale_id = new.sale_id 
+            select tenant_customer_id
+            from pos_schema.customer_payment
+            where sale_id = new.sale_id
             limit 1
         );
-        
+
         select tenant_id into _tenant_id
         from general_schema.tenant_customer
         where tenant_customer_id = _tenant_customer_id;
-        
+
         _currency_id := new.currency_id;
 
-        -- Resolve cash register from active session in the branch
-        SELECT cr.cash_register_id INTO _cash_register_id
+        -- Resolve active cash register session in the branch
+        SELECT crs.cash_register_session_id INTO _cash_register_session_id
         FROM pos_schema.cash_register_session crs
         JOIN pos_schema.cash_register cr ON crs.cash_register_id = cr.cash_register_id
         WHERE cr.branch_id = new.branch_id
@@ -3732,33 +3559,32 @@ BEGIN
         LIMIT 1;
 
         -- Insert invoice with placeholder totals (will be updated from items)
-        INSERT INTO pos_schema.digital_sale_invoice (
-            sale_id,              
+        INSERT INTO pos_schema.invoice (
+            sale_id,
             tenant_customer_id,
             currency_id,
             subtotal_amount,
             tax_amount,
             total_amount,
-            cash_register_id
+            cash_register_session_id
         ) VALUES (
-            new.sale_id,         
+            new.sale_id,
             _tenant_customer_id,
             _currency_id,
             0,
             0,
             0,
-            _cash_register_id
-        ) returning digital_sale_invoice_id into _digital_sale_invoice_id;
-        
-        raise notice '   Digital sale invoice created: %', _digital_sale_invoice_id;
-        raise notice '   Cash Register: %', _cash_register_id;
+            _cash_register_session_id
+        ) returning invoice_id into _invoice_id;
 
-        INSERT INTO pos_schema.digital_sale_invoice_item (
-            digital_sale_invoice_id,
+        raise notice '   Invoice created: %', _invoice_id;
+        raise notice '   Cash Register Session: %', _cash_register_session_id;
+
+        INSERT INTO pos_schema.invoice_item (
+            invoice_id,
             sale_item_id,
             tenant_id,
             product_variant_id,
-            cabys_code,
             tax_rate_id,
             description,
             quantity,
@@ -3769,11 +3595,10 @@ BEGIN
             total_price
         )
         SELECT
-            _digital_sale_invoice_id,
+            _invoice_id,
             si.sale_item_id,
             si.tenant_id,
             si.product_variant_id,
-            pv.cabys_code,
             p.tax_rate_id,
             COALESCE(pv.variant_name, p.product_name, 'Product'),
             si.quantity,
@@ -3783,9 +3608,9 @@ BEGIN
             ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2),
             si.total_price + ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2)
         FROM pos_schema.sale_item si
-        JOIN general_schema.product_variant pv 
+        JOIN general_schema.product_variant pv
             ON si.tenant_id = pv.tenant_id AND si.product_variant_id = pv.product_variant_id
-        LEFT JOIN general_schema.product p ON pv.cabys_code = p.cabys_code
+        LEFT JOIN general_schema.product p ON pv.product_id = p.product_id
         LEFT JOIN general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
         WHERE si.sale_id = new.sale_id;
 
@@ -3794,66 +3619,67 @@ BEGIN
 
         -- Update invoice totals from items (per-item tax)
         SELECT
-            COALESCE(SUM(dsii.subtotal), 0),
-            COALESCE(SUM(dsii.tax_amount), 0)
+            COALESCE(SUM(ii.subtotal), 0),
+            COALESCE(SUM(ii.tax_amount), 0)
         INTO _subtotal, _tax
-        FROM pos_schema.digital_sale_invoice_item dsii
-        WHERE dsii.digital_sale_invoice_id = _digital_sale_invoice_id;
+        FROM pos_schema.invoice_item ii
+        WHERE ii.invoice_id = _invoice_id;
 
         _total := _subtotal + _tax;
 
-        UPDATE pos_schema.digital_sale_invoice
+        UPDATE pos_schema.invoice
         SET subtotal_amount = _subtotal,
             tax_amount = _tax,
             total_amount = _total
-        WHERE digital_sale_invoice_id = _digital_sale_invoice_id;
+        WHERE invoice_id = _invoice_id;
 
         raise notice '   Subtotal: $%', _subtotal;
         raise notice '   Tax (per-item): $%', _tax;
         raise notice '   Total: $%', _total;
-        
+
         -- Link verified payments
         select array_agg(customer_payment_id) into _payment_ids
         from pos_schema.customer_payment
         where sale_id = new.sale_id
         and verified = true;
-        
-        INSERT INTO pos_schema.digital_sale_invoice_payment(digital_sale_invoice_id, customer_payment_id, payment_amount)
-        select 
-            _digital_sale_invoice_id,
+
+        INSERT INTO pos_schema.invoice_payment(invoice_id, customer_payment_id, payment_amount)
+        select
+            _invoice_id,
             customer_payment_id,
             payment_amount
         from pos_schema.customer_payment
         where customer_payment_id = any(_payment_ids);
-        
-        raise notice '   % payment(s) linked to digital sale invoice', array_length(_payment_ids, 1);
+
+        raise notice '   % payment(s) linked to invoice', array_length(_payment_ids, 1);
         raise notice '';
-        raise notice 'Digital sale invoice creation completed successfully';
-        raise notice '   Invoice ID: %', _digital_sale_invoice_id;
+        raise notice 'Invoice creation completed successfully';
+        raise notice '   Invoice ID: %', _invoice_id;
         raise notice '   Sale ID: %', new.sale_id;
 
         return new;
-        
+
     exception
         when others then
-            raise notice 'Error creating digital sale invoice: %', sqlerrm;
+            raise notice 'Error creating invoice: %', sqlerrm;
             return new;
 end;
 $$ language plpgsql;
 
 drop trigger if exists on_sale_completed_create_bill on pos_schema.sale;
 drop trigger if exists on_sale_completed_create_digital_sale_invoice on pos_schema.sale;
-create trigger on_sale_completed_create_digital_sale_invoice
+drop trigger if exists on_sale_completed_create_invoice on pos_schema.sale;
+create trigger on_sale_completed_create_invoice
     after update of is_completed on pos_schema.sale
     for each row
     when (old.is_completed is false and new.is_completed is true)
-    execute function create_digital_sale_invoice();
+    execute function create_invoice();
 
 CREATE OR REPLACE FUNCTION update_on_return()
 returns trigger as $$
 declare
     _sale_item_record record;
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _sale_id uuid;
     _total_returned numeric(10,2) := 0;
     _new_subtotal numeric(10,2);
@@ -3881,13 +3707,13 @@ BEGIN
 
     _sale_id := _sale_item_record.sale_id;
 
-    -- get digital sale invoice for sale
-    select digital_sale_invoice_id into _digital_sale_invoice_id from pos_schema.digital_sale_invoice where sale_id = _sale_id limit 1;
-    if _digital_sale_invoice_id is null then
-        raise exception 'Digital sale invoice not found for sale: %', _sale_id;
+    -- get invoice for sale
+    select invoice_id into _invoice_id from pos_schema.invoice where sale_id = _sale_id limit 1;
+    if _invoice_id is null then
+        raise exception 'Invoice not found for sale: %', _sale_id;
     end if;
 
-    raise notice 'Digital Sale Invoice ID: %', _digital_sale_invoice_id;
+    raise notice 'Invoice ID: %', _invoice_id;
     raise notice 'Original sale item: qty=% unit=$% total=$%', _sale_item_record.quantity, _sale_item_record.unit_price, _sale_item_record.total_price;
 
     if new.quantity > _sale_item_record.quantity then
@@ -3898,13 +3724,13 @@ BEGIN
     _quantity_remaining := _sale_item_record.quantity - new.quantity;
     raise notice 'Return quantity: %  Remaining qty: %', new.quantity, _quantity_remaining;
 
-    -- Update or remove sale_item (CASCADE deletes digital_sale_invoice_item if qty = 0)
+    -- Update or remove sale_item (CASCADE deletes invoice_item if qty = 0)
     if _quantity_remaining = 0 then
-        -- First, explicitly delete the corresponding digital_sale_invoice_item to ensure clean state
-        delete from pos_schema.digital_sale_invoice_item 
-        where digital_sale_invoice_id = _digital_sale_invoice_id
+        -- First, explicitly delete the corresponding invoice_item to ensure clean state
+        delete from pos_schema.invoice_item
+        where invoice_id = _invoice_id
         and sale_item_id = _sale_item_record.sale_item_id;
-        
+
         delete from pos_schema.sale_item where sale_item_id = _sale_item_record.sale_item_id;
         raise notice 'Sale item removed (quantity = 0)';
     else
@@ -3915,9 +3741,9 @@ BEGIN
         where sale_item_id = _sale_item_record.sale_item_id;
         raise notice 'Sale item quantity updated from % to %', _sale_item_record.quantity, _quantity_remaining;
 
-        -- Update corresponding digital_sale_invoice_item with correct tax rate
-        -- Resolve tax_rate the same way as create_digital_sale_invoice
-        update pos_schema.digital_sale_invoice_item dii
+        -- Update corresponding invoice_item with correct tax rate
+        -- Resolve tax_rate the same way as create_invoice
+        update pos_schema.invoice_item dii
         set quantity = _quantity_remaining,
             subtotal = _quantity_remaining * dii.unit_price,
             tax_rate_percentage = COALESCE(tr.rate_percentage, 0),
@@ -3926,31 +3752,31 @@ BEGIN
                 + ROUND((_quantity_remaining * dii.unit_price) * COALESCE(tr.rate_percentage, 0) / 100, 2),
             updated_at = current_timestamp
         from general_schema.product_variant pv
-        left join general_schema.product p ON pv.cabys_code = p.cabys_code
+        left join general_schema.product p ON pv.product_id = p.product_id
         left join general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
-        where dii.digital_sale_invoice_id = _digital_sale_invoice_id
+        where dii.invoice_id = _invoice_id
         and dii.sale_item_id = _sale_item_record.sale_item_id
         and dii.tenant_id = pv.tenant_id
         and dii.product_variant_id = pv.product_variant_id;
     end if;
 
-    -- Recalculate digital sale invoice totals from remaining items
+    -- Recalculate invoice totals from remaining items
     SELECT
-        COALESCE(SUM(dsii.subtotal), 0),
-        COALESCE(SUM(dsii.tax_amount), 0),
-        COALESCE(SUM(dsii.total_price), 0)
+        COALESCE(SUM(ii.subtotal), 0),
+        COALESCE(SUM(ii.tax_amount), 0),
+        COALESCE(SUM(ii.total_price), 0)
     INTO _new_subtotal, _new_tax, _new_total
-    FROM pos_schema.digital_sale_invoice_item dsii
-    WHERE dsii.digital_sale_invoice_id = _digital_sale_invoice_id;
+    FROM pos_schema.invoice_item ii
+    WHERE ii.invoice_id = _invoice_id;
 
-    update pos_schema.digital_sale_invoice
+    update pos_schema.invoice
     set subtotal_amount = _new_subtotal,
         tax_amount = _new_tax,
         total_amount = _new_total,
         updated_at = current_timestamp
-    where digital_sale_invoice_id = _digital_sale_invoice_id;
+    where invoice_id = _invoice_id;
 
-    raise notice 'Digital sale invoice updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
+    raise notice 'Invoice updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
 
     -- Recalculate sale totals from remaining sale_items with per-item tax
     SELECT
@@ -3960,7 +3786,7 @@ BEGIN
     FROM pos_schema.sale_item si
     JOIN general_schema.product_variant pv
         ON si.tenant_id = pv.tenant_id AND si.product_variant_id = pv.product_variant_id
-    LEFT JOIN general_schema.product p ON pv.cabys_code = p.cabys_code
+    LEFT JOIN general_schema.product p ON pv.product_id = p.product_id
     LEFT JOIN general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
     WHERE si.sale_id = _sale_id;
 
@@ -4580,63 +4406,63 @@ returns trigger as $$
 declare
     _tenant_id uuid;
     _tenant_customer_id uuid;
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _points_earned INTEGER;
     _current_balance INTEGER;
     _cash_payments_total numeric(10,2);
     _points_already_awarded BOOLEAN;
 BEGIN
-        _digital_sale_invoice_id := new.digital_sale_invoice_id;
-        
+        _invoice_id := new.invoice_id;
+
         select exists(
-            select 1 
-            from pos_schema.score_transaction 
-            where digital_sale_invoice_id = _digital_sale_invoice_id 
-            and transaction_type_id = 1  
+            select 1
+            from pos_schema.score_transaction
+            where invoice_id = _invoice_id
+            and transaction_type_id = 1
         ) into _points_already_awarded;
-        
+
         if _points_already_awarded then
-            raise notice 'Points already awarded for digital sale invoice %', _digital_sale_invoice_id;
+            raise notice 'Points already awarded for invoice %', _invoice_id;
             return new;
         end if;
-        
+
         select tenant_customer_id into _tenant_customer_id
-        from pos_schema.digital_sale_invoice
-        where digital_sale_invoice_id = _digital_sale_invoice_id;
-        
+        from pos_schema.invoice
+        where invoice_id = _invoice_id;
+
         if _tenant_customer_id is null then
-            raise notice 'No customer found for digital sale invoice %', _digital_sale_invoice_id;
+            raise notice 'No customer found for invoice %', _invoice_id;
             return new;
         end if;
-        
+
         select tenant_id into _tenant_id
         from general_schema.tenant_customer
         where tenant_customer_id = _tenant_customer_id;
-        
+
         if _tenant_id is null then
             raise notice 'Tenant not found for customer %', _tenant_customer_id;
             return new;
         end if;
-        
+
         select coalesce(sum(cp.payment_amount), 0) into _cash_payments_total
-        from pos_schema.digital_sale_invoice_payment bp
+        from pos_schema.invoice_payment bp
         join pos_schema.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
-        where bp.digital_sale_invoice_id = _digital_sale_invoice_id
+        where bp.invoice_id = _invoice_id
         and cp.is_points_redemption = false;
-        
+
         raise notice 'Cash/card payments total: $%', _cash_payments_total;
-        
+
         _points_earned := pos_schema.calculate_purchase_score(
             _tenant_id,
             _tenant_customer_id,
             _cash_payments_total
         );
-        
+
         if _points_earned <= 0 then
-            raise notice 'No points earned for this purchase (Invoice: %)', _digital_sale_invoice_id;
+            raise notice 'No points earned for this purchase (Invoice: %)', _invoice_id;
             return new;
         end if;
-        
+
         INSERT INTO pos_schema.tenant_customer_score(
             tenant_id,
             tenant_customer_id,
@@ -4656,29 +4482,29 @@ BEGIN
             lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
             last_earned_at = current_timestamp
         returning score into _current_balance;
-        
+
         INSERT INTO pos_schema.score_transaction(
             tenant_id,
             tenant_customer_id,
             transaction_type_id,
             points,
-            digital_sale_invoice_id,
+            invoice_id,
             created_at
         ) VALUES (
             _tenant_id,
             _tenant_customer_id,
-            1,  
+            1,
             _points_earned,
-            _digital_sale_invoice_id,
+            _invoice_id,
             current_timestamp
         );
-        
+
         raise notice 'Awarded % points to customer %', _points_earned, _tenant_customer_id;
-        raise notice 'Invoice: %', _digital_sale_invoice_id;
+        raise notice 'Invoice: %', _invoice_id;
         raise notice 'New balance: % points', _current_balance;
-        
+
         return new;
-        
+
     exception
         when others then
             raise notice 'Error awarding points: %', sqlerrm;
@@ -4686,11 +4512,11 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_purchase_billed on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists on_purchase_billed on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists on_invoice_payment_award_points on pos_schema.digital_sale_invoice_payment;
+drop trigger if exists on_purchase_billed on pos_schema.invoice_payment;
+drop trigger if exists on_purchase_billed on pos_schema.invoice_payment;
+drop trigger if exists on_invoice_payment_award_points on pos_schema.invoice_payment;
 create trigger on_invoice_payment_award_points
-    after insert on pos_schema.digital_sale_invoice_payment
+    after insert on pos_schema.invoice_payment
     for each row
     execute function pos_schema.award_points();
 
@@ -4917,13 +4743,15 @@ drop trigger if exists update_customer_payment_timestamp on pos_schema.customer_
 create trigger update_customer_payment_timestamp before update on pos_schema.customer_payment
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_bill_timestamp on pos_schema.digital_sale_invoice;
-drop trigger if exists update_digital_sale_invoice_timestamp on pos_schema.digital_sale_invoice;
-create trigger update_digital_sale_invoice_timestamp before update on pos_schema.digital_sale_invoice
+drop trigger if exists update_bill_timestamp on pos_schema.invoice;
+drop trigger if exists update_digital_sale_invoice_timestamp on pos_schema.invoice;
+drop trigger if exists update_invoice_timestamp on pos_schema.invoice;
+create trigger update_invoice_timestamp before update on pos_schema.invoice
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_digital_sale_invoice_item_timestamp on pos_schema.digital_sale_invoice_item;
-create trigger update_digital_sale_invoice_item_timestamp before update on pos_schema.digital_sale_invoice_item
+drop trigger if exists update_digital_sale_invoice_item_timestamp on pos_schema.invoice_item;
+drop trigger if exists update_invoice_item_timestamp on pos_schema.invoice_item;
+create trigger update_invoice_item_timestamp before update on pos_schema.invoice_item
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_return_transaction_timestamp on pos_schema.return_transaction;
@@ -4958,9 +4786,9 @@ drop trigger if exists update_score_transaction_timestamp on pos_schema.score_tr
 create trigger update_score_transaction_timestamp before update on pos_schema.score_transaction
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.digital_sale_invoice_payment;
-create trigger update_digital_sale_invoice_payment_timestamp before update on pos_schema.digital_sale_invoice_payment
+drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.invoice_payment;
+drop trigger if exists update_invoice_payment_timestamp on pos_schema.invoice_payment;
+create trigger update_invoice_payment_timestamp before update on pos_schema.invoice_payment
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_sale_timestamp on pos_schema.sale;
@@ -6717,6 +6545,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_close_suspention_on_write ON hr_schema.suspention;
 CREATE TRIGGER trg_close_suspention_on_write
 BEFORE INSERT OR UPDATE ON hr_schema.suspention
 FOR EACH ROW
@@ -6996,6 +6825,7 @@ $$ LANGUAGE plpgsql;
 SET SEARCH_PATH TO general_schema;
 
 INSERT INTO general_schema.region(region_name, country_code) VALUES
+    ('Venezuela',     '+58'),
     ('Costa Rica',    '+506'),
     ('Panama',        '+507'),
     ('United States', '+1'),
@@ -7013,12 +6843,11 @@ ON CONFLICT (region_name) DO UPDATE SET country_code = EXCLUDED.country_code;
 SET SEARCH_PATH TO general_schema;
 
 INSERT INTO general_schema.identification_type(type_name, description, ident_code) VALUES
-    ('Cedula Fisica', 'Tarjeta de identificacion en fisico', '01'),
-    ('Cedula Juridica', 'Numero de identificacion asignado por el Registro Nacional', '02'),
-    ('DIMEX', 'Documento de Identidad Migratorio para Extranjeros', '03'),
-    ('NITE', 'Numero de Identificacion Tributaria Especial', '04'),
-    ('Extranjero No Domiciliado', 'Cliente o proveedor sin residencia en el pais', '05'),
-    ('No Contribuyente', 'Persona no inscrita en el DGT', '06')
+    ('Cedula de Identidad', 'Cedula de identidad venezolana (persona natural)', 'V'),
+    ('RIF Persona Juridica', 'Registro de Informacion Fiscal de persona juridica', 'J'),
+    ('Cedula de Identidad Extranjero', 'Cedula de identidad venezolana para extranjero residente', 'E'),
+    ('RIF Ente Gubernamental', 'Registro de Informacion Fiscal de ente gubernamental', 'G'),
+    ('Pasaporte', 'Pasaporte de extranjero no residente', 'P')
 ON CONFLICT DO NOTHING;
 
 
@@ -7076,7 +6905,7 @@ ON CONFLICT DO NOTHING;
 SET SEARCH_PATH TO general_schema;
 
 INSERT INTO general_schema.currency(currency_code, currency_name, symbol) VALUES
-('CRC', 'Costa Rican Colón', '₡'),
+('VES', 'Bolivar', 'Bs.'),
 ('USD', 'US Dollar', '$'),
 ('EUR', 'Euro', '€'),
 ('GBP', 'British Pound', '£'),
@@ -7091,14 +6920,12 @@ ON CONFLICT DO NOTHING;
 -- =============================================
 SET SEARCH_PATH TO general_schema;
 
--- Tasas IVA Costa Rica según DGT-R-48-2016 (CodigoTarifa v4.4)
--- rate_code = CodigoTarifa requerido por Hacienda en <Impuesto><CodigoTarifa>
+-- Tasas IVA Venezuela (SENIAT). Un unico tramo general vigente al momento de
+-- esta migracion; sin desglose de tarifas reducidas (pendiente de spec legal
+-- propia, ver CLAUDE.md raiz - retenciones legales VE).
 INSERT INTO general_schema.tax_rate (region, region_id, rate_percentage, rate_code, rate_name) VALUES
-('CR Exento',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 0.00,  '01', 'Exento'),
-('CR IVA 1%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 1.00,  '05', 'IVA 1%'),
-('CR IVA 2%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 2.00,  '06', 'IVA 2%'),
-('CR IVA 4%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 4.00,  '07', 'IVA 4% - Servicios de Salud'),
-('CR Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 13.00, '08', 'IVA General 13%'),
+('VE Exento',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 0.00,  'EX', 'Exento'),
+('VE Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 16.00, 'IVA', 'IVA General 16%'),
 ('PA Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Panama'),     7.00,  NULL, NULL),
 ('US Federal',  (SELECT region_id FROM general_schema.region WHERE region_name = 'United States'), 10.00, NULL, NULL),
 ('EU Standard', NULL,                                                                            20.00, NULL, NULL),
@@ -7167,614 +6994,6 @@ INSERT INTO general_schema.account_payable_type (type_name, description) VALUES
     ('tax_obligation', 'Taxes owed to government authorities'),
     ('loan_repayment', 'Repayments on business loans or lines of credit')
 ON CONFLICT DO NOTHING;
-
-
-
--- =============================================
--- SEED: BRANCH LOCATIONS
--- Source: seeds/catalog/general/012-insert-branch-locations.sql
--- =============================================
--- ======================================================
--- SEED: general/012-insert-branch-locations.sql
--- ======================================================
--- Descripción: Llena la tabla territorio_catalog con TODOS los territorios
---              de Costa Rica según División del Territorio 2007
---              (Provincia, Cantón y Distrito)
--- Fuente: División del Territorio de Costa Rica Por: Provincia, Cantón y Distrito
---         Según: Código 2007
--- ======================================================
-
-BEGIN;
-
--- Crear tabla de catálogo de territorios si no existe
-CREATE TABLE IF NOT EXISTS general_schema.territorio_catalog (
-    territorio_id SERIAL PRIMARY KEY,
-    codigo VARCHAR(5) UNIQUE NOT NULL,  -- PPCDD (Provincia, Cantón, Distrito)
-    provincia VARCHAR(1) NOT NULL,      -- 1-7
-    canton VARCHAR(2) NOT NULL,         -- 01-XX
-    distrito VARCHAR(2) NOT NULL,       -- 01-XX
-    provincia_nombre VARCHAR(100) NOT NULL,
-    canton_nombre VARCHAR(100) NOT NULL,
-    distrito_nombre VARCHAR(100) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Crear índices para búsquedas rápidas
-CREATE INDEX IF NOT EXISTS idx_territorio_codigo ON general_schema.territorio_catalog(codigo);
-CREATE INDEX IF NOT EXISTS idx_territorio_provincia ON general_schema.territorio_catalog(provincia);
-CREATE INDEX IF NOT EXISTS idx_territorio_canton ON general_schema.territorio_catalog(canton);
-
--- Insertar TODOS los territorios de Costa Rica
-INSERT INTO general_schema.territorio_catalog (codigo, provincia, canton, distrito, provincia_nombre, canton_nombre, distrito_nombre)
-VALUES
--- PROVINCIA 1: SAN JOSE
--- CANTON 101: SAN JOSE
-('10101', '1', '01', '01', 'San José', 'San José', 'Carmen'),
-('10102', '1', '01', '02', 'San José', 'San José', 'Merced'),
-('10103', '1', '01', '03', 'San José', 'San José', 'Hospital'),
-('10104', '1', '01', '04', 'San José', 'San José', 'Catedral'),
-('10105', '1', '01', '05', 'San José', 'San José', 'Zapote'),
-('10106', '1', '01', '06', 'San José', 'San José', 'San Francisco de Dos Ríos'),
-('10107', '1', '01', '07', 'San José', 'San José', 'Uruca'),
-('10108', '1', '01', '08', 'San José', 'San José', 'Mata Redonda'),
-('10109', '1', '01', '09', 'San José', 'San José', 'Pavas'),
-('10110', '1', '01', '10', 'San José', 'San José', 'Hatillo'),
-('10111', '1', '01', '11', 'San José', 'San José', 'San Sebastián'),
--- CANTON 102: ESCAZU
-('10201', '1', '02', '01', 'San José', 'Escazú', 'Escazú'),
-('10202', '1', '02', '02', 'San José', 'Escazú', 'San Antonio'),
-('10203', '1', '02', '03', 'San José', 'Escazú', 'San Rafael'),
--- CANTON 103: DESAMPARADOS
-('10301', '1', '03', '01', 'San José', 'Desamparados', 'Desamparados'),
-('10302', '1', '03', '02', 'San José', 'Desamparados', 'San Miguel'),
-('10303', '1', '03', '03', 'San José', 'Desamparados', 'San Juan de Dios'),
-('10304', '1', '03', '04', 'San José', 'Desamparados', 'San Rafael Arriba'),
-('10305', '1', '03', '05', 'San José', 'Desamparados', 'San Antonio'),
-('10306', '1', '03', '06', 'San José', 'Desamparados', 'Frailes'),
-('10307', '1', '03', '07', 'San José', 'Desamparados', 'Patarrá'),
-('10308', '1', '03', '08', 'San José', 'Desamparados', 'San Cristóbal'),
-('10309', '1', '03', '09', 'San José', 'Desamparados', 'Rosario'),
-('10310', '1', '03', '10', 'San José', 'Desamparados', 'Damas'),
-('10311', '1', '03', '11', 'San José', 'Desamparados', 'San Rafael Abajo'),
-('10312', '1', '03', '12', 'San José', 'Desamparados', 'Gravilias'),
-('10313', '1', '03', '13', 'San José', 'Desamparados', 'Los Guido'),
--- CANTON 104: PURISCAL
-('10401', '1', '04', '01', 'San José', 'Puriscal', 'Santiago'),
-('10402', '1', '04', '02', 'San José', 'Puriscal', 'Mercedes Sur'),
-('10403', '1', '04', '03', 'San José', 'Puriscal', 'Barbacoas'),
-('10404', '1', '04', '04', 'San José', 'Puriscal', 'Grifo Alto'),
-('10405', '1', '04', '05', 'San José', 'Puriscal', 'San Rafael'),
-('10406', '1', '04', '06', 'San José', 'Puriscal', 'Candelaria'),
-('10407', '1', '04', '07', 'San José', 'Puriscal', 'Desamparaditos'),
-('10408', '1', '04', '08', 'San José', 'Puriscal', 'San Antonio'),
-('10409', '1', '04', '09', 'San José', 'Puriscal', 'Chires'),
--- CANTON 105: TARRAZU
-('10501', '1', '05', '01', 'San José', 'Tarrazú', 'San Marcos'),
-('10502', '1', '05', '02', 'San José', 'Tarrazú', 'San Lorenzo'),
-('10503', '1', '05', '03', 'San José', 'Tarrazú', 'San Carlos'),
--- CANTON 106: ASERRI
-('10601', '1', '06', '01', 'San José', 'Aserrí', 'Aserrí'),
-('10602', '1', '06', '02', 'San José', 'Aserrí', 'Tarbaca o Praga'),
-('10603', '1', '06', '03', 'San José', 'Aserrí', 'Vuelta de Jorco'),
-('10604', '1', '06', '04', 'San José', 'Aserrí', 'San Gabriel'),
-('10605', '1', '06', '05', 'San José', 'Aserrí', 'La Legua'),
-('10606', '1', '06', '06', 'San José', 'Aserrí', 'Monterrey'),
-('10607', '1', '06', '07', 'San José', 'Aserrí', 'Salitrillos'),
--- CANTON 107: MORA
-('10701', '1', '07', '01', 'San José', 'Mora', 'Colón'),
-('10702', '1', '07', '02', 'San José', 'Mora', 'Guayabo'),
-('10703', '1', '07', '03', 'San José', 'Mora', 'Tabarcia'),
-('10704', '1', '07', '04', 'San José', 'Mora', 'Piedras Negras'),
-('10705', '1', '07', '05', 'San José', 'Mora', 'Picagres'),
--- CANTON 108: GOICOECHEA
-('10801', '1', '08', '01', 'San José', 'Goicoechea', 'Guadalupe'),
-('10802', '1', '08', '02', 'San José', 'Goicoechea', 'San Francisco'),
-('10803', '1', '08', '03', 'San José', 'Goicoechea', 'Calle Blancos'),
-('10804', '1', '08', '04', 'San José', 'Goicoechea', 'Mata de Plátano'),
-('10805', '1', '08', '05', 'San José', 'Goicoechea', 'Ipís'),
-('10806', '1', '08', '06', 'San José', 'Goicoechea', 'Rancho Redondo'),
-('10807', '1', '08', '07', 'San José', 'Goicoechea', 'Purral'),
--- CANTON 109: SANTA ANA
-('10901', '1', '09', '01', 'San José', 'Santa Ana', 'Santa Ana'),
-('10902', '1', '09', '02', 'San José', 'Santa Ana', 'Salitral'),
-('10903', '1', '09', '03', 'San José', 'Santa Ana', 'Pozos o Concepción'),
-('10904', '1', '09', '04', 'San José', 'Santa Ana', 'Uruca o San Joaquín'),
-('10905', '1', '09', '05', 'San José', 'Santa Ana', 'Piedades'),
-('10906', '1', '09', '06', 'San José', 'Santa Ana', 'Brasil'),
--- CANTON 110: ALAJUELITA
-('11001', '1', '10', '01', 'San José', 'Alajuelita', 'Alajuelita'),
-('11002', '1', '10', '02', 'San José', 'Alajuelita', 'San Josecito'),
-('11003', '1', '10', '03', 'San José', 'Alajuelita', 'San Antonio'),
-('11004', '1', '10', '04', 'San José', 'Alajuelita', 'Concepción'),
-('11005', '1', '10', '05', 'San José', 'Alajuelita', 'San Felipe'),
--- CANTON 111: CORONADO
-('11101', '1', '11', '01', 'San José', 'Coronado', 'San Isidro'),
-('11102', '1', '11', '02', 'San José', 'Coronado', 'San Rafael'),
-('11103', '1', '11', '03', 'San José', 'Coronado', 'Dulce Nombre o Jesús'),
-('11104', '1', '11', '04', 'San José', 'Coronado', 'Patalillo'),
-('11105', '1', '11', '05', 'San José', 'Coronado', 'Cascajal'),
--- CANTON 112: ACOSTA
-('11201', '1', '12', '01', 'San José', 'Acosta', 'San Ignacio'),
-('11202', '1', '12', '02', 'San José', 'Acosta', 'Guaitil'),
-('11203', '1', '12', '03', 'San José', 'Acosta', 'Palmichal'),
-('11204', '1', '12', '04', 'San José', 'Acosta', 'Cangrejal'),
-('11205', '1', '12', '05', 'San José', 'Acosta', 'Sabanillas'),
--- CANTON 113: TIBAS
-('11301', '1', '13', '01', 'San José', 'Tibás', 'San Juan'),
-('11302', '1', '13', '02', 'San José', 'Tibás', 'Cinco Esquinas'),
-('11303', '1', '13', '03', 'San José', 'Tibás', 'Anselmo Llorente'),
-('11304', '1', '13', '04', 'San José', 'Tibás', 'León XIII'),
-('11305', '1', '13', '05', 'San José', 'Tibás', 'Colima'),
--- CANTON 114: MORAVIA
-('11401', '1', '14', '01', 'San José', 'Moravia', 'San Vicente'),
-('11402', '1', '14', '02', 'San José', 'Moravia', 'San Jerónimo'),
-('11403', '1', '14', '03', 'San José', 'Moravia', 'La Trinidad'),
--- CANTON 115: MONTES DE OCA
-('11501', '1', '15', '01', 'San José', 'Montes de Oca', 'San Pedro'),
-('11502', '1', '15', '02', 'San José', 'Montes de Oca', 'Sabanilla'),
-('11503', '1', '15', '03', 'San José', 'Montes de Oca', 'Mercedes o Betania'),
-('11504', '1', '15', '04', 'San José', 'Montes de Oca', 'San Rafael'),
--- CANTON 116: TURRUBARES
-('11601', '1', '16', '01', 'San José', 'Turrubares', 'San Pablo'),
-('11602', '1', '16', '02', 'San José', 'Turrubares', 'San Pedro'),
-('11603', '1', '16', '03', 'San José', 'Turrubares', 'San Juan de Mata'),
-('11604', '1', '16', '04', 'San José', 'Turrubares', 'San Luis'),
-('11605', '1', '16', '05', 'San José', 'Turrubares', 'Carara'),
--- CANTON 117: DOTA
-('11701', '1', '17', '01', 'San José', 'Dota', 'Santa María'),
-('11702', '1', '17', '02', 'San José', 'Dota', 'Jardín'),
-('11703', '1', '17', '03', 'San José', 'Dota', 'Copey'),
--- CANTON 118: CURRIDABAT
-('11801', '1', '18', '01', 'San José', 'Curridabat', 'Curridabat'),
-('11802', '1', '18', '02', 'San José', 'Curridabat', 'Granadilla'),
-('11803', '1', '18', '03', 'San José', 'Curridabat', 'Sánchez'),
-('11804', '1', '18', '04', 'San José', 'Curridabat', 'Tirrases'),
--- CANTON 119: PEREZ ZELEDON
-('11901', '1', '19', '01', 'San José', 'Pérez Zeledón', 'San Isidro'),
-('11902', '1', '19', '02', 'San José', 'Pérez Zeledón', 'General'),
-('11903', '1', '19', '03', 'San José', 'Pérez Zeledón', 'Daniel Flores'),
-('11904', '1', '19', '04', 'San José', 'Pérez Zeledón', 'Rivas'),
-('11905', '1', '19', '05', 'San José', 'Pérez Zeledón', 'San Pedro'),
-('11906', '1', '19', '06', 'San José', 'Pérez Zeledón', 'Platanares'),
-('11907', '1', '19', '07', 'San José', 'Pérez Zeledón', 'Pejibaye'),
-('11908', '1', '19', '08', 'San José', 'Pérez Zeledón', 'Cajón o Carmen'),
-('11909', '1', '19', '09', 'San José', 'Pérez Zeledón', 'Barú'),
-('11910', '1', '19', '10', 'San José', 'Pérez Zeledón', 'Río Nuevo'),
-('11911', '1', '19', '11', 'San José', 'Pérez Zeledón', 'Páramo'),
--- CANTON 120: LEON CORTES
-('12001', '1', '20', '01', 'San José', 'León Cortés', 'San Pablo'),
-('12002', '1', '20', '02', 'San José', 'León Cortés', 'San Andrés'),
-('12003', '1', '20', '03', 'San José', 'León Cortés', 'Llano Bonito'),
-('12004', '1', '20', '04', 'San José', 'León Cortés', 'San Isidro'),
-('12005', '1', '20', '05', 'San José', 'León Cortés', 'Santa Cruz'),
-('12006', '1', '20', '06', 'San José', 'León Cortés', 'San Antonio'),
-
--- PROVINCIA 2: ALAJUELA
--- CANTON 201: ALAJUELA
-('20101', '2', '01', '01', 'Alajuela', 'Alajuela', 'Alajuela'),
-('20102', '2', '01', '02', 'Alajuela', 'Alajuela', 'San José'),
-('20103', '2', '01', '03', 'Alajuela', 'Alajuela', 'Carrizal'),
-('20104', '2', '01', '04', 'Alajuela', 'Alajuela', 'San Antonio'),
-('20105', '2', '01', '05', 'Alajuela', 'Alajuela', 'Guácima'),
-('20106', '2', '01', '06', 'Alajuela', 'Alajuela', 'San Isidro'),
-('20107', '2', '01', '07', 'Alajuela', 'Alajuela', 'Sabanilla'),
-('20108', '2', '01', '08', 'Alajuela', 'Alajuela', 'San Rafael'),
-('20109', '2', '01', '09', 'Alajuela', 'Alajuela', 'Río Segundo'),
-('20110', '2', '01', '10', 'Alajuela', 'Alajuela', 'Desamparados'),
-('20111', '2', '01', '11', 'Alajuela', 'Alajuela', 'Turrucares'),
-('20112', '2', '01', '12', 'Alajuela', 'Alajuela', 'Tambor'),
-('20113', '2', '01', '13', 'Alajuela', 'Alajuela', 'La Garita'),
-('20114', '2', '01', '14', 'Alajuela', 'Alajuela', 'Sarapiquí'),
--- CANTON 202: SAN RAMON
-('20201', '2', '02', '01', 'Alajuela', 'San Ramón', 'San Ramón'),
-('20202', '2', '02', '02', 'Alajuela', 'San Ramón', 'Santiago'),
-('20203', '2', '02', '03', 'Alajuela', 'San Ramón', 'San Juan'),
-('20204', '2', '02', '04', 'Alajuela', 'San Ramón', 'Piedades Norte'),
-('20205', '2', '02', '05', 'Alajuela', 'San Ramón', 'Piedades Sur'),
-('20206', '2', '02', '06', 'Alajuela', 'San Ramón', 'San Rafael'),
-('20207', '2', '02', '07', 'Alajuela', 'San Ramón', 'San Isidro'),
-('20208', '2', '02', '08', 'Alajuela', 'San Ramón', 'Ángeles'),
-('20209', '2', '02', '09', 'Alajuela', 'San Ramón', 'Alfaro'),
-('20210', '2', '02', '10', 'Alajuela', 'San Ramón', 'Volio'),
-('20211', '2', '02', '11', 'Alajuela', 'San Ramón', 'Concepción'),
-('20212', '2', '02', '12', 'Alajuela', 'San Ramón', 'Zapotal'),
-('20213', '2', '02', '13', 'Alajuela', 'San Ramón', 'San Isidro de Peñas Blancas'),
--- CANTON 203: GRECIA
-('20301', '2', '03', '01', 'Alajuela', 'Grecia', 'Grecia'),
-('20302', '2', '03', '02', 'Alajuela', 'Grecia', 'San Isidro'),
-('20303', '2', '03', '03', 'Alajuela', 'Grecia', 'San José'),
-('20304', '2', '03', '04', 'Alajuela', 'Grecia', 'San Roque'),
-('20305', '2', '03', '05', 'Alajuela', 'Grecia', 'Tácares'),
-('20306', '2', '03', '06', 'Alajuela', 'Grecia', 'Río Cuarto'),
-('20307', '2', '03', '07', 'Alajuela', 'Grecia', 'Puente Piedra'),
-('20308', '2', '03', '08', 'Alajuela', 'Grecia', 'Bolívar'),
--- CANTON 204: SAN MATEO
-('20401', '2', '04', '01', 'Alajuela', 'San Mateo', 'San Mateo'),
-('20402', '2', '04', '02', 'Alajuela', 'San Mateo', 'Desmonte'),
-('20403', '2', '04', '03', 'Alajuela', 'San Mateo', 'Jesús María'),
--- CANTON 205: ATENAS
-('20501', '2', '05', '01', 'Alajuela', 'Atenas', 'Atenas'),
-('20502', '2', '05', '02', 'Alajuela', 'Atenas', 'Jesús'),
-('20503', '2', '05', '03', 'Alajuela', 'Atenas', 'Mercedes'),
-('20504', '2', '05', '04', 'Alajuela', 'Atenas', 'San Isidro'),
-('20505', '2', '05', '05', 'Alajuela', 'Atenas', 'Concepción'),
-('20506', '2', '05', '06', 'Alajuela', 'Atenas', 'San José'),
-('20507', '2', '05', '07', 'Alajuela', 'Atenas', 'Santa Eulalia'),
-('20508', '2', '05', '08', 'Alajuela', 'Atenas', 'Escobal'),
--- CANTON 206: NARANJO
-('20601', '2', '06', '01', 'Alajuela', 'Naranjo', 'Naranjo'),
-('20602', '2', '06', '02', 'Alajuela', 'Naranjo', 'San Miguel'),
-('20603', '2', '06', '03', 'Alajuela', 'Naranjo', 'San José'),
-('20604', '2', '06', '04', 'Alajuela', 'Naranjo', 'Cirrí Sur'),
-('20605', '2', '06', '05', 'Alajuela', 'Naranjo', 'San Jerónimo'),
-('20606', '2', '06', '06', 'Alajuela', 'Naranjo', 'San Juan'),
-('20607', '2', '06', '07', 'Alajuela', 'Naranjo', 'Rosario'),
--- CANTON 207: PALMARES
-('20701', '2', '07', '01', 'Alajuela', 'Palmares', 'Palmares'),
-('20702', '2', '07', '02', 'Alajuela', 'Palmares', 'Zaragoza'),
-('20703', '2', '07', '03', 'Alajuela', 'Palmares', 'Buenos Aires'),
-('20704', '2', '07', '04', 'Alajuela', 'Palmares', 'Santiago'),
-('20705', '2', '07', '05', 'Alajuela', 'Palmares', 'Candelaria'),
-('20706', '2', '07', '06', 'Alajuela', 'Palmares', 'Esquipulas'),
-('20707', '2', '07', '07', 'Alajuela', 'Palmares', 'La Granja'),
--- CANTON 208: POAS
-('20801', '2', '08', '01', 'Alajuela', 'Poás', 'San Pedro'),
-('20802', '2', '08', '02', 'Alajuela', 'Poás', 'San Juan'),
-('20803', '2', '08', '03', 'Alajuela', 'Poás', 'San Rafael'),
-('20804', '2', '08', '04', 'Alajuela', 'Poás', 'Carrillos'),
-('20805', '2', '08', '05', 'Alajuela', 'Poás', 'Sabana Redonda'),
--- CANTON 209: OROTINA
-('20901', '2', '09', '01', 'Alajuela', 'Orotina', 'Orotina'),
-('20902', '2', '09', '02', 'Alajuela', 'Orotina', 'Mastate'),
-('20903', '2', '09', '03', 'Alajuela', 'Orotina', 'Hacienda Vieja'),
-('20904', '2', '09', '04', 'Alajuela', 'Orotina', 'Coyolar'),
-('20905', '2', '09', '05', 'Alajuela', 'Orotina', 'Ceiba'),
--- CANTON 210: SAN CARLOS
-('21001', '2', '10', '01', 'Alajuela', 'San Carlos', 'Quesada'),
-('21002', '2', '10', '02', 'Alajuela', 'San Carlos', 'Florencia'),
-('21003', '2', '10', '03', 'Alajuela', 'San Carlos', 'Buenavista'),
-('21004', '2', '10', '04', 'Alajuela', 'San Carlos', 'Aguas Zarcas'),
-('21005', '2', '10', '05', 'Alajuela', 'San Carlos', 'Venecia'),
-('21006', '2', '10', '06', 'Alajuela', 'San Carlos', 'Pital'),
-('21007', '2', '10', '07', 'Alajuela', 'San Carlos', 'Fortuna'),
-('21008', '2', '10', '08', 'Alajuela', 'San Carlos', 'Tigra'),
-('21009', '2', '10', '09', 'Alajuela', 'San Carlos', 'Palmera'),
-('21010', '2', '10', '10', 'Alajuela', 'San Carlos', 'Venado'),
-('21011', '2', '10', '11', 'Alajuela', 'San Carlos', 'Cutris'),
-('21012', '2', '10', '12', 'Alajuela', 'San Carlos', 'Monterrey'),
-('21013', '2', '10', '13', 'Alajuela', 'San Carlos', 'Pocosol'),
--- CANTON 211: ALFARO RUIZ
-('21101', '2', '11', '01', 'Alajuela', 'Alfaro Ruiz', 'Zarcero'),
-('21102', '2', '11', '02', 'Alajuela', 'Alfaro Ruiz', 'Laguna'),
-('21103', '2', '11', '03', 'Alajuela', 'Alfaro Ruiz', 'Tapezco'),
-('21104', '2', '11', '04', 'Alajuela', 'Alfaro Ruiz', 'Guadalupe'),
-('21105', '2', '11', '05', 'Alajuela', 'Alfaro Ruiz', 'Palmira'),
-('21106', '2', '11', '06', 'Alajuela', 'Alfaro Ruiz', 'Zapote'),
-('21107', '2', '11', '07', 'Alajuela', 'Alfaro Ruiz', 'Brisas'),
--- CANTON 212: VALVERDE VEGA
-('21201', '2', '12', '01', 'Alajuela', 'Valverde Vega', 'Sarchí Norte'),
-('21202', '2', '12', '02', 'Alajuela', 'Valverde Vega', 'Sarchí Sur'),
-('21203', '2', '12', '03', 'Alajuela', 'Valverde Vega', 'Toro Amarillo'),
-('21204', '2', '12', '04', 'Alajuela', 'Valverde Vega', 'San Pedro'),
-('21205', '2', '12', '05', 'Alajuela', 'Valverde Vega', 'Rodríguez'),
--- CANTON 213: UPALA
-('21301', '2', '13', '01', 'Alajuela', 'Upala', 'Upala'),
-('21302', '2', '13', '02', 'Alajuela', 'Upala', 'Aguas Claras'),
-('21303', '2', '13', '03', 'Alajuela', 'Upala', 'San José o Pizote'),
-('21304', '2', '13', '04', 'Alajuela', 'Upala', 'Bijagua'),
-('21305', '2', '13', '05', 'Alajuela', 'Upala', 'Delicias'),
-('21306', '2', '13', '06', 'Alajuela', 'Upala', 'Dos Ríos'),
-('21307', '2', '13', '07', 'Alajuela', 'Upala', 'Yolillal'),
--- CANTON 214: LOS CHILES
-('21401', '2', '14', '01', 'Alajuela', 'Los Chiles', 'Los Chiles'),
-('21402', '2', '14', '02', 'Alajuela', 'Los Chiles', 'Caño Negro'),
-('21403', '2', '14', '03', 'Alajuela', 'Los Chiles', 'Amparo'),
-('21404', '2', '14', '04', 'Alajuela', 'Los Chiles', 'San Jorge'),
--- CANTON 215: GUATUSO
-('21501', '2', '15', '01', 'Alajuela', 'Guatuso', 'San Rafael'),
-('21502', '2', '15', '02', 'Alajuela', 'Guatuso', 'Buenavista'),
-('21503', '2', '15', '03', 'Alajuela', 'Guatuso', 'Cote'),
-
--- PROVINCIA 3: CARTAGO
--- CANTON 301: CARTAGO
-('30101', '3', '01', '01', 'Cartago', 'Cartago', 'Oriental'),
-('30102', '3', '01', '02', 'Cartago', 'Cartago', 'Occidental'),
-('30103', '3', '01', '03', 'Cartago', 'Cartago', 'Carmen'),
-('30104', '3', '01', '04', 'Cartago', 'Cartago', 'San Nicolás'),
-('30105', '3', '01', '05', 'Cartago', 'Cartago', 'Aguacaliente (San Francisco)'),
-('30106', '3', '01', '06', 'Cartago', 'Cartago', 'Guadalupe (Arenilla)'),
-('30107', '3', '01', '07', 'Cartago', 'Cartago', 'Corralillo'),
-('30108', '3', '01', '08', 'Cartago', 'Cartago', 'Tierra Blanca'),
-('30109', '3', '01', '09', 'Cartago', 'Cartago', 'Dulce Nombre'),
-('30110', '3', '01', '10', 'Cartago', 'Cartago', 'Llano Grande'),
-('30111', '3', '01', '11', 'Cartago', 'Cartago', 'Quebradilla'),
--- CANTON 302: PARAISO
-('30201', '3', '02', '01', 'Cartago', 'Paraíso', 'Paraíso'),
-('30202', '3', '02', '02', 'Cartago', 'Paraíso', 'Santiago'),
-('30203', '3', '02', '03', 'Cartago', 'Paraíso', 'Orosi'),
-('30204', '3', '02', '04', 'Cartago', 'Paraíso', 'Cachí'),
-('30205', '3', '02', '05', 'Cartago', 'Paraíso', 'Llanos de Sta Lucia'),
--- CANTON 303: LA UNION
-('30301', '3', '03', '01', 'Cartago', 'La Unión', 'Tres Ríos'),
-('30302', '3', '03', '02', 'Cartago', 'La Unión', 'San Diego'),
-('30303', '3', '03', '03', 'Cartago', 'La Unión', 'San Juan'),
-('30304', '3', '03', '04', 'Cartago', 'La Unión', 'San Rafael'),
-('30305', '3', '03', '05', 'Cartago', 'La Unión', 'Concepción'),
-('30306', '3', '03', '06', 'Cartago', 'La Unión', 'Dulce Nombre'),
-('30307', '3', '03', '07', 'Cartago', 'La Unión', 'San Ramón'),
-('30308', '3', '03', '08', 'Cartago', 'La Unión', 'Río Azul'),
--- CANTON 304: JIMENEZ
-('30401', '3', '04', '01', 'Cartago', 'Jiménez', 'Juan Viñas'),
-('30402', '3', '04', '02', 'Cartago', 'Jiménez', 'Tucurrique'),
-('30403', '3', '04', '03', 'Cartago', 'Jiménez', 'Pejibaye'),
--- CANTON 305: TURRIALBA
-('30501', '3', '05', '01', 'Cartago', 'Turrialba', 'Turrialba'),
-('30502', '3', '05', '02', 'Cartago', 'Turrialba', 'La Suiza'),
-('30503', '3', '05', '03', 'Cartago', 'Turrialba', 'Peralta'),
-('30504', '3', '05', '04', 'Cartago', 'Turrialba', 'Santa Cruz'),
-('30505', '3', '05', '05', 'Cartago', 'Turrialba', 'Santa Teresita'),
-('30506', '3', '05', '06', 'Cartago', 'Turrialba', 'Pavones'),
-('30507', '3', '05', '07', 'Cartago', 'Turrialba', 'Tuis'),
-('30508', '3', '05', '08', 'Cartago', 'Turrialba', 'Tayutic'),
-('30509', '3', '05', '09', 'Cartago', 'Turrialba', 'Santa Rosa'),
-('30510', '3', '05', '10', 'Cartago', 'Turrialba', 'Tres Equis'),
-('30511', '3', '05', '11', 'Cartago', 'Turrialba', 'La Isabel'),
-('30512', '3', '05', '12', 'Cartago', 'Turrialba', 'Chirripo'),
--- CANTON 306: ALVARADO
-('30601', '3', '06', '01', 'Cartago', 'Alvarado', 'Pacayas'),
-('30602', '3', '06', '02', 'Cartago', 'Alvarado', 'Cervantes'),
-('30603', '3', '06', '03', 'Cartago', 'Alvarado', 'Capellades'),
--- CANTON 307: OREAMUNO
-('30701', '3', '07', '01', 'Cartago', 'Oreamuno', 'San Rafael'),
-('30702', '3', '07', '02', 'Cartago', 'Oreamuno', 'Cot'),
-('30703', '3', '07', '03', 'Cartago', 'Oreamuno', 'Potrero Cerrado'),
-('30704', '3', '07', '04', 'Cartago', 'Oreamuno', 'Cipreses'),
-('30705', '3', '07', '05', 'Cartago', 'Oreamuno', 'Santa Rosa'),
--- CANTON 308: EL GUARCO
-('30801', '3', '08', '01', 'Cartago', 'El Guarco', 'El Tejar'),
-('30802', '3', '08', '02', 'Cartago', 'El Guarco', 'San Isidro'),
-('30803', '3', '08', '03', 'Cartago', 'El Guarco', 'Tobosi'),
-('30804', '3', '08', '04', 'Cartago', 'El Guarco', 'Patio de Agua'),
-
--- PROVINCIA 4: HEREDIA
--- CANTON 401: HEREDIA
-('40101', '4', '01', '01', 'Heredia', 'Heredia', 'Heredia'),
-('40102', '4', '01', '02', 'Heredia', 'Heredia', 'Mercedes'),
-('40103', '4', '01', '03', 'Heredia', 'Heredia', 'San Francisco'),
-('40104', '4', '01', '04', 'Heredia', 'Heredia', 'Ulloa'),
-('40105', '4', '01', '05', 'Heredia', 'Heredia', 'Vara Blanca'),
--- CANTON 402: BARVA
-('40201', '4', '02', '01', 'Heredia', 'Barva', 'Barva'),
-('40202', '4', '02', '02', 'Heredia', 'Barva', 'San Pedro'),
-('40203', '4', '02', '03', 'Heredia', 'Barva', 'San Pablo'),
-('40204', '4', '02', '04', 'Heredia', 'Barva', 'San Roque'),
-('40205', '4', '02', '05', 'Heredia', 'Barva', 'Santa Lucía'),
-('40206', '4', '02', '06', 'Heredia', 'Barva', 'San José de la Montaña'),
--- CANTON 403: SANTO DOMINGO
-('40301', '4', '03', '01', 'Heredia', 'Santo Domingo', 'Santo Domingo'),
-('40302', '4', '03', '02', 'Heredia', 'Santo Domingo', 'San Vicente'),
-('40303', '4', '03', '03', 'Heredia', 'Santo Domingo', 'San Miguel'),
-('40304', '4', '03', '04', 'Heredia', 'Santo Domingo', 'Paracito'),
-('40305', '4', '03', '05', 'Heredia', 'Santo Domingo', 'Santo Tomás'),
-('40306', '4', '03', '06', 'Heredia', 'Santo Domingo', 'Santa Rosa'),
-('40307', '4', '03', '07', 'Heredia', 'Santo Domingo', 'Tures'),
-('40308', '4', '03', '08', 'Heredia', 'Santo Domingo', 'Pará'),
--- CANTON 404: SANTA BARBARA
-('40401', '4', '04', '01', 'Heredia', 'Santa Bárbara', 'Santa Bárbara'),
-('40402', '4', '04', '02', 'Heredia', 'Santa Bárbara', 'San Pedro'),
-('40403', '4', '04', '03', 'Heredia', 'Santa Bárbara', 'San Juan'),
-('40404', '4', '04', '04', 'Heredia', 'Santa Bárbara', 'Jesús'),
-('40405', '4', '04', '05', 'Heredia', 'Santa Bárbara', 'Santo Domingo del Roble'),
-('40406', '4', '04', '06', 'Heredia', 'Santa Bárbara', 'Puraba'),
--- CANTON 405: SAN RAFAEL
-('40501', '4', '05', '01', 'Heredia', 'San Rafael', 'San Rafael'),
-('40502', '4', '05', '02', 'Heredia', 'San Rafael', 'San Josecito'),
-('40503', '4', '05', '03', 'Heredia', 'San Rafael', 'Santiago'),
-('40504', '4', '05', '04', 'Heredia', 'San Rafael', 'Ángeles'),
-('40505', '4', '05', '05', 'Heredia', 'San Rafael', 'Concepción'),
--- CANTON 406: SAN ISIDRO
-('40601', '4', '06', '01', 'Heredia', 'San Isidro', 'San Isidro'),
-('40602', '4', '06', '02', 'Heredia', 'San Isidro', 'San José'),
-('40603', '4', '06', '03', 'Heredia', 'San Isidro', 'Concepción'),
-('40604', '4', '06', '04', 'Heredia', 'San Isidro', 'San Francisco'),
--- CANTON 407: BELEN
-('40701', '4', '07', '01', 'Heredia', 'Belén', 'San Antonio'),
-('40702', '4', '07', '02', 'Heredia', 'Belén', 'La Rivera'),
-('40703', '4', '07', '03', 'Heredia', 'Belén', 'Asunción'),
--- CANTON 408: FLORES
-('40801', '4', '08', '01', 'Heredia', 'Flores', 'San Joaquín'),
-('40802', '4', '08', '02', 'Heredia', 'Flores', 'Barrantes'),
-('40803', '4', '08', '03', 'Heredia', 'Flores', 'Llorente'),
--- CANTON 409: SAN PABLO
-('40901', '4', '09', '01', 'Heredia', 'San Pablo', 'San Pablo'),
--- CANTON 410: SARAPIQUI
-('41001', '4', '10', '01', 'Heredia', 'Sarapiquí', 'Puerto Viejo'),
-('41002', '4', '10', '02', 'Heredia', 'Sarapiquí', 'La Virgen'),
-('41003', '4', '10', '03', 'Heredia', 'Sarapiquí', 'Horquetas'),
-('41004', '4', '10', '04', 'Heredia', 'Sarapiquí', 'Llanuras del Gaspar'),
-('41005', '4', '10', '05', 'Heredia', 'Sarapiquí', 'Cureña'),
-
--- PROVINCIA 5: GUANACASTE
--- CANTON 501: LIBERIA
-('50101', '5', '01', '01', 'Guanacaste', 'Liberia', 'Liberia'),
-('50102', '5', '01', '02', 'Guanacaste', 'Liberia', 'Cañas Dulces'),
-('50103', '5', '01', '03', 'Guanacaste', 'Liberia', 'Mayorga'),
-('50104', '5', '01', '04', 'Guanacaste', 'Liberia', 'Nacascolo'),
-('50105', '5', '01', '05', 'Guanacaste', 'Liberia', 'Curubande'),
--- CANTON 502: NICOYA
-('50201', '5', '02', '01', 'Guanacaste', 'Nicoya', 'Nicoya'),
-('50202', '5', '02', '02', 'Guanacaste', 'Nicoya', 'Mansión'),
-('50203', '5', '02', '03', 'Guanacaste', 'Nicoya', 'San Antonio'),
-('50204', '5', '02', '04', 'Guanacaste', 'Nicoya', 'Quebrada Honda'),
-('50205', '5', '02', '05', 'Guanacaste', 'Nicoya', 'Sámara'),
-('50206', '5', '02', '06', 'Guanacaste', 'Nicoya', 'Nosara'),
-('50207', '5', '02', '07', 'Guanacaste', 'Nicoya', 'Belén de Nosarita'),
--- CANTON 503: SANTA CRUZ
-('50301', '5', '03', '01', 'Guanacaste', 'Santa Cruz', 'Santa Cruz'),
-('50302', '5', '03', '02', 'Guanacaste', 'Santa Cruz', 'Bolsón'),
-('50303', '5', '03', '03', 'Guanacaste', 'Santa Cruz', 'Veintisiete de Abril'),
-('50304', '5', '03', '04', 'Guanacaste', 'Santa Cruz', 'Tempate'),
-('50305', '5', '03', '05', 'Guanacaste', 'Santa Cruz', 'Cartagena'),
-('50306', '5', '03', '06', 'Guanacaste', 'Santa Cruz', 'Cuajiniquil'),
-('50307', '5', '03', '07', 'Guanacaste', 'Santa Cruz', 'Diriá'),
-('50308', '5', '03', '08', 'Guanacaste', 'Santa Cruz', 'Cabo Velas'),
-('50309', '5', '03', '09', 'Guanacaste', 'Santa Cruz', 'Tamarindo'),
--- CANTON 504: BAGACES
-('50401', '5', '04', '01', 'Guanacaste', 'Bagaces', 'Bagaces'),
-('50402', '5', '04', '02', 'Guanacaste', 'Bagaces', 'Fortuna'),
-('50403', '5', '04', '03', 'Guanacaste', 'Bagaces', 'Mogote'),
-('50404', '5', '04', '04', 'Guanacaste', 'Bagaces', 'Río Naranjo'),
--- CANTON 505: CARRILLO
-('50501', '5', '05', '01', 'Guanacaste', 'Carrillo', 'Filadelfia'),
-('50502', '5', '05', '02', 'Guanacaste', 'Carrillo', 'Palmira'),
-('50503', '5', '05', '03', 'Guanacaste', 'Carrillo', 'Sardinal'),
-('50504', '5', '05', '04', 'Guanacaste', 'Carrillo', 'Belén'),
--- CANTON 506: CAÑAS
-('50601', '5', '06', '01', 'Guanacaste', 'Cañas', 'Cañas'),
-('50602', '5', '06', '02', 'Guanacaste', 'Cañas', 'Palmira'),
-('50603', '5', '06', '03', 'Guanacaste', 'Cañas', 'San Miguel'),
-('50604', '5', '06', '04', 'Guanacaste', 'Cañas', 'Bebedero'),
-('50605', '5', '06', '05', 'Guanacaste', 'Cañas', 'Porozal'),
--- CANTON 507: ABANGARES
-('50701', '5', '07', '01', 'Guanacaste', 'Abangares', 'Juntas'),
-('50702', '5', '07', '02', 'Guanacaste', 'Abangares', 'Sierra'),
-('50703', '5', '07', '03', 'Guanacaste', 'Abangares', 'San Juan'),
-('50704', '5', '07', '04', 'Guanacaste', 'Abangares', 'Colorado'),
--- CANTON 508: TILARAN
-('50801', '5', '08', '01', 'Guanacaste', 'Tilarán', 'Tilarán'),
-('50802', '5', '08', '02', 'Guanacaste', 'Tilarán', 'Quebrada Grande'),
-('50803', '5', '08', '03', 'Guanacaste', 'Tilarán', 'Tronadora'),
-('50804', '5', '08', '04', 'Guanacaste', 'Tilarán', 'Santa Rosa'),
-('50805', '5', '08', '05', 'Guanacaste', 'Tilarán', 'Líbano'),
-('50806', '5', '08', '06', 'Guanacaste', 'Tilarán', 'Tierras Morenas'),
-('50807', '5', '08', '07', 'Guanacaste', 'Tilarán', 'Arenal'),
--- CANTON 509: NANDAYURE
-('50901', '5', '09', '01', 'Guanacaste', 'Nandayure', 'Carmona'),
-('50902', '5', '09', '02', 'Guanacaste', 'Nandayure', 'Santa Rita'),
-('50903', '5', '09', '03', 'Guanacaste', 'Nandayure', 'Zapotal'),
-('50904', '5', '09', '04', 'Guanacaste', 'Nandayure', 'San Pablo'),
-('50905', '5', '09', '05', 'Guanacaste', 'Nandayure', 'Porvenir'),
-('50906', '5', '09', '06', 'Guanacaste', 'Nandayure', 'Bejuco'),
--- CANTON 510: LA CRUZ
-('51001', '5', '10', '01', 'Guanacaste', 'La Cruz', 'La Cruz'),
-('51002', '5', '10', '02', 'Guanacaste', 'La Cruz', 'Santa Cecilia'),
-('51003', '5', '10', '03', 'Guanacaste', 'La Cruz', 'Garita'),
-('51004', '5', '10', '04', 'Guanacaste', 'La Cruz', 'Santa Elena'),
--- CANTON 511: HOJANCHA
-('51101', '5', '11', '01', 'Guanacaste', 'Hojancha', 'Hojancha'),
-('51102', '5', '11', '02', 'Guanacaste', 'Hojancha', 'Monte Romo'),
-('51103', '5', '11', '03', 'Guanacaste', 'Hojancha', 'Puerto Carrillo'),
-('51104', '5', '11', '04', 'Guanacaste', 'Hojancha', 'Huacas'),
-
--- PROVINCIA 6: PUNTARENAS
--- CANTON 601: PUNTARENAS
-('60101', '6', '01', '01', 'Puntarenas', 'Puntarenas', 'Puntarenas'),
-('60102', '6', '01', '02', 'Puntarenas', 'Puntarenas', 'Pitahaya'),
-('60103', '6', '01', '03', 'Puntarenas', 'Puntarenas', 'Chomes'),
-('60104', '6', '01', '04', 'Puntarenas', 'Puntarenas', 'Lepanto'),
-('60105', '6', '01', '05', 'Puntarenas', 'Puntarenas', 'Paquera'),
-('60106', '6', '01', '06', 'Puntarenas', 'Puntarenas', 'Manzanillo'),
-('60107', '6', '01', '07', 'Puntarenas', 'Puntarenas', 'Guacimal'),
-('60108', '6', '01', '08', 'Puntarenas', 'Puntarenas', 'Barranca'),
-('60109', '6', '01', '09', 'Puntarenas', 'Puntarenas', 'Monte Verde'),
-('60110', '6', '01', '10', 'Puntarenas', 'Puntarenas', 'Isla del Coco'),
-('60111', '6', '01', '11', 'Puntarenas', 'Puntarenas', 'Cóbano'),
-('60112', '6', '01', '12', 'Puntarenas', 'Puntarenas', 'Chacarita'),
-('60113', '6', '01', '13', 'Puntarenas', 'Puntarenas', 'Chira (Isla)'),
-('60114', '6', '01', '14', 'Puntarenas', 'Puntarenas', 'Acapulco'),
-('60115', '6', '01', '15', 'Puntarenas', 'Puntarenas', 'El Roble'),
-('60116', '6', '01', '16', 'Puntarenas', 'Puntarenas', 'Arancibia'),
--- CANTON 602: ESPARZA
-('60201', '6', '02', '01', 'Puntarenas', 'Esparza', 'Espíritu Santo'),
-('60202', '6', '02', '02', 'Puntarenas', 'Esparza', 'San Juan Grande'),
-('60203', '6', '02', '03', 'Puntarenas', 'Esparza', 'Macacona'),
-('60204', '6', '02', '04', 'Puntarenas', 'Esparza', 'San Rafael'),
-('60205', '6', '02', '05', 'Puntarenas', 'Esparza', 'San Jerónimo'),
--- CANTON 603: BUENOS AIRES
-('60301', '6', '03', '01', 'Puntarenas', 'Buenos Aires', 'Buenos Aires'),
-('60302', '6', '03', '02', 'Puntarenas', 'Buenos Aires', 'Volcán'),
-('60303', '6', '03', '03', 'Puntarenas', 'Buenos Aires', 'Potrero Grande'),
-('60304', '6', '03', '04', 'Puntarenas', 'Buenos Aires', 'Boruca'),
-('60305', '6', '03', '05', 'Puntarenas', 'Buenos Aires', 'Pilas'),
-('60306', '6', '03', '06', 'Puntarenas', 'Buenos Aires', 'Colinas o Bajo de Maíz'),
-('60307', '6', '03', '07', 'Puntarenas', 'Buenos Aires', 'Chánguena'),
-('60308', '6', '03', '08', 'Puntarenas', 'Buenos Aires', 'Bioley'),
-('60309', '6', '03', '09', 'Puntarenas', 'Buenos Aires', 'Brunka'),
--- CANTON 604: MONTES DE ORO
-('60401', '6', '04', '01', 'Puntarenas', 'Montes de Oro', 'Miramar'),
-('60402', '6', '04', '02', 'Puntarenas', 'Montes de Oro', 'Unión'),
-('60403', '6', '04', '03', 'Puntarenas', 'Montes de Oro', 'San Isidro'),
--- CANTON 605: OSA
-('60501', '6', '05', '01', 'Puntarenas', 'Osa', 'Puerto Cortés'),
-('60502', '6', '05', '02', 'Puntarenas', 'Osa', 'Palmar'),
-('60503', '6', '05', '03', 'Puntarenas', 'Osa', 'Sierpe'),
-('60504', '6', '05', '04', 'Puntarenas', 'Osa', 'Bahía Ballena'),
-('60505', '6', '05', '05', 'Puntarenas', 'Osa', 'Piedras Blancas'),
--- CANTON 606: AGUIRRE
-('60601', '6', '06', '01', 'Puntarenas', 'Aguirre', 'Quepos'),
-('60602', '6', '06', '02', 'Puntarenas', 'Aguirre', 'Savegre'),
-('60603', '6', '06', '03', 'Puntarenas', 'Aguirre', 'Naranjito'),
--- CANTON 607: GOLFITO
-('60701', '6', '07', '01', 'Puntarenas', 'Golfito', 'Golfito'),
-('60702', '6', '07', '02', 'Puntarenas', 'Golfito', 'Puerto Jiménez'),
-('60703', '6', '07', '03', 'Puntarenas', 'Golfito', 'Guaycará'),
-('60704', '6', '07', '04', 'Puntarenas', 'Golfito', 'Pavones o Villa Conte'),
--- CANTON 608: COTO BRUS
-('60801', '6', '08', '01', 'Puntarenas', 'Coto Brus', 'San Vito'),
-('60802', '6', '08', '02', 'Puntarenas', 'Coto Brus', 'Sabalito'),
-('60803', '6', '08', '03', 'Puntarenas', 'Coto Brus', 'Agua Buena'),
-('60804', '6', '08', '04', 'Puntarenas', 'Coto Brus', 'Limoncito'),
-('60805', '6', '08', '05', 'Puntarenas', 'Coto Brus', 'Pittier'),
--- CANTON 609: PARRITA
-('60901', '6', '09', '01', 'Puntarenas', 'Parrita', 'Parrita'),
--- CANTON 610: CORREDORES
-('61001', '6', '10', '01', 'Puntarenas', 'Corredores', 'Corredores'),
-('61002', '6', '10', '02', 'Puntarenas', 'Corredores', 'La Cuesta'),
-('61003', '6', '10', '03', 'Puntarenas', 'Corredores', 'Paso Canoas'),
-('61004', '6', '10', '04', 'Puntarenas', 'Corredores', 'Laurel'),
--- CANTON 611: GARABITO
-('61101', '6', '11', '01', 'Puntarenas', 'Garabito', 'Jacó'),
-('61102', '6', '11', '02', 'Puntarenas', 'Garabito', 'Tárcoles'),
-
--- PROVINCIA 7: LIMON
--- CANTON 701: LIMON
-('70101', '7', '01', '01', 'Limón', 'Limón', 'Limón'),
-('70102', '7', '01', '02', 'Limón', 'Limón', 'Valle La Estrella'),
-('70103', '7', '01', '03', 'Limón', 'Limón', 'Río Blanco'),
-('70104', '7', '01', '04', 'Limón', 'Limón', 'Matama'),
--- CANTON 702: POCOCI
-('70201', '7', '02', '01', 'Limón', 'Pococí', 'Guápiles'),
-('70202', '7', '02', '02', 'Limón', 'Pococí', 'Jiménez'),
-('70203', '7', '02', '03', 'Limón', 'Pococí', 'Rita'),
-('70204', '7', '02', '04', 'Limón', 'Pococí', 'Roxana'),
-('70205', '7', '02', '05', 'Limón', 'Pococí', 'Cariari'),
-('70206', '7', '02', '06', 'Limón', 'Pococí', 'Colorado'),
--- CANTON 703: SIQUIRRES
-('70301', '7', '03', '01', 'Limón', 'Siquirres', 'Siquirres'),
-('70302', '7', '03', '02', 'Limón', 'Siquirres', 'Pacuarito'),
-('70303', '7', '03', '03', 'Limón', 'Siquirres', 'Florida'),
-('70304', '7', '03', '04', 'Limón', 'Siquirres', 'Germania'),
-('70305', '7', '03', '05', 'Limón', 'Siquirres', 'Cairo'),
-('70306', '7', '03', '06', 'Limón', 'Siquirres', 'Alegría'),
--- CANTON 704: TALAMANCA
-('70401', '7', '04', '01', 'Limón', 'Talamanca', 'Bratsi'),
-('70402', '7', '04', '02', 'Limón', 'Talamanca', 'Sixaola'),
-('70403', '7', '04', '03', 'Limón', 'Talamanca', 'Cahuita'),
-('70404', '7', '04', '04', 'Limón', 'Talamanca', 'Telire'),
--- CANTON 705: MATINA
-('70501', '7', '05', '01', 'Limón', 'Matina', 'Matina'),
-('70502', '7', '05', '02', 'Limón', 'Matina', 'Batán'),
-('70503', '7', '05', '03', 'Limón', 'Matina', 'Carrandí'),
--- CANTON 706: GUACIMO
-('70601', '7', '06', '01', 'Limón', 'Guácimo', 'Guácimo'),
-('70602', '7', '06', '02', 'Limón', 'Guácimo', 'Mercedes'),
-('70603', '7', '06', '03', 'Limón', 'Guácimo', 'Pocora'),
-('70604', '7', '06', '04', 'Limón', 'Guácimo', 'Río Jiménez'),
-('70605', '7', '06', '05', 'Limón', 'Guácimo', 'Duacari')
-ON CONFLICT (codigo) DO NOTHING;
-
-COMMIT;
 
 
 
@@ -7899,27 +7118,6 @@ INSERT INTO pos_schema.sale_condition (condition_code, condition_desc) VALUES
   ('11', 'Pago de venta a credito en IVA hasta 90 dias'),
   ('99', 'Otros') 
 ON CONFLICT DO NOTHING;
-
-
-
--- =============================================
--- SEED: INVOICE STATUS
--- Source: seeds/catalog/pos/007-insert-invoice-status.sql
--- =============================================
--- Seed: pos_schema.invoice_status
--- status_id values are fixed constants referenced in application code
---   1 = pendiente  → recién generada, aún no enviada o sin respuesta de Hacienda
---   2 = aceptada   → Hacienda confirmó la factura
---   3 = rechazada  → Hacienda rechazó la factura
---   4 = timeout    → agotó los reintentos del cron sin resolución
-
-INSERT INTO pos_schema.invoice_status (status_id, description)
-VALUES
-  (1, 'pendiente'),
-  (2, 'aceptada'),
-  (3, 'rechazada'),
-  (4, 'timeout')
-ON CONFLICT (status_id) DO NOTHING;
 
 
 
@@ -8127,15 +7325,17 @@ ON CONFLICT DO NOTHING;
 --   NUNCA intercambiables. Usar la base equivocada es el error de
 --   calculo mas frecuente.
 --
--- Codigos de formula soportados (hr_schema strategy.context):
---   bn   -> Bono nocturno      (base_value = recargo, 0.30)   Art. 117
---   he   -> Horas extra        (base_value = recargo, 0.50)   Art. 118
---   fer  -> Feriado trabajado  (base_value = recargo, 0.50)   Art. 120
---   vac  -> Vacaciones         (dias segun antiguedad)        Art. 190
---   bvac -> Bono vacacional    (dias segun antiguedad)        Art. 192
---   util -> Utilidades         (reparto, topes 30/120 dias)   Art. 131
---   bfa  -> Bonificacion fin de anio (minimo 30 dias)         Art. 132
---   ant  -> Anticipo de prestaciones (resta)                  Art. 144
+-- Codigos de formula soportados por la PLANILLA MENSUAL
+-- (hr_schema strategy.context / payroll.service.ts):
+--   bn   -> Bono nocturno   (horas ponderadas desde overtime_record)  Art. 117
+--   he   -> Horas extra     (horas ponderadas desde overtime_record)  Art. 118
+--   fer  -> Feriado trabajado (horas ponderadas desde overtime_record) Art. 120
+--
+-- Los siguientes codigos de formula existen en el template pero se
+-- siembran is_active = FALSE porque NO se calculan por planilla
+-- mensual, sino por su modulo dedicado (ver seccion correspondiente
+-- mas abajo): vac, bvac (vacations.service.ts), util, bfa
+-- (profit-sharing.service.ts), ant (severance-advance.service.ts).
 -- ============================================================
 
 SET SEARCH_PATH TO hr_schema;
@@ -8155,11 +7355,22 @@ VALUES
   ('Horas extra',              'earning',   'formula',    TRUE,  0.50, 'he',   '118',   'normal', TRUE),
   ('Feriado trabajado',        'earning',   'formula',    TRUE,  0.50, 'fer',  '120',   'normal', TRUE),
 
-  -- Beneficios anuales. Base: salario normal (Art. 121).
-  ('Vacaciones',               'earning',   'formula',    TRUE,  15,   'vac',  '190',   'normal', TRUE),
-  ('Bono vacacional',          'earning',   'formula',    TRUE,  15,   'bvac', '192',   'normal', TRUE),
-  ('Utilidades',               'earning',   'formula',    TRUE,  30,   'util', '131',   'normal', TRUE),
-  ('Bonificacion fin de ano',  'earning',   'formula',    TRUE,  30,   'bfa',  '132',   'normal', TRUE),
+  -- -------------------------------------------------------
+  -- BENEFICIOS ANUALES - NO SE PROCESAN EN LA PLANILLA MENSUAL
+  -- -------------------------------------------------------
+  -- Se siembran INACTIVAS (is_active = FALSE). No son conceptos de
+  -- formula mensual: vacaciones/bono vacacional se causan y disfrutan
+  -- via hr_schema.vacation_period (vacations.service.ts), utilidades y
+  -- bonificacion de fin de anio via hr_schema.profit_sharing_period
+  -- (profit-sharing.service.ts), y el anticipo de prestaciones via
+  -- hr_schema.severance_advance (severance-advance.service.ts). Esos
+  -- modulos ya calculan correctamente por Arts. 190/192/131/132/144;
+  -- activarlas aqui hace que el motor de planilla mensual intente
+  -- recalcularlas con una formula generica y de codigo desconocido.
+  ('Vacaciones',               'earning',   'formula',    TRUE,  15,   'vac',  '190',   'normal', FALSE),
+  ('Bono vacacional',          'earning',   'formula',    TRUE,  15,   'bvac', '192',   'normal', FALSE),
+  ('Utilidades',               'earning',   'formula',    TRUE,  30,   'util', '131',   'normal', FALSE),
+  ('Bonificacion fin de ano',  'earning',   'formula',    TRUE,  30,   'bfa',  '132',   'normal', FALSE),
 
   -- Percepciones variables.
   ('Comisiones',               'earning',   'manual',     TRUE,  0,    'COM',  '104',   'normal', TRUE),
@@ -8168,8 +7379,9 @@ VALUES
   -- -------------------------------------------------------
   -- DEDUCCIONES (deduction)
   -- -------------------------------------------------------
-  -- Anticipo sobre la garantia de prestaciones: hasta 75% (Art. 144).
-  ('Anticipo de prestaciones', 'deduction', 'formula',    FALSE, 0,    'ant',  '144',   'integral', TRUE),
+  -- Anticipo sobre la garantia de prestaciones (Art. 144): se gestiona
+  -- via hr_schema.severance_advance, no como formula de planilla mensual.
+  ('Anticipo de prestaciones', 'deduction', 'formula',    FALSE, 0,    'ant',  '144',   'integral', FALSE),
 
   -- Cuota sindical: requiere autorizacion expresa (Arts. 412, 413).
   ('Cuota sindical',           'deduction', 'manual',     FALSE, 0,    'SIND', '412',   'normal', TRUE),
@@ -8617,14 +7829,12 @@ BEGIN
             'general_schema.account_payable_type',
             'general_schema.account_receivable_status',
             'general_schema.account_receivable_type',
-            'general_schema.territorio_catalog',
             'pos_schema.return_reason',
             'pos_schema.return_status',
             'pos_schema.promotion_type',
             'pos_schema.score_redemption_status',
             'pos_schema.score_transaction_type',
             'pos_schema.sale_condition',
-            'pos_schema.invoice_status',
             'pos_schema.sale_collection_alert_type',
             'inventory_schema.inventory_log_type',
             'purchase_schema.purchase_order_status',

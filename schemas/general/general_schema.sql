@@ -39,22 +39,6 @@ CREATE TABLE IF NOT EXISTS tenant(
 COMMENT ON COLUMN general_schema.tenant.tax_regime IS
     'Tenant tax regime: traditional (régimen general IVA) or simplified (régimen simplificado, Decreto 38 MH).';
 
-CREATE TABLE IF NOT EXISTS tenant_hacienda_config (
-    tenant_hacienda_config_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL UNIQUE REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    hacienda_username TEXT NOT NULL,
-    hacienda_password TEXT NOT NULL,
-    hacienda_client_id VARCHAR(20) NOT NULL DEFAULT 'api-prod',
-    p12_base64 TEXT NOT NULL,
-    p12_password TEXT NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_tenant_hacienda_config_tenant
-    ON general_schema.tenant_hacienda_config(tenant_id);  
-
 CREATE TABLE IF NOT EXISTS branch(
     branch_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,
@@ -70,26 +54,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS unique_main_branch_per_tenant
     on general_schema.branch (tenant_id)
     where is_main_branch = true;
 
--- Dirección estructurada del branch para facturación electrónica (DGT-R-48-2016)
-CREATE TABLE IF NOT EXISTS branch_location (
-    branch_location_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    branch_id UUID NOT NULL UNIQUE REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
-    provincia  VARCHAR(1)  NOT NULL DEFAULT '1',   -- 1=San José … 7=Limón
-    canton     VARCHAR(2)  NOT NULL DEFAULT '01',
-    distrito   VARCHAR(2)  NOT NULL DEFAULT '01',
-    otras_senas TEXT       NOT NULL DEFAULT '',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP          DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_branch_location_branch_id
-    ON general_schema.branch_location(branch_id);
-
 CREATE TABLE IF NOT EXISTS identification_type(
     identification_type_id SERIAL PRIMARY KEY,
     type_name VARCHAR(50) unique not null,
     description text,
-    ident_code VARCHAR(3) not null, -- Campo requerido para la facturacion
+    ident_code VARCHAR(3) not null, -- Codigo corto interno del tipo de identificacion
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -217,9 +186,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_rate_region_percentage
     ON general_schema.tax_rate(region, rate_percentage);
 
 COMMENT ON TABLE general_schema.tax_rate IS
-    'Stores tax rate entries for both regional taxes and CABYS product-level IVA rates.
+    'Stores tax rate entries for both regional taxes and product-level IVA rates.
      - Regional rates: region + region_id populated.
-     - CABYS IVA rates: rate_code + rate_name populated, region nullable.';
+     - Product IVA rates: rate_code + rate_name populated, region nullable.';
 
 
 
@@ -296,16 +265,16 @@ CREATE INDEX IF NOT EXISTS idx_special_code_tenant
     WHERE tenant_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_category(
-    product_category_id VARCHAR(13) PRIMARY KEY NOT NULL,
+    product_category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category_name TEXT not null,
-    parent_category_id VARCHAR(13)                                    
+    parent_category_id UUID
         REFERENCES general_schema.product_category(product_category_id)
         ON DELETE CASCADE,
-    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),  
+    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT chk_no_self_reference                              
+
+    CONSTRAINT chk_no_self_reference
         CHECK (product_category_id != parent_category_id)
 );
 
@@ -333,10 +302,10 @@ CREATE TABLE IF NOT EXISTS commercial_unit_measure(
 );
 
 CREATE TABLE IF NOT EXISTS product(
-    cabys_code VARCHAR(13) PRIMARY KEY,
+    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_name TEXT NOT NULL,
     product_name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('spanish', product_name)) STORED,
-    product_category_id VARCHAR(13) REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
+    product_category_id UUID REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
     tax_rate_id INT REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     unit_measure_id INT REFERENCES general_schema.unit_measure(unit_measure_id) ON DELETE SET NULL,
     commercial_unit_measure_id INT REFERENCES general_schema.commercial_unit_measure(commercial_unit_measure_id) ON DELETE SET NULL,
@@ -403,7 +372,7 @@ CREATE INDEX IF NOT EXISTS idx_attribute_value_tenant
 CREATE TABLE IF NOT EXISTS product_variant (
     tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     product_variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    cabys_code VARCHAR(13) REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
+    product_id UUID REFERENCES general_schema.product(product_id) ON DELETE SET NULL,
     sku VARCHAR(100) NOT NULL,
     variant_name VARCHAR(255),
     unit_price numeric(10,2) CHECK (unit_price >= 0),
@@ -439,8 +408,9 @@ $$ LANGUAGE plpgsql;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variant_tenant_sku 
     ON general_schema.product_variant(tenant_id, sku);
-CREATE INDEX IF NOT EXISTS idx_product_variant_cabys 
-    ON general_schema.product_variant(cabys_code);
+CREATE INDEX IF NOT EXISTS idx_product_variant_product
+    ON general_schema.product_variant(product_id)
+    WHERE product_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
     ON general_schema.product_variant(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_product_variant_active
@@ -451,8 +421,9 @@ CREATE INDEX IF NOT EXISTS idx_product_variant_supplier
     WHERE supplier_id IS NOT NULL;
 
 COMMENT ON TABLE general_schema.product_variant IS
-    'Tenant-specific sellable product variants linked to a CABYS catalog entry.
-    Variants have unique SKUs and prices per tenant.';
+    'Tenant-specific sellable product variants, optionally linked to a national
+    product catalog entry (general_schema.product). Variants have unique SKUs
+    and prices per tenant.';
 
 CREATE TABLE IF NOT EXISTS attribute_assignation (
     tenant_id uuid NOT NULL,

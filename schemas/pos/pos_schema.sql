@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS sale(
     tax_amount numeric(10,2) not null default 0 check (tax_amount >= 0),
     total_amount numeric(10,2) not null,
     is_completed BOOLEAN default false,
-    has_electronic_invoice BOOLEAN DEFAULT FALSE,
     is_refunded BOOLEAN NOT NULL DEFAULT false,
     seller_user_id uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at timestamp not null default current_timestamp,
@@ -133,8 +132,8 @@ CREATE TABLE IF NOT EXISTS customer_payment(
     )
 );
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice(
-    digital_sale_invoice_id uuid PRIMARY KEY default gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS invoice(
+    invoice_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -151,20 +150,18 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_sale_id on pos_schema.digital_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_cash_register_session
-    ON pos_schema.digital_sale_invoice(cash_register_session_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_sale_id on pos_schema.invoice(sale_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_cash_register_session
+    ON pos_schema.invoice(cash_register_session_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
-    digital_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    digital_sale_invoice_id UUID NOT NULL
-        REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS invoice_item(
+    invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_id UUID NOT NULL
+        REFERENCES pos_schema.invoice(invoice_id) ON DELETE CASCADE,
     sale_item_id UUID NOT NULL
         REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
     product_variant_id UUID,
-    cabys_code VARCHAR(13)
-        REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
     tax_rate_id INTEGER
         REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     description VARCHAR(255),
@@ -177,30 +174,30 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT digital_sale_invoice_item_product_variant_fkey
+    CONSTRAINT invoice_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
         ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_invoice
-    ON pos_schema.digital_sale_invoice_item(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_sale_item
-    ON pos_schema.digital_sale_invoice_item(sale_item_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_variant
-    ON pos_schema.digital_sale_invoice_item(tenant_id, product_variant_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_tax_rate
-    ON pos_schema.digital_sale_invoice_item(tax_rate_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_invoice
+    ON pos_schema.invoice_item(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_sale_item
+    ON pos_schema.invoice_item(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_variant
+    ON pos_schema.invoice_item(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_tax_rate
+    ON pos_schema.invoice_item(tax_rate_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_payment(
-    digital_sale_invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid not null REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
+CREATE TABLE IF NOT EXISTS invoice_payment(
+    invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
+    invoice_id uuid not null REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     customer_payment_id uuid not null REFERENCES pos_schema.customer_payment(customer_payment_id) on delete cascade,
     payment_amount numeric(10,2) not null check (payment_amount > 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    unique (digital_sale_invoice_id, customer_payment_id)
+    unique (invoice_id, customer_payment_id)
 );
 
 CREATE TABLE IF NOT EXISTS return_reason(
@@ -221,21 +218,16 @@ CREATE TABLE IF NOT EXISTS return_status(
 
 CREATE TABLE IF NOT EXISTS return_transaction(
     return_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
-    electronic_sale_invoice_id uuid, -- FK to pos_schema.electronic_sale_invoice added via ALTER TABLE below (forward reference)
+    invoice_id uuid NOT NULL REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     return_status_id INTEGER REFERENCES pos_schema.return_status(return_status_id) on delete set null,
     description TEXT NOT NULL,
     return_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT chk_return_transaction_invoice CHECK (
-        digital_sale_invoice_id IS NOT NULL OR electronic_sale_invoice_id IS NOT NULL
-    )
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_return_transaction_digital_sale_invoice_id on pos_schema.return_transaction(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_return_transaction_electronic_sale_invoice_id on pos_schema.return_transaction(electronic_sale_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_return_transaction_invoice_id on pos_schema.return_transaction(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_return_transaction_date on pos_schema.return_transaction(return_date);
 
 CREATE TABLE IF NOT EXISTS return_product(
@@ -436,7 +428,7 @@ CREATE TABLE IF NOT EXISTS score_transaction(
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
     transaction_type_id int REFERENCES pos_schema.score_transaction_type(score_transaction_type_id) on delete set null,
     points INTEGER not null,
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete set null,
+    invoice_id uuid REFERENCES pos_schema.invoice(invoice_id) on delete set null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -448,139 +440,6 @@ CREATE TABLE IF NOT EXISTS debtor (
     missed_payments INTEGER not null default 0
 );
 
-CREATE TABLE IF NOT EXISTS invoice_status (
-    status_id INTEGER PRIMARY KEY,
-    description VARCHAR(50) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice (
-    electronic_sale_invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    sale_id UUID NOT NULL REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
-    status_id INTEGER REFERENCES pos_schema.invoice_status(status_id),
-    key_number VARCHAR(50) NOT NULL UNIQUE,
-    consecutive_number VARCHAR(20) NOT NULL,
-    -- Issuer information (required)
-    -- issue_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    -- issuer_name VARCHAR(150) NOT NULL,
-    -- issuer_identification VARCHAR(20) NOT NULL,
-    -- issuer_identification_type VARCHAR(2) NOT NULL,  -- 01=Individual, 02=Legal Entity, 03=DIMEX, 04=NITE
-    -- issuer_email VARCHAR(200),
-    -- issuer_phone VARCHAR(20),
-    -- Receiver information (optional for consumer final)
-    -- receiver_name VARCHAR(150),
-    -- receiver_identification VARCHAR(20),
-    -- receiver_identification_type VARCHAR(2),
-    -- receiver_email VARCHAR(200),
-    -- sale details
-    payment_method VARCHAR(2) NOT NULL DEFAULT '01',  -- 01=Cash, 02=Card, 03=Check, 04=Transfer
-    credit_days VARCHAR(10),
-    -- Tax breakdown (required)
-    -- total_taxed_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_services NUMERIC(18,5) DEFAULT 0,
-    -- total_taxed_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_taxable NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated NUMERIC(18,5) DEFAULT 0,
-    -- total_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_discounts NUMERIC(18,5) DEFAULT 0,
-    -- total_net_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_tax NUMERIC(18,5) DEFAULT 0,
-    -- total_voucher NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- XML digital signature
-    xml_signed TEXT,
-    -- Hacienda response
-    hacienda_response_xml TEXT,
-    hacienda_response_date TIMESTAMP,
-    -- Async status polling (cron-based reconciliation, migration 011 + 032)
-    check_attempts INT NOT NULL DEFAULT 0,
-    next_check_at TIMESTAMP,
-    -- Metadata
-    -- currency_id INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_sale_id
-    ON pos_schema.electronic_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number
-    ON pos_schema.electronic_sale_invoice(key_number);
--- #2: columna issue_date no existe en esta versión del schema; se indexa created_at
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_created_at
-    ON pos_schema.electronic_sale_invoice(created_at);
--- Cron picks pending invoices due for re-check; partial index keeps it tiny.
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_pending_check
-    ON pos_schema.electronic_sale_invoice(next_check_at)
-    WHERE status_id = 1;
-
--- FK deferred: return_transaction.electronic_sale_invoice_id -> electronic_sale_invoice
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'return_transaction_electronic_sale_invoice_id_fkey'
-          AND conrelid = 'pos_schema.return_transaction'::regclass
-    ) THEN
-        ALTER TABLE pos_schema.return_transaction
-            ADD CONSTRAINT return_transaction_electronic_sale_invoice_id_fkey
-            FOREIGN KEY (electronic_sale_invoice_id)
-            REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id)
-            ON DELETE CASCADE;
-    END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
-    electronic_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    electronic_sale_invoice_id UUID NOT NULL REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL,
-    product_variant_id UUID,
-    sale_item_id uuid NOT NULL REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
-    line_number INTEGER NOT NULL,
-    -- cabys_code VARCHAR(13) NOT NULL REFERENCES general_schema.product(cabys_code) ON DELETE RESTRICT,
-    -- description VARCHAR(200) NOT NULL,  -- Product description
-    -- Quantity and units
-    -- quantity NUMERIC(16,3) NOT NULL,
-    -- unit_of_measure VARCHAR(20) NOT NULL DEFAULT 'Unid',
-    -- commercial_unit_of_measure VARCHAR(20),
-    -- Pricing
-    -- unit_price NUMERIC(18,5) NOT NULL,
-    -- total_amount NUMERIC(18,5) NOT NULL,
-    -- Discounts (optional)
-    discount_amount NUMERIC(18,5) DEFAULT 0,
-    discount_nature VARCHAR(80),
-    -- Subtotal
-    -- subtotal NUMERIC(18,5) NOT NULL,
-    -- Tax (IVA)
-    tax_rate_id INTEGER REFERENCES general_schema.tax_rate(tax_rate_id),
-    tax_exoneration_id INTEGER REFERENCES general_schema.tax_exoneration(exoneration_id),
-    -- tax_code VARCHAR(2) DEFAULT '01',     -- 01 = IVA
-    -- tax_rate_code VARCHAR(2) DEFAULT '08', -- 08 = Standard rate 13%
-    -- tax_rate NUMERIC(5,2) DEFAULT 13.00,
-    -- tax_amount NUMERIC(18,5) DEFAULT 0,
-    -- tax_exemption_amount NUMERIC(18,5) DEFAULT 0,
-    -- Exemption (optional)
-    -- exemption_document_type VARCHAR(2),
-    -- exemption_document_number VARCHAR(40),
-    -- exemption_institution VARCHAR(160),
-    -- exemption_date TIMESTAMP,
-    -- exemption_percentage NUMERIC(3,0),
-    -- Line total
-    -- total_line_amount NUMERIC(18,5) NOT NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_electronic_item_product_variant
-    FOREIGN KEY (tenant_id, product_variant_id)
-        REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_invoice
-    ON pos_schema.electronic_sale_invoice_items(electronic_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_variant
-    ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
 
 -- ── Royalties ─────────────────────────────────────────────────────────────────
 -- A royalty_rule defines a minimum purchase amount. It is not bound to a
@@ -727,12 +586,12 @@ CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
     payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
     -- currency_id: currency the customer paid in (original currency).
     currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
-    -- amount_paid: CRC-equivalent of the payment. Used by recalc SUM().
+    -- amount_paid: VES-equivalent of the payment. Used by recalc SUM().
     amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
     -- original_amount: amount stated in currency_id (what the customer handed over).
     original_amount            NUMERIC(12,3) DEFAULT 0
         CHECK (original_amount IS NULL OR original_amount > 0),
-    -- exchange_rate: rate applied to convert original_amount to amount_paid (CRC).
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (VES).
     exchange_rate              NUMERIC(18,8) DEFAULT 1
         CHECK (exchange_rate IS NULL OR exchange_rate > 0),
     payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
