@@ -197,8 +197,8 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION general_schema.prevent_category_cycles()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_current_id VARCHAR(13);
-    v_visited VARCHAR(13)[];
+    v_current_id UUID;
+    v_visited UUID[];
     v_max_iterations INTEGER := 10;
     v_iteration INTEGER := 0;
 BEGIN

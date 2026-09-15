@@ -16,7 +16,11 @@
 --       (product_category UUID PK) and before migrations/pos/025
 --       (invoice_item.cabys_code drop) and migrations/general/026
 --       (product_variant repoint + final legacy_cabys_code cleanup on both
---       tables).
+--       tables). Drops product_variant_cabys_code_fkey and
+--       invoice_item's cabys_code FK here (not in 025/026) since they block
+--       this file's own PK drop below; 025/026 still do their own column
+--       drops afterward (IF EXISTS-guarded, so the FK already being gone is
+--       harmless).
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- FORWARD MIGRATION
@@ -48,6 +52,17 @@ UPDATE general_schema.product p
 -- 3. Drop the old PK and FKs pointing at it, rename cabys_code out of the way
 --    (kept temporarily for migrations/general/025 to repoint product_variant),
 --    promote the new columns.
+-- product_variant.cabys_code (migrations/general/026 repoints it) and
+-- pos_schema.invoice_item.cabys_code (migrations/pos/025 drops it) both still
+-- FK into product_pkey at this point in the sequence — drop those dependent
+-- FKs first or the PK drop below fails with "cannot drop constraint ...
+-- because other objects depend on it".
+ALTER TABLE general_schema.product_variant
+    DROP CONSTRAINT IF EXISTS product_variant_cabys_code_fkey;
+
+ALTER TABLE pos_schema.invoice_item
+    DROP CONSTRAINT IF EXISTS digital_sale_invoice_item_cabys_code_fkey;
+
 ALTER TABLE general_schema.product
     DROP CONSTRAINT IF EXISTS product_pkey;
 
