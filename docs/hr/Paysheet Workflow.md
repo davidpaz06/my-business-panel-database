@@ -1,3 +1,20 @@
+> **DOCUMENTO OBSOLETO — NO SEGUIR.**
+>
+> Describe estructuras que ya no existen (`income_concept`, `income_register`,
+> `ccss_employee_deduction`, `ccss_tenant_deduction`, `paysheet.payment_day`) y
+> la funcion `generate_monthly_ccss()`, eliminada en la migracion `hr/009`.
+>
+> Ademas su base normativa es la de Costa Rica. El modulo migro a la LOTTT de
+> Venezuela (migraciones `hr/006` a `hr/018`).
+>
+> Ver en su lugar: [flow-prestaciones-lottt.md](./flow-prestaciones-lottt.md) y
+> `my-business-panel-backend/src/contexts/hr/ROADMAP-LOTTT.md`.
+>
+> Se conserva solo como referencia historica del flujo de `paysheet`, que sigue
+> existiendo. Pendiente de reescritura al cerrar la Fase 3 del roadmap.
+
+---
+
 # Paysheet (Payroll) — End-to-End Flow
 
 This document explains the paysheet (payroll) flow in the HR module: how a paysheet and its details are created, how income entries update gross salary via triggers, how recalculation states are enforced, how the paysheet is closed, and how to generate a monthly CCSS report. The flow REFERENCES `hr_schema` tables, triggers, and functions defined in the project.

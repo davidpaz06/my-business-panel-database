@@ -288,12 +288,12 @@ CREATE TRIGGER trigger_update_category_hierarchy
 
 
 CREATE OR REPLACE FUNCTION general_schema.get_subcategories(
-    p_parent_category_id INTEGER DEFAULT NULL
+    p_parent_category_id UUID DEFAULT NULL
 )
 RETURNS TABLE(
-    category_id INTEGER,
+    category_id UUID,
     category_name VARCHAR(100),
-    parent_id INTEGER,
+    parent_id UUID,
     level INTEGER,
     full_path TEXT,
     product_count BIGINT
@@ -331,7 +331,7 @@ BEGIN
         ct.parent_category_id,
         ct.hierarchy_level,
         ct.path,
-        COUNT(p.cabys_code) AS product_count
+        COUNT(p.product_id) AS product_count
     FROM category_tree ct
     LEFT JOIN general_schema.product p 
         ON p.product_category_id = ct.product_category_id

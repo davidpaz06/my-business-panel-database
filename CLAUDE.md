@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Workspace context (sibling repos, cross-repo feature order, branching) lives in `../CLAUDE.md`. This file covers database-only conventions.
 
+**Migracion en curso (Costa Rica -> Venezuela):** normativa objetivo del proyecto pasa de Costa Rica a Venezuela (ver tabla de mapeo en `../CLAUDE.md`). El schema, funciones y seeds de `hr_schema` y `accounting_schema` en este repo todavia implementan reglas de Costa Rica (CCSS, Hacienda/DGT-R-48-2016, feriados CR, etc.) hasta que se readapten. No asumir que el DDL actual ya sigue la normativa venezolana.
+
 ## Role
 
-**Source of truth for the PostgreSQL schema.** Pure SQL — no ORM, no migrations framework. The backend reads from / mutates this schema; it does not own it. Domain: multi-tenant ERP for Costa Rica (POS, inventory, purchase, HR, accounting, Hacienda e-invoicing).
+**Source of truth for the PostgreSQL schema.** Pure SQL — no ORM, no migrations framework. The backend reads from / mutates this schema; it does not own it. Domain: multi-tenant ERP for Venezuela (POS, inventory, purchase, HR, accounting, SENIAT e-invoicing) — migrando desde una base originalmente disenada para Costa Rica.
 
 ## Folder responsibilities
 
@@ -86,9 +88,11 @@ Any change to a business process must include a test script in `test/`.
 - File name: `test/test-<name>.md` (script + expected results documented together).
 - Without a test, the change is incomplete. Without a `docs/flow-<name>.md`, it is technical debt.
 
-## Hacienda / e-invoicing context
+## E-invoicing context (Hacienda/Costa Rica removido; SENIAT/Venezuela pendiente de diseno)
 
-`accounting/` schema + corresponding migrations carry Costa Rica electronic invoicing structures. Spec PDFs live in `../my-business-panel-docs/` — read them (especially `Resolucion Comprobantes Electronicos DGT-R-48-2016.pdf`) before designing or altering those tables.
+Costa Rica's Hacienda electronic invoicing (DGT-R-48-2016 XML-signed "factura electronica") was fully removed from this schema: `pos_schema.electronic_sale_invoice(_items)`, `pos_schema.invoice_status`, `general_schema.tenant_hacienda_config`, and `general_schema.branch_location` are all dropped (see `migrations/pos/020-drop-electronic-invoicing.sql`, `migrations/pos/021-rename-digital-invoice-to-invoice.sql`, `migrations/general/022-drop-hacienda-config.sql`). `accounting_schema` never actually held e-invoicing structures — it is pure general ledger (chart of accounts, journal entries, cost centers, expenses, fiscal periods); the invoicing tables always lived in `pos_schema`. The system's only invoice concept now is `pos_schema.invoice` (`invoice_item`, `invoice_payment`) — the former "digital invoice", auto-created per completed sale via the `create_invoice()` trigger in `functions/pos/pos_functions.sql`.
+
+A future SENIAT-based electronic invoicing module is not yet designed. Before building it: confirm the real Venezuelan mechanism (maquina fiscal vs comprobante XML), obtain and add the corresponding spec sheets to `../my-business-panel-docs/` (currently only has the old CR DGT-R-48-2016 PDFs), and design new tables shaped around that mechanism rather than reusing the dropped CR-shaped ones.
 
 ## Forbidden
 
