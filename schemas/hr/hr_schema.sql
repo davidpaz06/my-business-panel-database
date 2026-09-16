@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS contract(
 	base_salary NUMERIC(19, 4) NOT NULL,
 	duties TEXT,
 	duties_type_id INTEGER REFERENCES hr_schema.duties_type(duties_type_id) ON DELETE SET NULL,
-	turn_type INTEGER,
+	-- Horas del turno vinculado (derivado de turn.entry/turn.out, Art. 173).
+	-- NUMERIC porque un turno puede durar fracciones de hora (ej. 9:30-18:00 = 8.5h).
+	turn_type NUMERIC(4, 2),
 	turn_id INTEGER REFERENCES hr_schema.turn(turn_id) ON DELETE SET NULL,
 	-- Tipo de jornada (Art. 173 LOTTT): diurna 8h/40h, nocturna 7h/35h, mixta 7.5h/37.5h
 	journey_type VARCHAR(10) NOT NULL DEFAULT 'diurna',
