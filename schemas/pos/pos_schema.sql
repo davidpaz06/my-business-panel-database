@@ -563,7 +563,10 @@ CREATE TABLE IF NOT EXISTS pos_schema.expense (
     currency_id             INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
     branch_id               uuid NOT NULL,
     user_id                 uuid NOT NULL,
-    accounting_expense_id   uuid REFERENCES accounting_schema.expense(expense_id) ON DELETE SET NULL,
+    -- FK a accounting_schema.expense se agrega como constraint diferido
+    -- (ver build-bootstrap.ps1, seccion CROSS-SCHEMA CONSTRAINTS): pos_schema
+    -- carga antes que accounting_schema, una REFERENCES inline aqui rompe el bootstrap.
+    accounting_expense_id   uuid,
     status                  TEXT DEFAULT 'approved',
     rejection_reason        TEXT,
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

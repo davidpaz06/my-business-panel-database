@@ -93,6 +93,20 @@ ALTER TABLE general_schema.product_variant
 Add-FileContent "schemas/hr/hr_schema.sql" "SCHEMA: HR"
 Add-FileContent "schemas/accounting/accounting_schema.sql" "SCHEMA: ACCOUNTING"
 
+# Cross-schema FK applied after accounting_schema exists
+Write-Host "  [+] Cross-schema constraints (accounting)" -ForegroundColor Green
+@"
+
+-- =============================================
+-- CROSS-SCHEMA CONSTRAINTS (ACCOUNTING)
+-- Applied after accounting_schema exists
+-- =============================================
+ALTER TABLE pos_schema.expense
+    ADD CONSTRAINT fk_expense_accounting_expense
+    FOREIGN KEY (accounting_expense_id) REFERENCES accounting_schema.expense(expense_id) ON DELETE SET NULL;
+
+"@ | Out-File -FilePath $outputFile -Append -Encoding UTF8
+
 # FUNCTIONS
 Write-Host "`nAdding functions..." -ForegroundColor Yellow
 Add-FileContent "functions/general/general_functions.sql" "FUNCTIONS: GENERAL"
@@ -231,6 +245,11 @@ COMMIT;
 -- END OF CONSOLIDATED BOOTSTRAP FILE
 -- ======================================================
 "@ | Out-File -FilePath $outputFile -Append -Encoding UTF8
+
+# bootstrap.sql es el nombre canonico documentado en CLAUDE.md; docker-init
+# ejecuta backup/database_backup.sql. Se mantienen sincronizados para que un
+# entorno nuevo nunca arranque con un bootstrap desactualizado.
+Copy-Item -Path $outputFile -Destination "bootstrap.sql" -Force
 
 Write-Host "`n========================================" -ForegroundColor Green
 Write-Host "Database backup generated successfully!" -ForegroundColor Green

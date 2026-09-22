@@ -1,6 +1,6 @@
--- ======================================================
+﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-05-10 05:50:44
+-- Generated: 2026-09-21 19:59:17
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -34,6 +34,7 @@ SET SEARCH_PATH TO general_schema;
 CREATE TABLE IF NOT EXISTS region(
     region_id SERIAL PRIMARY KEY,
     region_name VARCHAR(100) unique not null,
+    country_code VARCHAR(5),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS tenant(
     econ_activity VARCHAR(10),
     sign text,
     contact_email VARCHAR(100) not null,
+    contact_phone VARCHAR(20),
     is_subscribed BOOLEAN default false,
     stripe_id VARCHAR(255) unique default null,
     tax_regime general_schema.tax_regime NOT NULL DEFAULT 'traditional',
@@ -66,22 +68,6 @@ CREATE TABLE IF NOT EXISTS tenant(
 
 COMMENT ON COLUMN general_schema.tenant.tax_regime IS
     'Tenant tax regime: traditional (régimen general IVA) or simplified (régimen simplificado, Decreto 38 MH).';
-
-CREATE TABLE IF NOT EXISTS tenant_hacienda_config (
-    tenant_hacienda_config_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL UNIQUE REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    hacienda_username TEXT NOT NULL,
-    hacienda_password TEXT NOT NULL,
-    hacienda_client_id VARCHAR(20) NOT NULL DEFAULT 'api-prod',
-    p12_base64 TEXT NOT NULL,
-    p12_password TEXT NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_tenant_hacienda_config_tenant
-    ON general_schema.tenant_hacienda_config(tenant_id);  
 
 CREATE TABLE IF NOT EXISTS branch(
     branch_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -98,26 +84,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS unique_main_branch_per_tenant
     on general_schema.branch (tenant_id)
     where is_main_branch = true;
 
--- Dirección estructurada del branch para facturación electrónica (DGT-R-48-2016)
-CREATE TABLE IF NOT EXISTS branch_location (
-    branch_location_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    branch_id UUID NOT NULL UNIQUE REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
-    provincia  VARCHAR(1)  NOT NULL DEFAULT '1',   -- 1=San José … 7=Limón
-    canton     VARCHAR(2)  NOT NULL DEFAULT '01',
-    distrito   VARCHAR(2)  NOT NULL DEFAULT '01',
-    otras_senas TEXT       NOT NULL DEFAULT '',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP          DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_branch_location_branch_id
-    ON general_schema.branch_location(branch_id);
-
 CREATE TABLE IF NOT EXISTS identification_type(
     identification_type_id SERIAL PRIMARY KEY,
     type_name VARCHAR(50) unique not null,
     description text,
-    ident_code VARCHAR(3) not null, -- Campo requerido para la facturacion
+    ident_code VARCHAR(3) not null, -- Codigo corto interno del tipo de identificacion
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -245,9 +216,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_rate_region_percentage
     ON general_schema.tax_rate(region, rate_percentage);
 
 COMMENT ON TABLE general_schema.tax_rate IS
-    'Stores tax rate entries for both regional taxes and CABYS product-level IVA rates.
+    'Stores tax rate entries for both regional taxes and product-level IVA rates.
      - Regional rates: region + region_id populated.
-     - CABYS IVA rates: rate_code + rate_name populated, region nullable.';
+     - Product IVA rates: rate_code + rate_name populated, region nullable.';
 
 
 
@@ -324,16 +295,16 @@ CREATE INDEX IF NOT EXISTS idx_special_code_tenant
     WHERE tenant_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_category(
-    product_category_id VARCHAR(13) PRIMARY KEY NOT NULL,
+    product_category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category_name TEXT not null,
-    parent_category_id VARCHAR(13)                                    
+    parent_category_id UUID
         REFERENCES general_schema.product_category(product_category_id)
         ON DELETE CASCADE,
-    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),  
+    hierarchy_level INTEGER DEFAULT 0 CHECK (hierarchy_level >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT chk_no_self_reference                              
+
+    CONSTRAINT chk_no_self_reference
         CHECK (product_category_id != parent_category_id)
 );
 
@@ -361,10 +332,10 @@ CREATE TABLE IF NOT EXISTS commercial_unit_measure(
 );
 
 CREATE TABLE IF NOT EXISTS product(
-    cabys_code VARCHAR(13) PRIMARY KEY,
+    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_name TEXT NOT NULL,
     product_name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('spanish', product_name)) STORED,
-    product_category_id VARCHAR(13) REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
+    product_category_id UUID REFERENCES general_schema.product_category(product_category_id) ON DELETE SET NULL,
     tax_rate_id INT REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     unit_measure_id INT REFERENCES general_schema.unit_measure(unit_measure_id) ON DELETE SET NULL,
     commercial_unit_measure_id INT REFERENCES general_schema.commercial_unit_measure(commercial_unit_measure_id) ON DELETE SET NULL,
@@ -431,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_attribute_value_tenant
 CREATE TABLE IF NOT EXISTS product_variant (
     tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     product_variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    cabys_code VARCHAR(13) REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
+    product_id UUID REFERENCES general_schema.product(product_id) ON DELETE SET NULL,
     sku VARCHAR(100) NOT NULL,
     variant_name VARCHAR(255),
     unit_price numeric(10,2) CHECK (unit_price >= 0),
@@ -440,6 +411,7 @@ CREATE TABLE IF NOT EXISTS product_variant (
     last_purchase_date TIMESTAMP,
     is_active BOOLEAN DEFAULT true,
     is_composite BOOLEAN NOT NULL DEFAULT false,
+    includes_iva BOOLEAN NOT NULL DEFAULT false,
     supplier_id UUID,
     giftable BOOLEAN DEFAULT FALSE,
     giftable_from NUMERIC(10,2) CHECK (giftable_from IS NULL OR giftable_from >= 0),
@@ -466,8 +438,9 @@ $$ LANGUAGE plpgsql;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variant_tenant_sku 
     ON general_schema.product_variant(tenant_id, sku);
-CREATE INDEX IF NOT EXISTS idx_product_variant_cabys 
-    ON general_schema.product_variant(cabys_code);
+CREATE INDEX IF NOT EXISTS idx_product_variant_product
+    ON general_schema.product_variant(product_id)
+    WHERE product_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_product_variant_tenant_btree 
     ON general_schema.product_variant(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_product_variant_active
@@ -478,8 +451,9 @@ CREATE INDEX IF NOT EXISTS idx_product_variant_supplier
     WHERE supplier_id IS NOT NULL;
 
 COMMENT ON TABLE general_schema.product_variant IS
-    'Tenant-specific sellable product variants linked to a CABYS catalog entry.
-    Variants have unique SKUs and prices per tenant.';
+    'Tenant-specific sellable product variants, optionally linked to a national
+    product catalog entry (general_schema.product). Variants have unique SKUs
+    and prices per tenant.';
 
 CREATE TABLE IF NOT EXISTS attribute_assignation (
     tenant_id uuid NOT NULL,
@@ -553,6 +527,41 @@ CREATE INDEX IF NOT EXISTS idx_pvc_child
 
 COMMENT ON TABLE general_schema.product_variant_composition IS
     'Composite product variants: parent explodes into N children with a quantity ratio.';
+
+-- ── Composite delete cascade trigger ─────────────────────────────────────────
+CREATE OR REPLACE FUNCTION general_schema.cascade_delete_composite_children()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_child_id UUID;
+BEGIN
+    IF OLD.is_composite THEN
+        FOR v_child_id IN
+            SELECT child_product_variant_id
+            FROM general_schema.product_variant_composition
+            WHERE tenant_id = OLD.tenant_id
+              AND parent_product_variant_id = OLD.product_variant_id
+        LOOP
+            -- Remove ALL composition rows where this variant appears as a child
+            -- (from any parent). Required to satisfy ON DELETE RESTRICT before
+            -- deleting the variant row itself.
+            DELETE FROM general_schema.product_variant_composition
+            WHERE tenant_id = OLD.tenant_id
+              AND child_product_variant_id = v_child_id;
+
+            -- Delete the child variant. If the child is_composite, this DELETE
+            -- fires the trigger recursively, cascading to its own children.
+            DELETE FROM general_schema.product_variant
+            WHERE tenant_id = OLD.tenant_id
+              AND product_variant_id = v_child_id;
+        END LOOP;
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_cascade_delete_composite_children
+    BEFORE DELETE ON general_schema.product_variant
+    FOR EACH ROW EXECUTE FUNCTION general_schema.cascade_delete_composite_children();
 
 -- ============================================================================
 -- TENANT PRODUCT GROUPING (departments, families, brands, etc.)
@@ -710,6 +719,52 @@ CREATE TABLE IF NOT EXISTS product_cost_history (
 CREATE INDEX IF NOT EXISTS idx_product_cost_history_variant
     ON general_schema.product_cost_history(tenant_id, product_variant_id, effective_date DESC);
 
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable_status (
+    status_id   SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable_type (
+    account_receivable_type_id SERIAL PRIMARY KEY,
+    type_name                  VARCHAR(50) UNIQUE NOT NULL,
+    description                TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS general_schema.account_receivable (
+    account_receivable_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_receivable_type_id INT REFERENCES general_schema.account_receivable_type(account_receivable_type_id) ON DELETE SET NULL,
+    account_status             INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.account_receivable_status(status_id),
+    tenant_id                  UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    tenant_customer_id         UUID REFERENCES general_schema.tenant_customer(tenant_customer_id) ON DELETE SET NULL,
+    has_invoice                BOOLEAN DEFAULT TRUE,
+    has_tax                    BOOLEAN DEFAULT FALSE,
+    subtotal                   NUMERIC(12,3) NOT NULL CHECK (subtotal >= 0),
+    amount_paid                NUMERIC(12,3) DEFAULT 0 CHECK (amount_paid >= 0),
+    balance_remaining          NUMERIC(12,3) GENERATED ALWAYS AS (subtotal - amount_paid) STORED,
+    is_paid                    BOOLEAN DEFAULT FALSE,
+    due_date                   DATE NOT NULL,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_tenant
+    ON general_schema.account_receivable(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_status
+    ON general_schema.account_receivable(tenant_id, account_status);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_due_date
+    ON general_schema.account_receivable(tenant_id, due_date);
+
+CREATE INDEX IF NOT EXISTS idx_account_receivable_customer
+    ON general_schema.account_receivable(tenant_customer_id)
+    WHERE tenant_customer_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_product_cost_history_purchase
     ON general_schema.product_cost_history(purchase_order_id);
 
@@ -738,7 +793,6 @@ CREATE TABLE IF NOT EXISTS sale(
     tax_amount numeric(10,2) not null default 0 check (tax_amount >= 0),
     total_amount numeric(10,2) not null,
     is_completed BOOLEAN default false,
-    has_electronic_invoice BOOLEAN DEFAULT FALSE,
     is_refunded BOOLEAN NOT NULL DEFAULT false,
     seller_user_id uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at timestamp not null default current_timestamp,
@@ -752,28 +806,37 @@ CREATE TABLE IF NOT EXISTS sale_item(
     sale_item_id uuid PRIMARY KEY default gen_random_uuid(),
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     tenant_id uuid not null,
-    product_variant_id uuid not null,
+    product_variant_id uuid,
     quantity INTEGER not null check (quantity > 0),
     unit_price numeric(10,2) not null check (unit_price >= 0),
     total_price numeric(10,2) not null,
     cost_price_at_sale NUMERIC(12,3),
-    sale_price_type VARCHAR(20) DEFAULT 'NORMAL' CHECK (sale_price_type IN ('NORMAL', 'PROMO', 'SEGMENT', 'MANUAL')),
+    sale_price_type VARCHAR(20) DEFAULT 'NORMAL' CHECK (sale_price_type IN ('NORMAL', 'PROMO', 'SEGMENT', 'MANUAL', 'ROYALTY')),
     promotion_id uuid, -- FK to pos_schema.promotion added via ALTER TABLE below (forward reference)
+    royalty_option_id uuid, -- FK to pos_schema.royalty_option added via ALTER TABLE below (forward reference)
+    royalty_rule_id uuid, -- FK to pos_schema.royalty_rule added via ALTER TABLE below (forward reference)
     original_price NUMERIC(10,2),
     discount_applied NUMERIC(10,2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT sale_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        on delete restrict
+        ON DELETE SET NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sale_item_product_variant 
+CREATE INDEX IF NOT EXISTS idx_sale_item_product_variant
     ON pos_schema.sale_item(tenant_id, product_variant_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id 
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id
     ON pos_schema.sale_item(sale_id);
-CREATE INDEX IF NOT EXISTS idx_sale_item_sale_variant 
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale_variant
     ON pos_schema.sale_item(sale_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_royalty_option
+    ON pos_schema.sale_item(royalty_option_id)
+    WHERE royalty_option_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sale_item_royalty_rule
+    ON pos_schema.sale_item(royalty_rule_id)
+    WHERE royalty_rule_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS cash_register(
     cash_register_id uuid PRIMARY KEY default gen_random_uuid(),
@@ -796,6 +859,19 @@ CREATE TABLE IF NOT EXISTS cash_register_session(
     opening_amount numeric(10,2) not null check (opening_amount >= 0),
     closing_amount numeric(10,2) check (closing_amount >= 0),
     is_active BOOLEAN default true,
+    cash_sales_amount     NUMERIC(14, 2),
+    debit_sales_amount    NUMERIC(14, 2),
+    credit_sales_amount   NUMERIC(14, 2),
+    transfer_sales_amount NUMERIC(14, 2),
+    points_sales_amount   NUMERIC(14, 2),
+    total_sales_amount    NUMERIC(14, 2),
+    user_cash_amount      NUMERIC(14, 2),
+    user_debit_amount     NUMERIC(14, 2),
+    user_credit_amount    NUMERIC(14, 2),
+    user_transfer_amount  NUMERIC(14, 2),
+    mismatch              BOOLEAN DEFAULT FALSE,
+    mismatch_amount       NUMERIC(14, 2),
+    mismatch_type         VARCHAR(10) CHECK (mismatch_type IN ('surplus', 'shortage')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -832,8 +908,8 @@ CREATE TABLE IF NOT EXISTS customer_payment(
     )
 );
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice(
-    digital_sale_invoice_id uuid PRIMARY KEY default gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS invoice(
+    invoice_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -850,20 +926,18 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_sale_id on pos_schema.digital_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_digital_sale_invoice_cash_register_session
-    ON pos_schema.digital_sale_invoice(cash_register_session_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_sale_id on pos_schema.invoice(sale_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_cash_register_session
+    ON pos_schema.invoice(cash_register_session_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
-    digital_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    digital_sale_invoice_id UUID NOT NULL
-        REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS invoice_item(
+    invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_id UUID NOT NULL
+        REFERENCES pos_schema.invoice(invoice_id) ON DELETE CASCADE,
     sale_item_id UUID NOT NULL
         REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
-    product_variant_id UUID NOT NULL,
-    cabys_code VARCHAR(13)
-        REFERENCES general_schema.product(cabys_code) ON DELETE SET NULL,
+    product_variant_id UUID,
     tax_rate_id INTEGER
         REFERENCES general_schema.tax_rate(tax_rate_id) ON DELETE SET NULL,
     description VARCHAR(255),
@@ -876,29 +950,30 @@ CREATE TABLE IF NOT EXISTS digital_sale_invoice_item(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT invoice_item_product_variant_fkey
     FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE RESTRICT
+        ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_invoice
-    ON pos_schema.digital_sale_invoice_item(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_sale_item
-    ON pos_schema.digital_sale_invoice_item(sale_item_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_variant
-    ON pos_schema.digital_sale_invoice_item(tenant_id, product_variant_id);
-CREATE INDEX IF NOT EXISTS idx_digital_invoice_item_tax_rate
-    ON pos_schema.digital_sale_invoice_item(tax_rate_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_invoice
+    ON pos_schema.invoice_item(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_sale_item
+    ON pos_schema.invoice_item(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_variant
+    ON pos_schema.invoice_item(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_item_tax_rate
+    ON pos_schema.invoice_item(tax_rate_id);
 
-CREATE TABLE IF NOT EXISTS digital_sale_invoice_payment(
-    digital_sale_invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid not null REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
+CREATE TABLE IF NOT EXISTS invoice_payment(
+    invoice_payment_id uuid PRIMARY KEY default gen_random_uuid(),
+    invoice_id uuid not null REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     customer_payment_id uuid not null REFERENCES pos_schema.customer_payment(customer_payment_id) on delete cascade,
     payment_amount numeric(10,2) not null check (payment_amount > 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    unique (digital_sale_invoice_id, customer_payment_id)
+    unique (invoice_id, customer_payment_id)
 );
 
 CREATE TABLE IF NOT EXISTS return_reason(
@@ -919,21 +994,16 @@ CREATE TABLE IF NOT EXISTS return_status(
 
 CREATE TABLE IF NOT EXISTS return_transaction(
     return_transaction_id uuid PRIMARY KEY default gen_random_uuid(),
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete cascade,
-    electronic_sale_invoice_id uuid, -- FK to pos_schema.electronic_sale_invoice added via ALTER TABLE below (forward reference)
+    invoice_id uuid NOT NULL REFERENCES pos_schema.invoice(invoice_id) on delete cascade,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     total_refund_amount numeric(10,2) not null check (total_refund_amount >= 0),
     refund_method int REFERENCES general_schema.payment_method(payment_method_id) on delete set null,
     return_status_id INTEGER REFERENCES pos_schema.return_status(return_status_id) on delete set null,
     description TEXT NOT NULL,
     return_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT chk_return_transaction_invoice CHECK (
-        digital_sale_invoice_id IS NOT NULL OR electronic_sale_invoice_id IS NOT NULL
-    )
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_return_transaction_digital_sale_invoice_id on pos_schema.return_transaction(digital_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_return_transaction_electronic_sale_invoice_id on pos_schema.return_transaction(electronic_sale_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_return_transaction_invoice_id on pos_schema.return_transaction(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_return_transaction_date on pos_schema.return_transaction(return_date);
 
 CREATE TABLE IF NOT EXISTS return_product(
@@ -1134,7 +1204,7 @@ CREATE TABLE IF NOT EXISTS score_transaction(
     tenant_customer_id uuid not null REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete cascade,
     transaction_type_id int REFERENCES pos_schema.score_transaction_type(score_transaction_type_id) on delete set null,
     points INTEGER not null,
-    digital_sale_invoice_id uuid REFERENCES pos_schema.digital_sale_invoice(digital_sale_invoice_id) on delete set null,
+    invoice_id uuid REFERENCES pos_schema.invoice(invoice_id) on delete set null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1146,144 +1216,50 @@ CREATE TABLE IF NOT EXISTS debtor (
     missed_payments INTEGER not null default 0
 );
 
-CREATE TABLE IF NOT EXISTS invoice_status (
-    status_id INTEGER PRIMARY KEY,
-    description VARCHAR(50) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice (
-    electronic_sale_invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    sale_id UUID NOT NULL REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
-    status_id INTEGER REFERENCES pos_schema.invoice_status(status_id),
-    key_number VARCHAR(50) NOT NULL UNIQUE,
-    consecutive_number VARCHAR(20) NOT NULL,
-    -- Issuer information (required)
-    -- issue_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    -- issuer_name VARCHAR(150) NOT NULL,
-    -- issuer_identification VARCHAR(20) NOT NULL,
-    -- issuer_identification_type VARCHAR(2) NOT NULL,  -- 01=Individual, 02=Legal Entity, 03=DIMEX, 04=NITE
-    -- issuer_email VARCHAR(200),
-    -- issuer_phone VARCHAR(20),
-    -- Receiver information (optional for consumer final)
-    -- receiver_name VARCHAR(150),
-    -- receiver_identification VARCHAR(20),
-    -- receiver_identification_type VARCHAR(2),
-    -- receiver_email VARCHAR(200),
-    -- sale details
-    payment_method VARCHAR(2) NOT NULL DEFAULT '01',  -- 01=Cash, 02=Card, 03=Check, 04=Transfer
-    credit_days VARCHAR(10),
-    -- Tax breakdown (required)
-    -- total_taxed_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_services NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_services NUMERIC(18,5) DEFAULT 0,
-    -- total_taxed_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated_goods NUMERIC(18,5) DEFAULT 0,
-    -- total_taxable NUMERIC(18,5) DEFAULT 0,
-    -- total_exempt NUMERIC(18,5) DEFAULT 0,
-    -- total_exonerated NUMERIC(18,5) DEFAULT 0,
-    -- total_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_discounts NUMERIC(18,5) DEFAULT 0,
-    -- total_net_sale NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- total_tax NUMERIC(18,5) DEFAULT 0,
-    -- total_voucher NUMERIC(18,5) NOT NULL DEFAULT 0,
-    -- XML digital signature
-    xml_signed TEXT,
-    -- Hacienda response
-    hacienda_response_xml TEXT,
-    hacienda_response_date TIMESTAMP,
-    -- Metadata
-    -- currency_id INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_sale_id 
-    ON pos_schema.electronic_sale_invoice(sale_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_key_number 
-    ON pos_schema.electronic_sale_invoice(key_number);
--- #2: columna issue_date no existe en esta versión del schema; se indexa created_at
-CREATE INDEX IF NOT EXISTS idx_electronic_sale_invoice_created_at
-    ON pos_schema.electronic_sale_invoice(created_at);
-
--- FK deferred: return_transaction.electronic_sale_invoice_id -> electronic_sale_invoice
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'return_transaction_electronic_sale_invoice_id_fkey'
-          AND conrelid = 'pos_schema.return_transaction'::regclass
-    ) THEN
-        ALTER TABLE pos_schema.return_transaction
-            ADD CONSTRAINT return_transaction_electronic_sale_invoice_id_fkey
-            FOREIGN KEY (electronic_sale_invoice_id)
-            REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id)
-            ON DELETE CASCADE;
-    END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS electronic_sale_invoice_items (
-    electronic_sale_invoice_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    electronic_sale_invoice_id UUID NOT NULL REFERENCES pos_schema.electronic_sale_invoice(electronic_sale_invoice_id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL,
-    product_variant_id UUID NOT NULL,
-    sale_item_id uuid NOT NULL REFERENCES pos_schema.sale_item(sale_item_id) ON DELETE CASCADE,
-    line_number INTEGER NOT NULL,
-    -- cabys_code VARCHAR(13) NOT NULL REFERENCES general_schema.product(cabys_code) ON DELETE RESTRICT,
-    -- description VARCHAR(200) NOT NULL,  -- Product description
-    -- Quantity and units
-    -- quantity NUMERIC(16,3) NOT NULL,
-    -- unit_of_measure VARCHAR(20) NOT NULL DEFAULT 'Unid',
-    -- commercial_unit_of_measure VARCHAR(20),
-    -- Pricing
-    -- unit_price NUMERIC(18,5) NOT NULL,
-    -- total_amount NUMERIC(18,5) NOT NULL,
-    -- Discounts (optional)
-    discount_amount NUMERIC(18,5) DEFAULT 0,
-    discount_nature VARCHAR(80),
-    -- Subtotal
-    -- subtotal NUMERIC(18,5) NOT NULL,
-    -- Tax (IVA)
-    tax_rate_id INTEGER REFERENCES general_schema.tax_rate(tax_rate_id),
-    tax_exoneration_id INTEGER REFERENCES general_schema.tax_exoneration(exoneration_id),
-    -- tax_code VARCHAR(2) DEFAULT '01',     -- 01 = IVA
-    -- tax_rate_code VARCHAR(2) DEFAULT '08', -- 08 = Standard rate 13%
-    -- tax_rate NUMERIC(5,2) DEFAULT 13.00,
-    -- tax_amount NUMERIC(18,5) DEFAULT 0,
-    -- tax_exemption_amount NUMERIC(18,5) DEFAULT 0,
-    -- Exemption (optional)
-    -- exemption_document_type VARCHAR(2),
-    -- exemption_document_number VARCHAR(40),
-    -- exemption_institution VARCHAR(160),
-    -- exemption_date TIMESTAMP,
-    -- exemption_percentage NUMERIC(3,0),
-    -- Line total
-    -- total_line_amount NUMERIC(18,5) NOT NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (tenant_id, product_variant_id)
-        REFERENCES general_schema.product_variant(tenant_id, product_variant_id)
-        ON DELETE RESTRICT
-);
-
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_invoice
-    ON pos_schema.electronic_sale_invoice_items(electronic_sale_invoice_id);
-CREATE INDEX IF NOT EXISTS idx_electronic_invoice_items_variant
-    ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
 
 -- ── Royalties ─────────────────────────────────────────────────────────────────
+-- A royalty_rule defines a minimum purchase amount. It is not bound to a
+-- single dimension: any of its options may target any tenant_product_group
+-- across dimensions. Selecting a group implicitly includes its descendants
+-- in the tenant_product_group hierarchy at query time (resolved via
+-- recursive CTE in the application layer).
+--
+-- A variant becomes eligible as a gift when product_variant.giftable = true
+-- AND the variant is assigned (directly or transitively) to a group selected
+-- by the option. There is no specific-product targeting table.
 
 CREATE TABLE IF NOT EXISTS pos_schema.royalty_rule (
-    royalty_rule_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id         UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    min_amount        NUMERIC(14,2) NOT NULL CHECK (min_amount > 0),
-    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    royalty_rule_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    min_amount       NUMERIC(14,2) NOT NULL CHECK (min_amount > 0),
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_royalty_rule_tenant
     ON pos_schema.royalty_rule(tenant_id, min_amount ASC);
+
+-- Explicit dimensions the rule applies to. Without this row in
+-- royalty_rule_dimension, the dimension is excluded from the rule
+-- regardless of any leftover options.
+CREATE TABLE IF NOT EXISTS pos_schema.royalty_rule_dimension (
+    royalty_rule_id              UUID NOT NULL
+        REFERENCES pos_schema.royalty_rule(royalty_rule_id) ON DELETE CASCADE,
+    tenant_id                    UUID NOT NULL,
+    tenant_product_group_type_id UUID NOT NULL,
+    created_at                   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (royalty_rule_id, tenant_product_group_type_id),
+    CONSTRAINT fk_royalty_rule_dim_type
+        FOREIGN KEY (tenant_id, tenant_product_group_type_id)
+        REFERENCES general_schema.tenant_product_group_type(tenant_id, tenant_product_group_type_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_rule_dimension_rule
+    ON pos_schema.royalty_rule_dimension(royalty_rule_id);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_rule_dimension_type
+    ON pos_schema.royalty_rule_dimension(tenant_id, tenant_product_group_type_id);
 
 CREATE TABLE IF NOT EXISTS pos_schema.royalty_option (
     royalty_option_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1291,26 +1267,158 @@ CREATE TABLE IF NOT EXISTS pos_schema.royalty_option (
     tenant_id                 UUID NOT NULL,
     tenant_product_group_id   UUID NOT NULL,
     quantity                  INT NOT NULL CHECK (quantity > 0),
-    scope                     TEXT NOT NULL DEFAULT 'any' CHECK (scope IN ('any', 'specific')),
     created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (royalty_rule_id, tenant_product_group_id),
-    FOREIGN KEY (tenant_id, tenant_product_group_id)
-        REFERENCES general_schema.tenant_product_group(tenant_id, tenant_product_group_id) ON DELETE CASCADE
+    CONSTRAINT fk_royalty_option_group FOREIGN KEY (tenant_id, tenant_product_group_id)
+        REFERENCES general_schema.tenant_product_group(tenant_id, tenant_product_group_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_royalty_option_rule
     ON pos_schema.royalty_option(royalty_rule_id);
 
-CREATE TABLE IF NOT EXISTS pos_schema.royalty_option_product (
-    royalty_option_product_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    royalty_option_id           UUID NOT NULL REFERENCES pos_schema.royalty_option(royalty_option_id) ON DELETE CASCADE,
-    product_variant_id          UUID NOT NULL,
-    UNIQUE (royalty_option_id, product_variant_id)
+-- FK deferred: sale_item.royalty_option_id / royalty_rule_id (defined here, applied to sale_item above)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sale_item_royalty_option_id_fkey'
+          AND conrelid = 'pos_schema.sale_item'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.sale_item
+            ADD CONSTRAINT sale_item_royalty_option_id_fkey
+            FOREIGN KEY (royalty_option_id)
+            REFERENCES pos_schema.royalty_option(royalty_option_id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sale_item_royalty_rule_id_fkey'
+          AND conrelid = 'pos_schema.sale_item'::regclass
+    ) THEN
+        ALTER TABLE pos_schema.sale_item
+            ADD CONSTRAINT sale_item_royalty_rule_id_fkey
+            FOREIGN KEY (royalty_rule_id)
+            REFERENCES pos_schema.royalty_rule(royalty_rule_id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pos_schema.session_group_sales (
+    session_group_sales_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    cash_register_session_id uuid NOT NULL
+        REFERENCES pos_schema.cash_register_session(cash_register_session_id)
+        ON DELETE CASCADE,
+    tenant_product_group_id  uuid NOT NULL,
+    group_name               VARCHAR(200) NOT NULL,
+    total_amount             NUMERIC(14, 2) NOT NULL,
+    UNIQUE (cash_register_session_id, tenant_product_group_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_royalty_option_product_option
-    ON pos_schema.royalty_option_product(royalty_option_id);
-    ON pos_schema.electronic_sale_invoice_items(tenant_id, product_variant_id);
+CREATE INDEX IF NOT EXISTS idx_session_group_sales_session
+    ON pos_schema.session_group_sales(cash_register_session_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.expense_type (
+    expense_type_id     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           uuid NOT NULL,
+    expense_type_name   VARCHAR(100) NOT NULL,
+    expense_type_detail TEXT,
+    is_fixed            BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_type_tenant
+    ON pos_schema.expense_type(tenant_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.expense (
+    expense_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    expense_type_id         uuid NOT NULL REFERENCES pos_schema.expense_type(expense_type_id) ON DELETE RESTRICT,
+    expense_amount          NUMERIC(14, 2) NOT NULL CHECK (expense_amount > 0),
+    currency_id             INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
+    branch_id               uuid NOT NULL,
+    user_id                 uuid NOT NULL,
+    -- FK a accounting_schema.expense se agrega como constraint diferido
+    -- (ver build-bootstrap.ps1, seccion CROSS-SCHEMA CONSTRAINTS): pos_schema
+    -- carga antes que accounting_schema, una REFERENCES inline aqui rompe el bootstrap.
+    accounting_expense_id   uuid,
+    status                  TEXT DEFAULT 'approved',
+    rejection_reason        TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_type_fk ON pos_schema.expense(expense_type_id);
+CREATE INDEX IF NOT EXISTS idx_expense_branch   ON pos_schema.expense(branch_id);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_account_receivable (
+    sale_account_receivable_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_receivable_id      UUID NOT NULL UNIQUE REFERENCES general_schema.account_receivable(account_receivable_id) ON DELETE CASCADE,
+    sale_id                    UUID NOT NULL UNIQUE REFERENCES pos_schema.sale(sale_id) ON DELETE CASCADE,
+    tax_amount                 NUMERIC(12,3) DEFAULT 0,
+    account_receivable_status  INTEGER REFERENCES general_schema.account_receivable_status(status_id),
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection (
+    sale_collection_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    payment_method_id          INTEGER REFERENCES general_schema.payment_method(payment_method_id),
+    -- currency_id: currency the customer paid in (original currency).
+    currency_id                INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    -- amount_paid: VES-equivalent of the payment. Used by recalc SUM().
+    amount_paid                NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
+    -- original_amount: amount stated in currency_id (what the customer handed over).
+    original_amount            NUMERIC(12,3) DEFAULT 0
+        CHECK (original_amount IS NULL OR original_amount > 0),
+    -- exchange_rate: rate applied to convert original_amount to amount_paid (VES).
+    exchange_rate              NUMERIC(18,8) DEFAULT 1
+        CHECK (exchange_rate IS NULL OR exchange_rate > 0),
+    payment_date               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    payment_reference          VARCHAR(100),
+    notes                      TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_receivable
+    ON pos_schema.sale_collection(sale_account_receivable_id);
+
+CREATE INDEX IF NOT EXISTS idx_sale_collection_date
+    ON pos_schema.sale_collection(payment_date);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_type (
+    collection_alert_type_id   SERIAL PRIMARY KEY,
+    collection_alert_type_name VARCHAR(50) NOT NULL,
+    description                TEXT,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert (
+    collection_alert_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sale_account_receivable_id UUID NOT NULL REFERENCES pos_schema.sale_account_receivable(sale_account_receivable_id) ON DELETE CASCADE,
+    collection_alert_type_id   INTEGER NOT NULL REFERENCES pos_schema.sale_collection_alert_type(collection_alert_type_id),
+    alert_date                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_resolved                BOOLEAN DEFAULT FALSE,
+    created_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_config (
+    collection_alert_config_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id                   UUID UNIQUE NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    warning_days_before_due     INTEGER DEFAULT 7,
+    urgent_days_before_due      INTEGER DEFAULT 3,
+    email_notifications_enabled BOOLEAN DEFAULT TRUE,
+    sms_notifications_enabled   BOOLEAN DEFAULT FALSE,
+    created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_expense_user     ON pos_schema.expense(user_id);
+CREATE INDEX IF NOT EXISTS idx_expense_status   ON pos_schema.expense(status);
 
 
 
@@ -1437,6 +1545,55 @@ CREATE INDEX IF NOT EXISTS idx_discrepancy_product_variant
 CREATE INDEX IF NOT EXISTS idx_discrepancy_pending
     ON inventory_schema.discrepancy_count(warehouse_id, tenant_id)
     WHERE is_applied = FALSE;
+
+CREATE TABLE IF NOT EXISTS inventory_transfer_request_status (
+    inventory_transfer_request_status_id SERIAL PRIMARY KEY,
+    status_name VARCHAR(50) NOT NULL UNIQUE,
+    status_description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO inventory_schema.inventory_transfer_request_status (inventory_transfer_request_status_id, status_name, status_description) VALUES
+    (1, 'pending',   'Solicitud pendiente de aprobación'),
+    (2, 'approved',  'Solicitud aprobada y transferencia ejecutada'),
+    (3, 'rejected',  'Solicitud rechazada'),
+    (4, 'cancelled', 'Solicitud cancelada')
+ON CONFLICT (inventory_transfer_request_status_id) DO UPDATE SET
+    status_name = EXCLUDED.status_name,
+    status_description = EXCLUDED.status_description;
+
+CREATE TABLE IF NOT EXISTS inventory_transfer_request (
+    inventory_transfer_request_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL,
+    from_warehouse_id uuid NOT NULL REFERENCES inventory_schema.warehouse(warehouse_id) ON DELETE CASCADE,
+    to_warehouse_id uuid NOT NULL REFERENCES inventory_schema.warehouse(warehouse_id) ON DELETE CASCADE,
+    inventory_transfer_request_status_id INTEGER NOT NULL REFERENCES inventory_schema.inventory_transfer_request_status(inventory_transfer_request_status_id),
+    requested_by_user_id uuid,
+    approved_by_user_id uuid,
+    rejection_reason TEXT,
+    inventory_transfer_id uuid REFERENCES inventory_schema.inventory_transfer(inventory_transfer_id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS inventory_transfer_request_product (
+    inventory_transfer_request_product_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    inventory_transfer_request_id uuid NOT NULL REFERENCES inventory_schema.inventory_transfer_request(inventory_transfer_request_id) ON DELETE CASCADE,
+    tenant_id uuid NOT NULL,
+    product_variant_id uuid NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (tenant_id, product_variant_id)
+        REFERENCES general_schema.product_variant(tenant_id, product_variant_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfer_request_tenant ON inventory_schema.inventory_transfer_request(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_request_from_warehouse ON inventory_schema.inventory_transfer_request(from_warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_request_to_warehouse ON inventory_schema.inventory_transfer_request(to_warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_request_product_request ON inventory_schema.inventory_transfer_request_product(inventory_transfer_request_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_request_product_variant ON inventory_schema.inventory_transfer_request_product(tenant_id, product_variant_id);
 
 
 
@@ -1675,14 +1832,14 @@ CREATE TABLE IF NOT EXISTS payment_schedule(
 );
 
 CREATE TABLE IF NOT EXISTS hr_schema.config (
-  branch_id UUID PRIMARY KEY REFERENCES general_schema.branch(branch_id),
+  branch_id UUID PRIMARY KEY REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   foul_expiration_months INTEGER DEFAULT 6,
   updated_at TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS hr_schema.turn (
   turn_id SERIAL PRIMARY KEY,
-  branch_id UUID REFERENCES general_schema.branch(branch_id) NOT NULL,
+  branch_id UUID REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE NOT NULL,
   entry TIME NOT NULL,
   out TIME NOT NULL
 );
@@ -1691,25 +1848,45 @@ CREATE TABLE IF NOT EXISTS hr_schema.turn (
 
 CREATE INDEX branch_turn_idx ON hr_schema.turn(branch_id);
 
+CREATE TABLE IF NOT EXISTS hr_schema.duties_type (
+	duties_type_id SERIAL PRIMARY KEY,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	name VARCHAR(150) NOT NULL,
+	description TEXT,
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_duties_type_tenant ON hr_schema.duties_type(tenant_id);
+
 CREATE TABLE IF NOT EXISTS contract(
 	contract_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
 	start_date DATE NOT NULL,
-	end_date DATE NOT NULL,
+	-- NULL = contrato por tiempo indefinido (regla general en Venezuela)
+	end_date DATE,
 	hours INTEGER NOT NULL,
 	base_salary NUMERIC(19, 4) NOT NULL,
 	duties TEXT,
-	turn_type INTEGER,
-	turn_id INTEGER REFERENCES hr_schema.turn(turn_id)
+	duties_type_id INTEGER REFERENCES hr_schema.duties_type(duties_type_id) ON DELETE SET NULL,
+	-- Horas del turno vinculado (derivado de turn.entry/turn.out, Art. 173).
+	-- NUMERIC porque un turno puede durar fracciones de hora (ej. 9:30-18:00 = 8.5h).
+	turn_type NUMERIC(4, 2),
+	turn_id INTEGER REFERENCES hr_schema.turn(turn_id) ON DELETE SET NULL,
+	-- Tipo de jornada (Art. 173 LOTTT): diurna 8h/40h, nocturna 7h/35h, mixta 7.5h/37.5h
+	journey_type VARCHAR(10) NOT NULL DEFAULT 'diurna',
+	weekly_hours NUMERIC(5, 2) NOT NULL DEFAULT 40,
+	CONSTRAINT chk_contract_journey_type CHECK (journey_type IN ('diurna', 'nocturna', 'mixta')),
+	CONSTRAINT chk_contract_weekly_hours CHECK (weekly_hours > 0 AND weekly_hours <= 42)
 );
 --Indice para filtracion o busqueda por rango de precios
 CREATE INDEX idx_contract_base_salary ON hr_schema.contract (base_salary);
 
 CREATE TABLE IF NOT EXISTS employee(
 	employee_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
-	user_id UUID NOT NULL REFERENCES general_schema.users(user_id) ON DELETE CASCADE,
+	user_id UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	first_name VARCHAR(100) NOT NULL,
 	last_name VARCHAR(100) NOT NULL,
 	doc_number VARCHAR(100) NOT NULL UNIQUE,
@@ -1719,9 +1896,34 @@ CREATE TABLE IF NOT EXISTS employee(
 	contract_id UUID NOT NULL REFERENCES hr_schema.contract(contract_id) ON DELETE CASCADE,
 	payment_schedule_id INTEGER NOT NULL REFERENCES hr_schema.payment_schedule(payment_schedule_id),
 	is_active BOOLEAN DEFAULT true,
+	-- Fecha de ingreso: base del computo de antiguedad (Art. 142 LOTTT).
+	-- Se desnormaliza desde contract.start_date porque un trabajador puede
+	-- encadenar contratos sin perder antiguedad.
+	hire_date DATE NOT NULL,
+	-- NULL = relacion activa. Dispara el plazo de 5 dias del Art. 142.f.
+	termination_date DATE,
+	termination_type VARCHAR(30),
+	termination_reason TEXT,
 	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT chk_employee_termination_type CHECK (termination_type IS NULL OR termination_type IN (
+		'despido_injustificado',
+		'despido_justificado',
+		'renuncia',
+		'causa_ajena_al_trabajador',
+		'vencimiento_contrato',
+		'fallecimiento'
+	)),
+	CONSTRAINT chk_employee_termination_coherente CHECK (
+		(termination_date IS NULL AND termination_type IS NULL)
+		OR (termination_date IS NOT NULL AND termination_type IS NOT NULL)
+	),
+	CONSTRAINT chk_employee_fechas_relacion CHECK (termination_date IS NULL OR termination_date >= hire_date)
 );
+
+-- Indice para localizar egresos pendientes de liquidacion
+CREATE INDEX idx_employee_termination_date ON hr_schema.employee (termination_date)
+	WHERE termination_date IS NOT NULL;
 	
 --Indice para que se pueda garantizar que no haya empleados duplicados
 CREATE UNIQUE INDEX idx_employee_doc_number ON hr_schema.employee (doc_number);
@@ -1743,7 +1945,7 @@ CREATE INDEX idx_employee_is_active ON hr_schema.employee (is_active);
 CREATE TABLE IF NOT EXISTS hr_schema.foul(
   foul_id SERIAL PRIMARY KEY,
   employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
-  branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+  branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   identificator VARCHAR(50) UNIQUE NOT NULL, 
   foul_date DATE NOT NULL,
   foul_hour TIME NOT NULL,
@@ -1757,7 +1959,7 @@ CREATE INDEX idx_identificator_foul ON hr_schema.foul(identificator);
 CREATE TABLE IF NOT EXISTS hr_schema.suspention (
   suspention_id SERIAL PRIMARY KEY,
   employee_id UUID REFERENCES hr_schema.employee(employee_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   suspention_start DATE NOT NULL,
   suspention_end DATE NOT NULL,
   reason TEXT NOT NULL,
@@ -1772,7 +1974,7 @@ CREATE INDEX idx_branch_suspention ON hr_schema.suspention(branch_id);
 CREATE TABLE IF NOT EXISTS clocking(
 	clocking_id SERIAL PRIMARY KEY NOT NULL,
 	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	clock_in TIMESTAMP,
 	clock_out TIMESTAMP,
 	turn_hours NUMERIC NOT NULL DEFAULT 0
@@ -1786,7 +1988,7 @@ CREATE INDEX idx_track_hours_branch_id ON hr_schema.clocking (branch_id);
 CREATE TABLE IF NOT EXISTS hr_schema.tardiness (
   tardiness_id SERIAL PRIMARY KEY,
   employee_id UUID REFERENCES hr_schema.employee(employee_id),
-  branch_id UUID REFERENCES general_schema.branch(branch_id),
+  branch_id UUID REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
   type VARCHAR(20) NOT NULL, -- "late" | "early"
   log TEXT,
   registered_at DATE DEFAULT NOW()
@@ -1796,17 +1998,33 @@ CREATE INDEX idx_emp_tardiness_srch ON hr_schema.tardiness(employee_id);
 CREATE INDEX idx_brnch_tardiness_srch ON hr_schema.tardiness(branch_id);
 CREATE INDEX idx_register_srch ON hr_schema.tardiness(registered_at);
 
+-- Dias feriados (Art. 184 LOTTT). Los domingos son feriados por ley y se
+-- resuelven por calculo de calendario, no se siembran como filas.
 CREATE TABLE IF NOT EXISTS hr_schema.holiday (
   holiday_id SERIAL PRIMARY KEY NOT NULL,
   date TIMESTAMP NOT NULL,
   holiday_name VARCHAR(150) NOT NULL,
   is_freeday BOOLEAN NOT NULL DEFAULT TRUE,
-  is_payable BOOLEAN NOT NULL DEFAULT TRUE
+  is_payable BOOLEAN NOT NULL DEFAULT TRUE,
+  -- NULL = feriado nacional. Con valor = feriado estadal o municipal.
+  tenant_id UUID REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+  -- NULL solo para recurrentes de fecha fija. Los moviles (carnaval,
+  -- Semana Santa) requieren una fila por anio.
+  holiday_year INTEGER,
+  is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Los declarados por ejecutivo/estados/municipios estan limitados a 3
+  -- por anio en conjunto (Art. 184.d); el tope se valida en aplicacion.
+  source VARCHAR(20) NOT NULL DEFAULT 'ley',
+  CONSTRAINT chk_holiday_source CHECK (source IN ('ley', 'ejecutivo', 'estadal', 'municipal')),
+  CONSTRAINT chk_holiday_year_requerido CHECK (is_recurring = TRUE OR holiday_year IS NOT NULL)
 );
+
+CREATE INDEX idx_holiday_lookup ON hr_schema.holiday (holiday_year, tenant_id);
+CREATE INDEX idx_holiday_date ON hr_schema.holiday (date);
 
 CREATE TABLE IF NOT EXISTS hr_schema.incapacity (
     incapacity_id SERIAL PRIMARY KEY,
-    branch_id UUID  REFERENCES general_schema.branch(branch_id),
+    branch_id UUID  REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
     employee_id UUID  REFERENCES hr_schema.employee(employee_id),
     type VARCHAR(50),
     period_start DATE NOT NULL,
@@ -1836,17 +2054,41 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 	is_taxable BOOLEAN DEFAULT TRUE,
 	is_active BOOLEAN DEFAULT TRUE,
 	base_value NUMERIC(19, 4) DEFAULT 0,
-	code VARCHAR(10) NOT NULL
+	code VARCHAR(10) NOT NULL,
+	-- Articulo LOTTT que fundamenta el concepto; se imprime en el recibo (Art. 106)
+	article VARCHAR(20),
+	-- Regla de oro: normal (Art. 104) para recargos y beneficios del dia a dia;
+	-- integral (Art. 122) para prestaciones e indemnizaciones. No intercambiables.
+	salary_basis VARCHAR(10) NOT NULL DEFAULT 'normal',
+	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral'))
 );
 
--- Indice para filtracion por conceptos
--- FIXME: column "ccss_apply" does not exist 
--- CREATE INDEX IF NOT EXISTS idx_payroll_concept_apply ON hr_schema.payroll_concept(ccss_apply, tax_apply);
+-- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
+-- La funcion provision_tenant_payroll_concepts() la copia a payroll_concept por tenant.
+CREATE TABLE IF NOT EXISTS hr_schema.payroll_concept_template(
+	template_id SERIAL PRIMARY KEY NOT NULL,
+	name VARCHAR(100) NOT NULL,
+	type VARCHAR(20) NOT NULL, -- 'earning' o 'deduction'
+	calculation_method VARCHAR(30) NOT NULL, -- 'fixed', 'percentage', 'formula', 'manual'
+	is_taxable BOOLEAN DEFAULT TRUE,
+	base_value NUMERIC(19, 4) DEFAULT 0,
+	code VARCHAR(10) NOT NULL UNIQUE,
+	article VARCHAR(20),
+	salary_basis VARCHAR(10) NOT NULL DEFAULT 'normal',
+	-- FALSE para conceptos definidos pero no liberados: hoy las retenciones
+	-- venezolanas (IVSS, INCES, FAOV, Paro Forzoso, ISLR), sin especificacion
+	-- de calculo. Se provisionan inactivas al tenant.
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
+	CONSTRAINT chk_payroll_concept_template_salary_basis CHECK (salary_basis IN ('normal', 'integral'))
+);
+
+COMMENT ON TABLE hr_schema.payroll_concept_template IS
+	'Plantilla de conceptos de nomina (Venezuela, LOTTT). Copiada a payroll_concept por tenant via provision_tenant_payroll_concepts(). Los valores percentage se almacenan como fraccion (ej. 0.30 = 30%).';
 
 CREATE TABLE IF NOT EXISTS paysheet(
 	paysheet_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
 	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id),
-	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
 	period_start DATE NOT NULL,
 	period_end DATE NOT NULL,
 	payment_date TIMESTAMP,
@@ -1891,6 +2133,416 @@ CREATE TABLE IF NOT EXISTS payroll_movement (
 
 -- Indice para agilizar la busqueda de todos los movimientos bajo un detail_id
 CREATE INDEX idx_payroll_movement_detail_id ON hr_schema.payroll_movement(detail_id);
+
+-- ============================================================
+-- MODULO LOTTT (Venezuela)
+-- ============================================================
+-- Estructuras de la Ley Organica del Trabajo, los Trabajadores y las
+-- Trabajadoras (Gaceta Oficial N 6.076 Extraordinario, 07-05-2012).
+-- Migraciones 006 a 018.
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- Parametros de nomina con vigencia temporal por tenant
+-- ------------------------------------------------------------
+-- Ninguna magnitud legal puede quedar hardcodeada: cambian por decreto
+-- del Ejecutivo, por publicacion del BCV o por convencion colectiva.
+-- La LOTTT es de orden publico (Arts. 2, 19): una convencion solo puede
+-- MEJORAR el minimo legal, nunca reducirlo (Arts. 18.2, 434).
+CREATE TABLE IF NOT EXISTS hr_schema.payroll_parameters (
+	parameter_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	param_key VARCHAR(60) NOT NULL,
+	param_value NUMERIC(18, 6) NOT NULL,
+	valid_from DATE NOT NULL,
+	valid_to DATE, -- NULL = vigente
+	source VARCHAR(120),
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_payroll_parameter_vigencia UNIQUE (tenant_id, param_key, valid_from),
+	CONSTRAINT chk_payroll_parameter_value_positive CHECK (param_value >= 0),
+	CONSTRAINT chk_payroll_parameter_vigencia CHECK (valid_to IS NULL OR valid_to >= valid_from)
+);
+
+CREATE INDEX idx_payroll_parameters_lookup
+	ON hr_schema.payroll_parameters (tenant_id, param_key, valid_from DESC);
+
+-- ------------------------------------------------------------
+-- Historial de salarios (Arts. 104, 122, 142)
+-- ------------------------------------------------------------
+-- El Art. 142.a exige el salario integral VIGENTE EN CADA TRIMESTRE, y el
+-- Art. 142.b/c el ULTIMO salario integral. Con un unico base_salary mutable
+-- no se puede reconstruir ninguno de los dos.
+CREATE TABLE IF NOT EXISTS hr_schema.salary_history (
+	salary_history_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	monthly_salary NUMERIC(18, 4) NOT NULL,
+	valid_from DATE NOT NULL,
+	valid_to DATE,
+	reason VARCHAR(120),
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_salary_history_vigencia UNIQUE (employee_id, valid_from),
+	CONSTRAINT chk_salary_history_positive CHECK (monthly_salary > 0),
+	CONSTRAINT chk_salary_history_vigencia CHECK (valid_to IS NULL OR valid_to >= valid_from)
+);
+
+CREATE INDEX idx_salary_history_lookup ON hr_schema.salary_history (employee_id, valid_from DESC);
+CREATE INDEX idx_salary_history_tenant ON hr_schema.salary_history (tenant_id);
+
+-- ------------------------------------------------------------
+-- Horas con recargo (Arts. 117, 118, 120, 178, 182)
+-- ------------------------------------------------------------
+-- Una fila por evento: permite factores concurrentes (30% nocturno, 50%
+-- extra, 50% feriado) y el control de los topes acumulados del Art. 178.
+CREATE TABLE IF NOT EXISTS hr_schema.overtime_record (
+	overtime_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	clocking_id INTEGER REFERENCES hr_schema.clocking(clocking_id) ON DELETE SET NULL,
+	work_date DATE NOT NULL,
+	kind VARCHAR(20) NOT NULL,
+	hours NUMERIC(5, 2) NOT NULL,
+	-- Factor efectivo del momento, no el parametro vigente hoy: el recalculo
+	-- historico debe ser reproducible. Extra autorizada 1.50; sin permiso de
+	-- Inspectoria 2.00 (Art. 182, doble recargo).
+	rate_factor NUMERIC(4, 2) NOT NULL,
+	inspectoria_authorized BOOLEAN NOT NULL DEFAULT FALSE,
+	authorization_ref VARCHAR(120),
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT chk_overtime_hours_positive CHECK (hours > 0),
+	CONSTRAINT chk_overtime_rate_factor CHECK (rate_factor > 0),
+	CONSTRAINT chk_overtime_kind CHECK (kind IN ('nocturna', 'extra', 'feriado', 'descanso'))
+);
+
+CREATE INDEX idx_overtime_employee_date ON hr_schema.overtime_record (employee_id, work_date DESC);
+CREATE INDEX idx_overtime_tenant_date ON hr_schema.overtime_record (tenant_id, work_date);
+CREATE INDEX idx_overtime_kind ON hr_schema.overtime_record (employee_id, kind, work_date);
+
+-- ------------------------------------------------------------
+-- Garantia de prestaciones sociales (Arts. 142.a, 142.b, 143)
+-- ------------------------------------------------------------
+-- 15 dias de salario integral por trimestre, adquiridos al iniciar el
+-- trimestre. Cada trimestre congela su propia base salarial.
+CREATE TABLE IF NOT EXISTS hr_schema.severance_deposit (
+	deposit_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	quarter_start DATE NOT NULL,
+	quarter_end DATE NOT NULL,
+	days NUMERIC(5, 2) NOT NULL DEFAULT 15,
+	integral_daily_salary NUMERIC(18, 4) NOT NULL,
+	amount NUMERIC(18, 4) NOT NULL,
+	-- FALSE dispara la penalizacion del Art. 143: tasa ACTIVA del BCV.
+	deposit_made BOOLEAN NOT NULL DEFAULT FALSE,
+	deposit_date DATE,
+	location VARCHAR(20) NOT NULL,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_severance_deposit_trimestre UNIQUE (employee_id, quarter_start),
+	CONSTRAINT chk_severance_deposit_periodo CHECK (quarter_end > quarter_start),
+	CONSTRAINT chk_severance_deposit_days CHECK (days > 0),
+	CONSTRAINT chk_severance_deposit_amount CHECK (amount >= 0),
+	CONSTRAINT chk_severance_deposit_salary CHECK (integral_daily_salary >= 0),
+	CONSTRAINT chk_severance_deposit_location CHECK (location IN ('fideicomiso', 'fondo_nacional', 'contabilidad')),
+	CONSTRAINT chk_severance_deposit_fecha CHECK (deposit_made = FALSE OR deposit_date IS NOT NULL)
+);
+
+CREATE INDEX idx_severance_deposit_employee ON hr_schema.severance_deposit (employee_id, quarter_start DESC);
+CREATE INDEX idx_severance_deposit_tenant ON hr_schema.severance_deposit (tenant_id);
+CREATE INDEX idx_severance_deposit_pendientes ON hr_schema.severance_deposit (employee_id)
+	WHERE deposit_made = FALSE;
+
+-- Intereses mensuales sobre la garantia depositada (Art. 143).
+CREATE TABLE IF NOT EXISTS hr_schema.severance_interest (
+	interest_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	deposit_id UUID REFERENCES hr_schema.severance_deposit(deposit_id) ON DELETE CASCADE,
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	period_month DATE NOT NULL,
+	balance_base NUMERIC(18, 4) NOT NULL,
+	applied_rate NUMERIC(10, 6) NOT NULL,
+	rate_kind VARCHAR(20) NOT NULL,
+	amount NUMERIC(18, 4) NOT NULL,
+	capitalized BOOLEAN NOT NULL DEFAULT FALSE,
+	paid_at DATE,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_severance_interest_periodo UNIQUE (employee_id, deposit_id, period_month),
+	CONSTRAINT chk_severance_interest_rate CHECK (applied_rate >= 0),
+	CONSTRAINT chk_severance_interest_amount CHECK (amount >= 0),
+	CONSTRAINT chk_severance_interest_rate_kind CHECK (rate_kind IN ('fideicomiso', 'promedio_activa_pasiva', 'activa_bcv'))
+);
+
+CREATE INDEX idx_severance_interest_employee ON hr_schema.severance_interest (employee_id, period_month DESC);
+CREATE INDEX idx_severance_interest_deposit ON hr_schema.severance_interest (deposit_id);
+
+-- Anticipos sobre la garantia: hasta 75%, causales taxativas (Art. 144).
+CREATE TABLE IF NOT EXISTS hr_schema.severance_advance (
+	advance_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	requested_amount NUMERIC(18, 4) NOT NULL,
+	approved_amount NUMERIC(18, 4),
+	reason VARCHAR(20) NOT NULL,
+	reason_detail TEXT,
+	request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+	resolution_date DATE,
+	status VARCHAR(15) NOT NULL DEFAULT 'pendiente',
+	guarantee_balance_at_request NUMERIC(18, 4),
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT chk_severance_advance_requested CHECK (requested_amount > 0),
+	CONSTRAINT chk_severance_advance_approved CHECK (approved_amount IS NULL OR approved_amount >= 0),
+	CONSTRAINT chk_severance_advance_reason CHECK (reason IN ('vivienda', 'hipoteca', 'educacion', 'salud')),
+	CONSTRAINT chk_severance_advance_status CHECK (status IN ('pendiente', 'aprobado', 'rechazado')),
+	CONSTRAINT chk_severance_advance_resolucion CHECK (
+		status = 'pendiente'
+		OR (resolution_date IS NOT NULL AND approved_amount IS NOT NULL)
+	)
+);
+
+CREATE INDEX idx_severance_advance_employee ON hr_schema.severance_advance (employee_id, request_date DESC);
+CREATE INDEX idx_severance_advance_tenant ON hr_schema.severance_advance (tenant_id);
+CREATE INDEX idx_severance_advance_aprobados ON hr_schema.severance_advance (employee_id)
+	WHERE status = 'aprobado';
+
+-- ------------------------------------------------------------
+-- Vacaciones y bono vacacional (Arts. 121, 190, 192, 195, 196)
+-- ------------------------------------------------------------
+-- Una fila por anio de servicio: el derecho se causa anualmente y hay que
+-- distinguir lo causado de lo disfrutado (Art. 195).
+CREATE TABLE IF NOT EXISTS hr_schema.vacation_period (
+	vacation_period_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	service_year INTEGER NOT NULL,
+	period_start DATE NOT NULL,
+	period_end DATE NOT NULL,
+	-- Art. 190: 15 dias habiles al cumplir el anio 1, +1 por anio, tope 30.
+	days_earned NUMERIC(5, 2) NOT NULL,
+	-- Art. 192: 15 dias +1 por anio, tope 30. Caracter salarial.
+	bonus_days_earned NUMERIC(5, 2) NOT NULL,
+	days_taken NUMERIC(5, 2) NOT NULL DEFAULT 0,
+	enjoyed_from DATE,
+	enjoyed_to DATE,
+	normal_daily_salary NUMERIC(18, 4),
+	paid_amount NUMERIC(18, 4),
+	bonus_paid_amount NUMERIC(18, 4),
+	is_fractional BOOLEAN NOT NULL DEFAULT FALSE,
+	status VARCHAR(15) NOT NULL DEFAULT 'causado',
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_vacation_period_anio UNIQUE (employee_id, service_year),
+	CONSTRAINT chk_vacation_period_fechas CHECK (period_end > period_start),
+	CONSTRAINT chk_vacation_days_earned CHECK (days_earned >= 0 AND days_earned <= 30),
+	CONSTRAINT chk_vacation_bonus_days CHECK (bonus_days_earned >= 0 AND bonus_days_earned <= 30),
+	CONSTRAINT chk_vacation_days_taken CHECK (days_taken >= 0 AND days_taken <= days_earned),
+	CONSTRAINT chk_vacation_status CHECK (status IN ('causado', 'disfrutando', 'disfrutado', 'pagado')),
+	CONSTRAINT chk_vacation_disfrute CHECK (enjoyed_to IS NULL OR enjoyed_from IS NOT NULL)
+);
+
+CREATE INDEX idx_vacation_period_employee ON hr_schema.vacation_period (employee_id, service_year DESC);
+CREATE INDEX idx_vacation_period_tenant ON hr_schema.vacation_period (tenant_id);
+CREATE INDEX idx_vacation_period_pendientes ON hr_schema.vacation_period (employee_id)
+	WHERE status IN ('causado', 'disfrutado');
+
+-- ------------------------------------------------------------
+-- Utilidades y bonificacion de fin de anio (Arts. 131, 132, 136, 137, 140)
+-- ------------------------------------------------------------
+-- Reparto colectivo: la cuota de cada trabajador depende de la sumatoria de
+-- TODOS los salarios devengados (Art. 136), por lo que requiere el periodo
+-- completo cerrado.
+CREATE TABLE IF NOT EXISTS hr_schema.profit_sharing_period (
+	profit_period_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	fiscal_year INTEGER NOT NULL,
+	fiscal_year_start DATE NOT NULL,
+	fiscal_year_end DATE NOT NULL,
+	-- Proviene del cierre contable (contexto finances). No se imputan
+	-- perdidas de ejercicios anteriores (Art. 135).
+	liquid_benefits NUMERIC(18, 4),
+	distribution_percentage NUMERIC(5, 4) NOT NULL DEFAULT 0.15,
+	distributable_amount NUMERIC(18, 4),
+	total_earned_salaries NUMERIC(18, 4),
+	-- Entidades sin fines de lucro: exentas del reparto, obligadas a la
+	-- bonificacion de fin de anio de minimo 30 dias (Art. 140).
+	is_non_profit BOOLEAN NOT NULL DEFAULT FALSE,
+	status VARCHAR(15) NOT NULL DEFAULT 'abierto',
+	closed_at TIMESTAMP,
+	payment_deadline DATE, -- 2 meses tras el cierre (Art. 137)
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_profit_sharing_period_anio UNIQUE (tenant_id, fiscal_year),
+	CONSTRAINT chk_profit_period_fechas CHECK (fiscal_year_end > fiscal_year_start),
+	CONSTRAINT chk_profit_period_porcentaje CHECK (distribution_percentage >= 0.15),
+	CONSTRAINT chk_profit_period_status CHECK (status IN ('abierto', 'calculado', 'cerrado')),
+	CONSTRAINT chk_profit_period_cierre CHECK (status <> 'cerrado' OR closed_at IS NOT NULL)
+);
+
+CREATE INDEX idx_profit_sharing_period_tenant ON hr_schema.profit_sharing_period (tenant_id, fiscal_year DESC);
+
+CREATE TABLE IF NOT EXISTS hr_schema.profit_sharing_detail (
+	profit_detail_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	profit_period_id UUID NOT NULL REFERENCES hr_schema.profit_sharing_period(profit_period_id) ON DELETE CASCADE,
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	earned_salary NUMERIC(18, 4) NOT NULL,
+	complete_months INTEGER NOT NULL,
+	daily_salary NUMERIC(18, 4) NOT NULL,
+	raw_quota NUMERIC(18, 4),
+	-- Topes del Art. 131: minimo 30 dias, maximo 120, prorrateados.
+	min_cap NUMERIC(18, 4) NOT NULL,
+	max_cap NUMERIC(18, 4) NOT NULL,
+	final_amount NUMERIC(18, 4),
+	-- Bonificacion de fin de anio ya entregada (Art. 132). Si no hubo
+	-- beneficios, NO esta sujeta a repeticion.
+	advance_paid NUMERIC(18, 4) NOT NULL DEFAULT 0,
+	advance_paid_at DATE,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_profit_sharing_detail UNIQUE (profit_period_id, employee_id),
+	CONSTRAINT chk_profit_detail_meses CHECK (complete_months >= 0 AND complete_months <= 12),
+	CONSTRAINT chk_profit_detail_caps CHECK (max_cap >= min_cap),
+	CONSTRAINT chk_profit_detail_advance CHECK (advance_paid >= 0)
+);
+
+CREATE INDEX idx_profit_sharing_detail_period ON hr_schema.profit_sharing_detail (profit_period_id);
+CREATE INDEX idx_profit_sharing_detail_employee ON hr_schema.profit_sharing_detail (employee_id);
+
+-- ------------------------------------------------------------
+-- Liquidacion final (Arts. 92, 106, 142, 144, 154, 195)
+-- ------------------------------------------------------------
+-- Persiste AMBAS vias del Art. 142 y cual se eligio: ante un reclamo hay
+-- que demostrar por que se pago ese monto, y la prescripcion de
+-- prestaciones es de 10 anios (Art. 51).
+CREATE TABLE IF NOT EXISTS hr_schema.settlement (
+	settlement_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	branch_id UUID REFERENCES general_schema.branch(branch_id) ON DELETE SET NULL,
+	termination_date DATE NOT NULL,
+	payment_due_date DATE NOT NULL, -- egreso + 5 dias (Art. 142.f)
+	payment_date DATE,
+	hire_date DATE NOT NULL,
+	complete_years INTEGER NOT NULL,
+	-- Si supera 6, el retroactivo redondea a anio completo (Art. 142.c)
+	remainder_months INTEGER NOT NULL,
+	last_integral_daily_salary NUMERIC(18, 4) NOT NULL, -- Art. 122
+	last_normal_daily_salary NUMERIC(18, 4) NOT NULL,   -- Art. 104
+	via1_amount NUMERIC(18, 4), -- garantia acumulada (142.a + 142.b)
+	via2_amount NUMERIC(18, 4), -- retroactivo (142.c)
+	selected_via VARCHAR(20),   -- se paga la MAYOR (142.d)
+	severance_amount NUMERIC(18, 4),
+	advances_deducted NUMERIC(18, 4) NOT NULL DEFAULT 0,
+	deductions_amount NUMERIC(18, 4) NOT NULL DEFAULT 0,
+	subtotal NUMERIC(18, 4),
+	mora_days INTEGER NOT NULL DEFAULT 0,
+	mora_rate NUMERIC(10, 6),
+	mora_amount NUMERIC(18, 4) NOT NULL DEFAULT 0,
+	total NUMERIC(18, 4),
+	status VARCHAR(15) NOT NULL DEFAULT 'borrador',
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_settlement_employee UNIQUE (employee_id, termination_date),
+	CONSTRAINT chk_settlement_fechas CHECK (termination_date >= hire_date),
+	CONSTRAINT chk_settlement_antiguedad CHECK (complete_years >= 0 AND remainder_months >= 0 AND remainder_months <= 11),
+	CONSTRAINT chk_settlement_selected_via CHECK (selected_via IS NULL OR selected_via IN ('garantia', 'retroactivo', 'antiguedad_corta')),
+	CONSTRAINT chk_settlement_status CHECK (status IN ('borrador', 'calculada', 'pagada', 'anulada')),
+	CONSTRAINT chk_settlement_mora CHECK (mora_days >= 0 AND mora_amount >= 0),
+	CONSTRAINT chk_settlement_pagada CHECK (status <> 'pagada' OR payment_date IS NOT NULL)
+);
+
+CREATE INDEX idx_settlement_employee ON hr_schema.settlement (employee_id, termination_date DESC);
+CREATE INDEX idx_settlement_tenant ON hr_schema.settlement (tenant_id, termination_date DESC);
+CREATE INDEX idx_settlement_pendientes ON hr_schema.settlement (payment_due_date)
+	WHERE payment_date IS NULL AND status <> 'anulada';
+
+-- Desglose auditable por concepto (Art. 106). El total de la cabecera debe
+-- ser la suma verificable de estos renglones.
+CREATE TABLE IF NOT EXISTS hr_schema.settlement_item (
+	settlement_item_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	settlement_id UUID NOT NULL REFERENCES hr_schema.settlement(settlement_id) ON DELETE CASCADE,
+	code VARCHAR(15) NOT NULL, -- HR-VE-XX
+	concept_name VARCHAR(120) NOT NULL,
+	article VARCHAR(20) NOT NULL,
+	salary_basis VARCHAR(10) NOT NULL,
+	base_amount NUMERIC(18, 4) NOT NULL,
+	days NUMERIC(7, 2),
+	-- Negativo para los que restan: anticipos (Art. 144), descuentos (Art. 154)
+	amount NUMERIC(18, 4) NOT NULL,
+	formula_text TEXT,
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	CONSTRAINT chk_settlement_item_salary_basis CHECK (salary_basis IN ('normal', 'integral')),
+	CONSTRAINT chk_settlement_item_base CHECK (base_amount >= 0)
+);
+
+CREATE INDEX idx_settlement_item_settlement ON hr_schema.settlement_item (settlement_id, sort_order);
+
+-- ------------------------------------------------------------
+-- Beneficiarios por fallecimiento (Art. 145)
+-- ------------------------------------------------------------
+-- Reparto en partes iguales entre los reclamantes validos, SIN preferencia
+-- entre parentescos. El divisor se fija al cerrar la ventana de 3 meses.
+CREATE TABLE IF NOT EXISTS hr_schema.employee_beneficiary (
+	beneficiary_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	settlement_id UUID REFERENCES hr_schema.settlement(settlement_id) ON DELETE SET NULL,
+	full_name VARCHAR(200) NOT NULL,
+	doc_number VARCHAR(100) NOT NULL,
+	identification_type_id INTEGER REFERENCES general_schema.identification_type(identification_type_id) ON DELETE SET NULL,
+	relationship VARCHAR(20) NOT NULL,
+	birth_date DATE,
+	claim_date DATE,
+	validated BOOLEAN NOT NULL DEFAULT FALSE,
+	validated_at DATE,
+	share_percentage NUMERIC(7, 4),
+	share_amount NUMERIC(18, 4),
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT uq_employee_beneficiary_doc UNIQUE (employee_id, doc_number),
+	CONSTRAINT chk_beneficiary_relationship CHECK (relationship IN ('hijo', 'conyuge', 'pareja_estable', 'padre', 'madre', 'nieto_huerfano')),
+	CONSTRAINT chk_beneficiary_share CHECK (share_percentage IS NULL OR (share_percentage > 0 AND share_percentage <= 100)),
+	CONSTRAINT chk_beneficiary_validacion CHECK (validated = FALSE OR validated_at IS NOT NULL)
+);
+
+CREATE INDEX idx_beneficiary_employee ON hr_schema.employee_beneficiary (employee_id);
+CREATE INDEX idx_beneficiary_settlement ON hr_schema.employee_beneficiary (settlement_id);
+CREATE INDEX idx_beneficiary_tenant ON hr_schema.employee_beneficiary (tenant_id);
+
+-- ------------------------------------------------------------
+-- Deducciones al salario (Arts. 152, 154, 412, 413)
+-- ------------------------------------------------------------
+-- Tope de 1/3 del periodo durante la relacion y 50% del credito a favor en
+-- la liquidacion (Art. 154). La cuota sindical exige autorizacion expresa.
+CREATE TABLE IF NOT EXISTS hr_schema.employee_deduction (
+	deduction_id UUID PRIMARY KEY NOT NULL DEFAULT gen_random_uuid(),
+	employee_id UUID NOT NULL REFERENCES hr_schema.employee(employee_id) ON DELETE CASCADE,
+	tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+	kind VARCHAR(20) NOT NULL,
+	description VARCHAR(200) NOT NULL,
+	total_amount NUMERIC(18, 4) NOT NULL,
+	installment_amount NUMERIC(18, 4),
+	outstanding_balance NUMERIC(18, 4) NOT NULL,
+	authorized BOOLEAN NOT NULL DEFAULT FALSE,
+	authorization_date DATE,
+	authorization_ref VARCHAR(120),
+	union_organization VARCHAR(200),
+	start_date DATE NOT NULL DEFAULT CURRENT_DATE,
+	end_date DATE,
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
+	created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+	CONSTRAINT chk_employee_deduction_kind CHECK (kind IN ('deuda_patrono', 'sindical', 'alimentaria', 'otra')),
+	CONSTRAINT chk_employee_deduction_total CHECK (total_amount > 0),
+	CONSTRAINT chk_employee_deduction_balance CHECK (outstanding_balance >= 0 AND outstanding_balance <= total_amount),
+	CONSTRAINT chk_employee_deduction_installment CHECK (installment_amount IS NULL OR installment_amount > 0),
+	CONSTRAINT chk_employee_deduction_fechas CHECK (end_date IS NULL OR end_date >= start_date),
+	-- Arts. 412/413: la cuota sindical exige autorizacion expresa
+	CONSTRAINT chk_employee_deduction_sindical_autorizada CHECK (
+		kind <> 'sindical'
+		OR (authorized = TRUE AND authorization_date IS NOT NULL)
+	),
+	CONSTRAINT chk_employee_deduction_autorizacion CHECK (
+		authorized = FALSE OR authorization_date IS NOT NULL
+	)
+);
+
+CREATE INDEX idx_employee_deduction_employee ON hr_schema.employee_deduction (employee_id);
+CREATE INDEX idx_employee_deduction_tenant ON hr_schema.employee_deduction (tenant_id);
+CREATE INDEX idx_employee_deduction_activas ON hr_schema.employee_deduction (employee_id, kind)
+	WHERE is_active = TRUE AND outstanding_balance > 0;
 
 
 
@@ -2105,7 +2757,7 @@ CREATE TABLE IF NOT EXISTS expense_category (
     category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
-    account_code VARCHAR(20) NOT NULL,
+    account_code VARCHAR(20),
     parent_category_id UUID REFERENCES accounting_schema.expense_category(category_id) ON DELETE SET NULL,
     is_fixed BOOLEAN DEFAULT TRUE,
     is_active BOOLEAN DEFAULT TRUE,
@@ -2134,7 +2786,7 @@ COMMENT ON COLUMN accounting_schema.expense_category.account_code IS
 CREATE TABLE IF NOT EXISTS expense (
     expense_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
-    branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id),
+    branch_id UUID NOT NULL REFERENCES general_schema.branch(branch_id) ON DELETE CASCADE,
     category_id UUID NOT NULL REFERENCES accounting_schema.expense_category(category_id),
     description TEXT,
     amount NUMERIC(14,4) NOT NULL CHECK (amount > 0),
@@ -2191,6 +2843,15 @@ CREATE INDEX IF NOT EXISTS idx_fiscal_period_dates
 COMMENT ON TABLE accounting_schema.fiscal_period IS
     'Fiscal periods for financial reporting. is_closed prevents modifications to journal entries within the period.';
 
+
+
+-- =============================================
+-- CROSS-SCHEMA CONSTRAINTS (ACCOUNTING)
+-- Applied after accounting_schema exists
+-- =============================================
+ALTER TABLE pos_schema.expense
+    ADD CONSTRAINT fk_expense_accounting_expense
+    FOREIGN KEY (accounting_expense_id) REFERENCES accounting_schema.expense(expense_id) ON DELETE SET NULL;
 
 
 -- =============================================
@@ -2396,8 +3057,8 @@ $$ language plpgsql;
 CREATE OR REPLACE FUNCTION general_schema.prevent_category_cycles()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_current_id VARCHAR(13);
-    v_visited VARCHAR(13)[];
+    v_current_id UUID;
+    v_visited UUID[];
     v_max_iterations INTEGER := 10;
     v_iteration INTEGER := 0;
 BEGIN
@@ -2487,12 +3148,12 @@ CREATE TRIGGER trigger_update_category_hierarchy
 
 
 CREATE OR REPLACE FUNCTION general_schema.get_subcategories(
-    p_parent_category_id INTEGER DEFAULT NULL
+    p_parent_category_id UUID DEFAULT NULL
 )
 RETURNS TABLE(
-    category_id INTEGER,
+    category_id UUID,
     category_name VARCHAR(100),
-    parent_id INTEGER,
+    parent_id UUID,
     level INTEGER,
     full_path TEXT,
     product_count BIGINT
@@ -2530,7 +3191,7 @@ BEGIN
         ct.parent_category_id,
         ct.hierarchy_level,
         ct.path,
-        COUNT(p.cabys_code) AS product_count
+        COUNT(p.product_id) AS product_count
     FROM category_tree ct
     LEFT JOIN general_schema.product p 
         ON p.product_category_id = ct.product_category_id
@@ -2811,7 +3472,7 @@ create trigger on_sale_completed_link_sale_to_session
     when (old.is_completed is false and new.is_completed is true)
     execute function link_sale_to_session();
 
-CREATE OR REPLACE FUNCTION calculate_digital_sale_invoice_total()
+CREATE OR REPLACE FUNCTION calculate_invoice_total()
 returns trigger as $$
 BEGIN
     new.total_amount := new.subtotal_amount + new.tax_amount;
@@ -2819,11 +3480,12 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists calculate_digital_sale_invoice_total_trigger on pos_schema.digital_sale_invoice;
-create trigger calculate_digital_sale_invoice_total_trigger
-    before insert or update on pos_schema.digital_sale_invoice
+drop trigger if exists calculate_digital_sale_invoice_total_trigger on pos_schema.invoice;
+drop trigger if exists calculate_invoice_total_trigger on pos_schema.invoice;
+create trigger calculate_invoice_total_trigger
+    before insert or update on pos_schema.invoice
     for each row
-    execute function calculate_digital_sale_invoice_total();
+    execute function calculate_invoice_total();
 
 CREATE OR REPLACE FUNCTION calculate_total_price()
 returns trigger as $$
@@ -2839,39 +3501,39 @@ create trigger calculate_total_price_return_product_trigger
     for each row
     execute function calculate_total_price();
 
-CREATE OR REPLACE FUNCTION pos_schema.get_digital_sale_invoice(_sale_id uuid)
+CREATE OR REPLACE FUNCTION pos_schema.get_invoice(_sale_id uuid)
 returns table (
-    digital_sale_invoice_id uuid,
+    invoice_id uuid,
     sale_id uuid,
     tenant_customer_id uuid,
     currency_id INTEGER,
     subtotal_amount numeric(10,2),
     tax_amount numeric(10,2),
     total_amount numeric(10,2),
-    created_at timestamp,
+    invoiced_at timestamp,
     updated_at timestamp
 ) as $$
 BEGIN
     return query
-    select 
-        b.digital_sale_invoice_id,
+    select
+        b.invoice_id,
         b.sale_id,
         b.tenant_customer_id,
         b.currency_id,
         b.subtotal_amount,
         b.tax_amount,
         b.total_amount,
-        b.created_at,
+        b.invoiced_at,
         b.updated_at
-    from pos_schema.digital_sale_invoice b
+    from pos_schema.invoice b
     where b.sale_id = _sale_id;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION create_digital_sale_invoice()
+CREATE OR REPLACE FUNCTION create_invoice()
 returns trigger as $$
 declare
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _tenant_customer_id uuid;
     _tenant_id uuid;
     _currency_id INTEGER;
@@ -2879,34 +3541,34 @@ declare
     _tax numeric(10,2);
     _total numeric(10,2);
     _payment_ids uuid[];
-    _cash_register_id uuid;
+    _cash_register_session_id uuid;
     _items_count int;
 BEGIN
-        raise notice 'Creating digital sale invoice for sale: %', new.sale_id;
-        
+        raise notice 'Creating invoice for sale: %', new.sale_id;
+
         if exists(
-            select 1 from pos_schema.digital_sale_invoice
+            select 1 from pos_schema.invoice
             where sale_id = new.sale_id
         ) then
-            raise notice 'Digital sale invoice already exists for sale: %', new.sale_id;
+            raise notice 'Invoice already exists for sale: %', new.sale_id;
             return new;
         end if;
-        
+
         _tenant_customer_id := (
-            select tenant_customer_id 
-            from pos_schema.customer_payment 
-            where sale_id = new.sale_id 
+            select tenant_customer_id
+            from pos_schema.customer_payment
+            where sale_id = new.sale_id
             limit 1
         );
-        
+
         select tenant_id into _tenant_id
         from general_schema.tenant_customer
         where tenant_customer_id = _tenant_customer_id;
-        
+
         _currency_id := new.currency_id;
 
-        -- Resolve cash register from active session in the branch
-        SELECT cr.cash_register_id INTO _cash_register_id
+        -- Resolve active cash register session in the branch
+        SELECT crs.cash_register_session_id INTO _cash_register_session_id
         FROM pos_schema.cash_register_session crs
         JOIN pos_schema.cash_register cr ON crs.cash_register_id = cr.cash_register_id
         WHERE cr.branch_id = new.branch_id
@@ -2914,33 +3576,32 @@ BEGIN
         LIMIT 1;
 
         -- Insert invoice with placeholder totals (will be updated from items)
-        INSERT INTO pos_schema.digital_sale_invoice (
-            sale_id,              
+        INSERT INTO pos_schema.invoice (
+            sale_id,
             tenant_customer_id,
             currency_id,
             subtotal_amount,
             tax_amount,
             total_amount,
-            cash_register_id
+            cash_register_session_id
         ) VALUES (
-            new.sale_id,         
+            new.sale_id,
             _tenant_customer_id,
             _currency_id,
             0,
             0,
             0,
-            _cash_register_id
-        ) returning digital_sale_invoice_id into _digital_sale_invoice_id;
-        
-        raise notice '   Digital sale invoice created: %', _digital_sale_invoice_id;
-        raise notice '   Cash Register: %', _cash_register_id;
+            _cash_register_session_id
+        ) returning invoice_id into _invoice_id;
 
-        INSERT INTO pos_schema.digital_sale_invoice_item (
-            digital_sale_invoice_id,
+        raise notice '   Invoice created: %', _invoice_id;
+        raise notice '   Cash Register Session: %', _cash_register_session_id;
+
+        INSERT INTO pos_schema.invoice_item (
+            invoice_id,
             sale_item_id,
             tenant_id,
             product_variant_id,
-            cabys_code,
             tax_rate_id,
             description,
             quantity,
@@ -2951,11 +3612,10 @@ BEGIN
             total_price
         )
         SELECT
-            _digital_sale_invoice_id,
+            _invoice_id,
             si.sale_item_id,
             si.tenant_id,
             si.product_variant_id,
-            pv.cabys_code,
             p.tax_rate_id,
             COALESCE(pv.variant_name, p.product_name, 'Product'),
             si.quantity,
@@ -2965,9 +3625,9 @@ BEGIN
             ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2),
             si.total_price + ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2)
         FROM pos_schema.sale_item si
-        JOIN general_schema.product_variant pv 
+        JOIN general_schema.product_variant pv
             ON si.tenant_id = pv.tenant_id AND si.product_variant_id = pv.product_variant_id
-        LEFT JOIN general_schema.product p ON pv.cabys_code = p.cabys_code
+        LEFT JOIN general_schema.product p ON pv.product_id = p.product_id
         LEFT JOIN general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
         WHERE si.sale_id = new.sale_id;
 
@@ -2976,66 +3636,67 @@ BEGIN
 
         -- Update invoice totals from items (per-item tax)
         SELECT
-            COALESCE(SUM(dsii.subtotal), 0),
-            COALESCE(SUM(dsii.tax_amount), 0)
+            COALESCE(SUM(ii.subtotal), 0),
+            COALESCE(SUM(ii.tax_amount), 0)
         INTO _subtotal, _tax
-        FROM pos_schema.digital_sale_invoice_item dsii
-        WHERE dsii.digital_sale_invoice_id = _digital_sale_invoice_id;
+        FROM pos_schema.invoice_item ii
+        WHERE ii.invoice_id = _invoice_id;
 
         _total := _subtotal + _tax;
 
-        UPDATE pos_schema.digital_sale_invoice
+        UPDATE pos_schema.invoice
         SET subtotal_amount = _subtotal,
             tax_amount = _tax,
             total_amount = _total
-        WHERE digital_sale_invoice_id = _digital_sale_invoice_id;
+        WHERE invoice_id = _invoice_id;
 
         raise notice '   Subtotal: $%', _subtotal;
         raise notice '   Tax (per-item): $%', _tax;
         raise notice '   Total: $%', _total;
-        
+
         -- Link verified payments
         select array_agg(customer_payment_id) into _payment_ids
         from pos_schema.customer_payment
         where sale_id = new.sale_id
         and verified = true;
-        
-        INSERT INTO pos_schema.digital_sale_invoice_payment(digital_sale_invoice_id, customer_payment_id, payment_amount)
-        select 
-            _digital_sale_invoice_id,
+
+        INSERT INTO pos_schema.invoice_payment(invoice_id, customer_payment_id, payment_amount)
+        select
+            _invoice_id,
             customer_payment_id,
             payment_amount
         from pos_schema.customer_payment
         where customer_payment_id = any(_payment_ids);
-        
-        raise notice '   % payment(s) linked to digital sale invoice', array_length(_payment_ids, 1);
+
+        raise notice '   % payment(s) linked to invoice', array_length(_payment_ids, 1);
         raise notice '';
-        raise notice 'Digital sale invoice creation completed successfully';
-        raise notice '   Invoice ID: %', _digital_sale_invoice_id;
+        raise notice 'Invoice creation completed successfully';
+        raise notice '   Invoice ID: %', _invoice_id;
         raise notice '   Sale ID: %', new.sale_id;
 
         return new;
-        
+
     exception
         when others then
-            raise notice 'Error creating digital sale invoice: %', sqlerrm;
+            raise notice 'Error creating invoice: %', sqlerrm;
             return new;
 end;
 $$ language plpgsql;
 
 drop trigger if exists on_sale_completed_create_bill on pos_schema.sale;
 drop trigger if exists on_sale_completed_create_digital_sale_invoice on pos_schema.sale;
-create trigger on_sale_completed_create_digital_sale_invoice
+drop trigger if exists on_sale_completed_create_invoice on pos_schema.sale;
+create trigger on_sale_completed_create_invoice
     after update of is_completed on pos_schema.sale
     for each row
     when (old.is_completed is false and new.is_completed is true)
-    execute function create_digital_sale_invoice();
+    execute function create_invoice();
 
 CREATE OR REPLACE FUNCTION update_on_return()
 returns trigger as $$
 declare
     _sale_item_record record;
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _sale_id uuid;
     _total_returned numeric(10,2) := 0;
     _new_subtotal numeric(10,2);
@@ -3063,13 +3724,13 @@ BEGIN
 
     _sale_id := _sale_item_record.sale_id;
 
-    -- get digital sale invoice for sale
-    select digital_sale_invoice_id into _digital_sale_invoice_id from pos_schema.digital_sale_invoice where sale_id = _sale_id limit 1;
-    if _digital_sale_invoice_id is null then
-        raise exception 'Digital sale invoice not found for sale: %', _sale_id;
+    -- get invoice for sale
+    select invoice_id into _invoice_id from pos_schema.invoice where sale_id = _sale_id limit 1;
+    if _invoice_id is null then
+        raise exception 'Invoice not found for sale: %', _sale_id;
     end if;
 
-    raise notice 'Digital Sale Invoice ID: %', _digital_sale_invoice_id;
+    raise notice 'Invoice ID: %', _invoice_id;
     raise notice 'Original sale item: qty=% unit=$% total=$%', _sale_item_record.quantity, _sale_item_record.unit_price, _sale_item_record.total_price;
 
     if new.quantity > _sale_item_record.quantity then
@@ -3080,13 +3741,13 @@ BEGIN
     _quantity_remaining := _sale_item_record.quantity - new.quantity;
     raise notice 'Return quantity: %  Remaining qty: %', new.quantity, _quantity_remaining;
 
-    -- Update or remove sale_item (CASCADE deletes digital_sale_invoice_item if qty = 0)
+    -- Update or remove sale_item (CASCADE deletes invoice_item if qty = 0)
     if _quantity_remaining = 0 then
-        -- First, explicitly delete the corresponding digital_sale_invoice_item to ensure clean state
-        delete from pos_schema.digital_sale_invoice_item 
-        where digital_sale_invoice_id = _digital_sale_invoice_id
+        -- First, explicitly delete the corresponding invoice_item to ensure clean state
+        delete from pos_schema.invoice_item
+        where invoice_id = _invoice_id
         and sale_item_id = _sale_item_record.sale_item_id;
-        
+
         delete from pos_schema.sale_item where sale_item_id = _sale_item_record.sale_item_id;
         raise notice 'Sale item removed (quantity = 0)';
     else
@@ -3097,9 +3758,9 @@ BEGIN
         where sale_item_id = _sale_item_record.sale_item_id;
         raise notice 'Sale item quantity updated from % to %', _sale_item_record.quantity, _quantity_remaining;
 
-        -- Update corresponding digital_sale_invoice_item with correct tax rate
-        -- Resolve tax_rate the same way as create_digital_sale_invoice
-        update pos_schema.digital_sale_invoice_item dii
+        -- Update corresponding invoice_item with correct tax rate
+        -- Resolve tax_rate the same way as create_invoice
+        update pos_schema.invoice_item dii
         set quantity = _quantity_remaining,
             subtotal = _quantity_remaining * dii.unit_price,
             tax_rate_percentage = COALESCE(tr.rate_percentage, 0),
@@ -3108,31 +3769,31 @@ BEGIN
                 + ROUND((_quantity_remaining * dii.unit_price) * COALESCE(tr.rate_percentage, 0) / 100, 2),
             updated_at = current_timestamp
         from general_schema.product_variant pv
-        left join general_schema.product p ON pv.cabys_code = p.cabys_code
+        left join general_schema.product p ON pv.product_id = p.product_id
         left join general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
-        where dii.digital_sale_invoice_id = _digital_sale_invoice_id
+        where dii.invoice_id = _invoice_id
         and dii.sale_item_id = _sale_item_record.sale_item_id
         and dii.tenant_id = pv.tenant_id
         and dii.product_variant_id = pv.product_variant_id;
     end if;
 
-    -- Recalculate digital sale invoice totals from remaining items
+    -- Recalculate invoice totals from remaining items
     SELECT
-        COALESCE(SUM(dsii.subtotal), 0),
-        COALESCE(SUM(dsii.tax_amount), 0),
-        COALESCE(SUM(dsii.total_price), 0)
+        COALESCE(SUM(ii.subtotal), 0),
+        COALESCE(SUM(ii.tax_amount), 0),
+        COALESCE(SUM(ii.total_price), 0)
     INTO _new_subtotal, _new_tax, _new_total
-    FROM pos_schema.digital_sale_invoice_item dsii
-    WHERE dsii.digital_sale_invoice_id = _digital_sale_invoice_id;
+    FROM pos_schema.invoice_item ii
+    WHERE ii.invoice_id = _invoice_id;
 
-    update pos_schema.digital_sale_invoice
+    update pos_schema.invoice
     set subtotal_amount = _new_subtotal,
         tax_amount = _new_tax,
         total_amount = _new_total,
         updated_at = current_timestamp
-    where digital_sale_invoice_id = _digital_sale_invoice_id;
+    where invoice_id = _invoice_id;
 
-    raise notice 'Digital sale invoice updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
+    raise notice 'Invoice updated: subtotal $% tax $% total $%', _new_subtotal, _new_tax, _new_total;
 
     -- Recalculate sale totals from remaining sale_items with per-item tax
     SELECT
@@ -3142,7 +3803,7 @@ BEGIN
     FROM pos_schema.sale_item si
     JOIN general_schema.product_variant pv
         ON si.tenant_id = pv.tenant_id AND si.product_variant_id = pv.product_variant_id
-    LEFT JOIN general_schema.product p ON pv.cabys_code = p.cabys_code
+    LEFT JOIN general_schema.product p ON pv.product_id = p.product_id
     LEFT JOIN general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
     WHERE si.sale_id = _sale_id;
 
@@ -3762,63 +4423,63 @@ returns trigger as $$
 declare
     _tenant_id uuid;
     _tenant_customer_id uuid;
-    _digital_sale_invoice_id uuid;
+    _invoice_id uuid;
     _points_earned INTEGER;
     _current_balance INTEGER;
     _cash_payments_total numeric(10,2);
     _points_already_awarded BOOLEAN;
 BEGIN
-        _digital_sale_invoice_id := new.digital_sale_invoice_id;
-        
+        _invoice_id := new.invoice_id;
+
         select exists(
-            select 1 
-            from pos_schema.score_transaction 
-            where digital_sale_invoice_id = _digital_sale_invoice_id 
-            and transaction_type_id = 1  
+            select 1
+            from pos_schema.score_transaction
+            where invoice_id = _invoice_id
+            and transaction_type_id = 1
         ) into _points_already_awarded;
-        
+
         if _points_already_awarded then
-            raise notice 'Points already awarded for digital sale invoice %', _digital_sale_invoice_id;
+            raise notice 'Points already awarded for invoice %', _invoice_id;
             return new;
         end if;
-        
+
         select tenant_customer_id into _tenant_customer_id
-        from pos_schema.digital_sale_invoice
-        where digital_sale_invoice_id = _digital_sale_invoice_id;
-        
+        from pos_schema.invoice
+        where invoice_id = _invoice_id;
+
         if _tenant_customer_id is null then
-            raise notice 'No customer found for digital sale invoice %', _digital_sale_invoice_id;
+            raise notice 'No customer found for invoice %', _invoice_id;
             return new;
         end if;
-        
+
         select tenant_id into _tenant_id
         from general_schema.tenant_customer
         where tenant_customer_id = _tenant_customer_id;
-        
+
         if _tenant_id is null then
             raise notice 'Tenant not found for customer %', _tenant_customer_id;
             return new;
         end if;
-        
+
         select coalesce(sum(cp.payment_amount), 0) into _cash_payments_total
-        from pos_schema.digital_sale_invoice_payment bp
+        from pos_schema.invoice_payment bp
         join pos_schema.customer_payment cp on bp.customer_payment_id = cp.customer_payment_id
-        where bp.digital_sale_invoice_id = _digital_sale_invoice_id
+        where bp.invoice_id = _invoice_id
         and cp.is_points_redemption = false;
-        
+
         raise notice 'Cash/card payments total: $%', _cash_payments_total;
-        
+
         _points_earned := pos_schema.calculate_purchase_score(
             _tenant_id,
             _tenant_customer_id,
             _cash_payments_total
         );
-        
+
         if _points_earned <= 0 then
-            raise notice 'No points earned for this purchase (Invoice: %)', _digital_sale_invoice_id;
+            raise notice 'No points earned for this purchase (Invoice: %)', _invoice_id;
             return new;
         end if;
-        
+
         INSERT INTO pos_schema.tenant_customer_score(
             tenant_id,
             tenant_customer_id,
@@ -3838,29 +4499,29 @@ BEGIN
             lifetime_score = tenant_customer_score.lifetime_score + _points_earned,
             last_earned_at = current_timestamp
         returning score into _current_balance;
-        
+
         INSERT INTO pos_schema.score_transaction(
             tenant_id,
             tenant_customer_id,
             transaction_type_id,
             points,
-            digital_sale_invoice_id,
+            invoice_id,
             created_at
         ) VALUES (
             _tenant_id,
             _tenant_customer_id,
-            1,  
+            1,
             _points_earned,
-            _digital_sale_invoice_id,
+            _invoice_id,
             current_timestamp
         );
-        
+
         raise notice 'Awarded % points to customer %', _points_earned, _tenant_customer_id;
-        raise notice 'Invoice: %', _digital_sale_invoice_id;
+        raise notice 'Invoice: %', _invoice_id;
         raise notice 'New balance: % points', _current_balance;
-        
+
         return new;
-        
+
     exception
         when others then
             raise notice 'Error awarding points: %', sqlerrm;
@@ -3868,11 +4529,11 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists on_purchase_billed on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists on_purchase_billed on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists on_invoice_payment_award_points on pos_schema.digital_sale_invoice_payment;
+drop trigger if exists on_purchase_billed on pos_schema.invoice_payment;
+drop trigger if exists on_purchase_billed on pos_schema.invoice_payment;
+drop trigger if exists on_invoice_payment_award_points on pos_schema.invoice_payment;
 create trigger on_invoice_payment_award_points
-    after insert on pos_schema.digital_sale_invoice_payment
+    after insert on pos_schema.invoice_payment
     for each row
     execute function pos_schema.award_points();
 
@@ -4099,13 +4760,15 @@ drop trigger if exists update_customer_payment_timestamp on pos_schema.customer_
 create trigger update_customer_payment_timestamp before update on pos_schema.customer_payment
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_bill_timestamp on pos_schema.digital_sale_invoice;
-drop trigger if exists update_digital_sale_invoice_timestamp on pos_schema.digital_sale_invoice;
-create trigger update_digital_sale_invoice_timestamp before update on pos_schema.digital_sale_invoice
+drop trigger if exists update_bill_timestamp on pos_schema.invoice;
+drop trigger if exists update_digital_sale_invoice_timestamp on pos_schema.invoice;
+drop trigger if exists update_invoice_timestamp on pos_schema.invoice;
+create trigger update_invoice_timestamp before update on pos_schema.invoice
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_digital_sale_invoice_item_timestamp on pos_schema.digital_sale_invoice_item;
-create trigger update_digital_sale_invoice_item_timestamp before update on pos_schema.digital_sale_invoice_item
+drop trigger if exists update_digital_sale_invoice_item_timestamp on pos_schema.invoice_item;
+drop trigger if exists update_invoice_item_timestamp on pos_schema.invoice_item;
+create trigger update_invoice_item_timestamp before update on pos_schema.invoice_item
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_return_transaction_timestamp on pos_schema.return_transaction;
@@ -4140,9 +4803,9 @@ drop trigger if exists update_score_transaction_timestamp on pos_schema.score_tr
 create trigger update_score_transaction_timestamp before update on pos_schema.score_transaction
 for each row execute function general_schema.update_timestamp();
 
-drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.digital_sale_invoice_payment;
-drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.digital_sale_invoice_payment;
-create trigger update_digital_sale_invoice_payment_timestamp before update on pos_schema.digital_sale_invoice_payment
+drop trigger if exists update_digital_sale_invoice_payment_timestamp on pos_schema.invoice_payment;
+drop trigger if exists update_invoice_payment_timestamp on pos_schema.invoice_payment;
+create trigger update_invoice_payment_timestamp before update on pos_schema.invoice_payment
 for each row execute function general_schema.update_timestamp();
 
 drop trigger if exists update_sale_timestamp on pos_schema.sale;
@@ -4153,6 +4816,490 @@ drop trigger if exists update_sale_item_timestamp on pos_schema.sale_item;
 create trigger update_sale_item_timestamp before update on pos_schema.sale_item
 for each row execute function general_schema.update_timestamp();
 
+CREATE OR REPLACE FUNCTION pos_schema.close_cash_register_session(
+    p_session_id     uuid,
+    p_closing_amount numeric,
+    p_user_cash      numeric DEFAULT 0,
+    p_user_debit     numeric DEFAULT 0,
+    p_user_credit    numeric DEFAULT 0,
+    p_user_transfer  numeric DEFAULT 0
+)
+RETURNS pos_schema.cash_register_session
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_session             pos_schema.cash_register_session%ROWTYPE;
+    v_system_cash         NUMERIC(14, 2) := 0;
+    v_system_debit        NUMERIC(14, 2) := 0;
+    v_system_credit       NUMERIC(14, 2) := 0;
+    v_system_transfer     NUMERIC(14, 2) := 0;
+    v_system_points       NUMERIC(14, 2) := 0;
+    v_system_total_sales  NUMERIC(14, 2) := 0;
+    v_diff_cash           NUMERIC(14, 2);
+    v_diff_debit          NUMERIC(14, 2);
+    v_diff_credit         NUMERIC(14, 2);
+    v_diff_transfer       NUMERIC(14, 2);
+    v_mismatch            BOOLEAN        := FALSE;
+    v_mismatch_amt        NUMERIC(14, 2) := 0;
+    v_mismatch_type       VARCHAR(10)    := NULL;
+BEGIN
+    SELECT * INTO v_session
+    FROM pos_schema.cash_register_session
+    WHERE cash_register_session_id = p_session_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Session not found: %', p_session_id;
+    END IF;
+
+    IF NOT v_session.is_active THEN
+        RAISE EXCEPTION 'Session % is already closed', p_session_id;
+    END IF;
+
+    INSERT INTO pos_schema.session_payment_method_sales
+        (cash_register_session_id, payment_method_id, total_amount)
+    SELECT
+        p_session_id,
+        cp.payment_method_id,
+        COALESCE(SUM(cp.payment_amount), 0)
+    FROM pos_schema.customer_payment cp
+    INNER JOIN pos_schema.cash_register_sale crs ON crs.sale_id = cp.sale_id
+    WHERE crs.cash_register_session_id = p_session_id
+    GROUP BY cp.payment_method_id
+    ON CONFLICT (cash_register_session_id, payment_method_id)
+    DO UPDATE SET total_amount = EXCLUDED.total_amount;
+
+    -- Single aggregate: guaranteed one row, zero for missing methods
+    SELECT
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 1), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 2), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 3), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 4), 0),
+        COALESCE(SUM(total_amount) FILTER (WHERE payment_method_id = 5), 0),
+        COALESCE(SUM(total_amount), 0)
+    INTO
+        v_system_cash,
+        v_system_debit,
+        v_system_credit,
+        v_system_transfer,
+        v_system_points,
+        v_system_total_sales
+    FROM pos_schema.session_payment_method_sales
+    WHERE cash_register_session_id = p_session_id;
+
+    -- Per-method diff (cash must cover opening float + cash sales)
+    v_diff_cash     := p_user_cash     - (v_session.opening_amount + v_system_cash);
+    v_diff_debit    := p_user_debit    - v_system_debit;
+    v_diff_credit   := p_user_credit   - v_system_credit;
+    v_diff_transfer := p_user_transfer - v_system_transfer;
+
+    IF ABS(v_diff_cash)     > 0.01
+    OR ABS(v_diff_debit)    > 0.01
+    OR ABS(v_diff_credit)   > 0.01
+    OR ABS(v_diff_transfer) > 0.01
+    THEN
+        v_mismatch     := TRUE;
+        v_mismatch_amt := v_diff_cash + v_diff_debit + v_diff_credit + v_diff_transfer;
+        v_mismatch_type := CASE WHEN v_mismatch_amt > 0 THEN 'surplus' ELSE 'shortage' END;
+    END IF;
+
+    INSERT INTO pos_schema.session_group_sales
+        (cash_register_session_id, tenant_product_group_id, group_name, total_amount)
+    SELECT
+        p_session_id,
+        tpg.tenant_product_group_id,
+        tpg.group_name,
+        ROUND(SUM(si.total_price), 2)
+    FROM pos_schema.sale_item si
+    INNER JOIN pos_schema.cash_register_sale crs_link
+        ON crs_link.sale_id = si.sale_id
+    INNER JOIN general_schema.product_variant_group_assignment pvga
+        ON  pvga.product_variant_id = si.product_variant_id
+        AND pvga.tenant_id          = si.tenant_id
+    INNER JOIN general_schema.tenant_product_group tpg
+        ON tpg.tenant_product_group_id = pvga.tenant_product_group_id
+    WHERE crs_link.cash_register_session_id = p_session_id
+    GROUP BY tpg.tenant_product_group_id, tpg.group_name
+    ON CONFLICT (cash_register_session_id, tenant_product_group_id)
+    DO UPDATE SET total_amount = EXCLUDED.total_amount;
+
+    UPDATE pos_schema.cash_register_session
+    SET
+        closed_at             = NOW(),
+        closing_amount        = p_closing_amount,
+        is_active             = FALSE,
+        cash_sales_amount     = v_system_cash,
+        debit_sales_amount    = v_system_debit,
+        credit_sales_amount   = v_system_credit,
+        transfer_sales_amount = v_system_transfer,
+        points_sales_amount   = v_system_points,
+        total_sales_amount    = v_system_total_sales,
+        user_cash_amount      = p_user_cash,
+        user_debit_amount     = p_user_debit,
+        user_credit_amount    = p_user_credit,
+        user_transfer_amount  = p_user_transfer,
+        mismatch              = v_mismatch,
+        mismatch_amount       = ABS(v_mismatch_amt),
+        mismatch_type         = v_mismatch_type,
+        updated_at            = NOW()
+    WHERE cash_register_session_id = p_session_id
+    RETURNING * INTO v_session;
+
+    RETURN v_session;
+END;
+$$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- CxC (Cuentas por Cobrar) — Collection subsystem functions
+-- Mirror of the AP alert functions in functions/purchase/purchase_functions.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS check_account_receivable_completion(UUID);
+
+CREATE OR REPLACE FUNCTION check_account_receivable_completion(_account_receivable_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+    _subtotal       NUMERIC(12,3);
+    _tax_amount     NUMERIC(12,3);
+    _amount_due     NUMERIC(12,3);
+    _payments_total NUMERIC(12,3);
+    _balance        NUMERIC(12,3);
+    _target_sar_id  UUID;
+BEGIN
+    SELECT
+        ar.subtotal,
+        sar.tax_amount,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0)) AS amount_due,
+        sar.sale_account_receivable_id
+    INTO
+        _subtotal,
+        _tax_amount,
+        _amount_due,
+        _target_sar_id
+    FROM general_schema.account_receivable ar
+    JOIN pos_schema.sale_account_receivable sar
+        ON ar.account_receivable_id = sar.account_receivable_id
+    WHERE ar.account_receivable_id = _account_receivable_id;
+
+    IF _amount_due IS NULL THEN
+        RAISE EXCEPTION 'Account receivable not found: %', _account_receivable_id;
+    END IF;
+
+    SELECT COALESCE(SUM(sc.amount_paid), 0) INTO _payments_total
+    FROM pos_schema.sale_collection sc
+    WHERE sc.sale_account_receivable_id = _target_sar_id;
+
+    _balance := _amount_due - _payments_total;
+
+    UPDATE general_schema.account_receivable
+    SET amount_paid = _payments_total,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE account_receivable_id = _account_receivable_id;
+
+    IF ABS(_balance) <= 0.01 OR _payments_total >= _amount_due THEN
+        UPDATE general_schema.account_receivable
+        SET is_paid    = TRUE,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 3,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN TRUE;
+
+    ELSIF _payments_total > 0 THEN
+        UPDATE pos_schema.sale_account_receivable
+        SET account_receivable_status = 2,
+            updated_at                = CURRENT_TIMESTAMP
+        WHERE account_receivable_id = _account_receivable_id;
+
+        RETURN FALSE;
+
+    ELSE
+        RETURN FALSE;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION recalc_account_receivable_on_collection() RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pos_schema.check_account_receivable_completion(
+        (SELECT ar.account_receivable_id
+         FROM general_schema.account_receivable ar
+         JOIN pos_schema.sale_account_receivable sar
+             ON ar.account_receivable_id = sar.account_receivable_id
+         WHERE sar.sale_account_receivable_id = NEW.sale_account_receivable_id)
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS recalc_account_receivable_on_collection_trigger ON pos_schema.sale_collection;
+
+CREATE TRIGGER recalc_account_receivable_on_collection_trigger
+AFTER INSERT OR UPDATE OF amount_paid ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION pos_schema.recalc_account_receivable_on_collection();
+
+
+CREATE OR REPLACE FUNCTION auto_resolve_collection_alerts() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.account_receivable_status = 3 AND OLD.account_receivable_status IS DISTINCT FROM 3 THEN
+        UPDATE pos_schema.sale_collection_alert
+        SET is_resolved = TRUE,
+            updated_at  = CURRENT_TIMESTAMP
+        WHERE sale_account_receivable_id = NEW.sale_account_receivable_id
+          AND is_resolved = FALSE;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS auto_resolve_collection_alerts_trigger ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER auto_resolve_collection_alerts_trigger
+AFTER UPDATE OF account_receivable_status ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION pos_schema.auto_resolve_collection_alerts();
+
+
+CREATE OR REPLACE FUNCTION generate_collection_alerts() RETURNS VOID AS $$
+DECLARE
+    v_config        RECORD;
+    v_account       RECORD;
+    v_days_until_due INTEGER;
+    v_alert_type_id INTEGER;
+    v_existing_id   UUID;
+BEGIN
+    FOR v_config IN
+        SELECT tenant_id, warning_days_before_due, urgent_days_before_due
+        FROM pos_schema.sale_collection_alert_config
+    LOOP
+        FOR v_account IN
+            SELECT
+                ar.account_receivable_id,
+                ar.due_date,
+                ar.is_paid,
+                ar.amount_paid,
+                ar.subtotal,
+                sar.sale_account_receivable_id,
+                sar.tax_amount,
+                (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining
+            FROM general_schema.account_receivable ar
+            JOIN pos_schema.sale_account_receivable sar
+                ON ar.account_receivable_id = sar.account_receivable_id
+            WHERE ar.tenant_id = v_config.tenant_id
+              AND ar.is_paid = FALSE
+              AND (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) > 0
+        LOOP
+            v_days_until_due := v_account.due_date - CURRENT_DATE;
+
+            IF v_days_until_due < 0 THEN
+                v_alert_type_id := 3;
+            ELSIF v_days_until_due <= v_config.urgent_days_before_due THEN
+                v_alert_type_id := 2;
+            ELSIF v_days_until_due <= v_config.warning_days_before_due THEN
+                v_alert_type_id := 1;
+            ELSE
+                CONTINUE;
+            END IF;
+
+            SELECT collection_alert_id INTO v_existing_id
+            FROM pos_schema.sale_collection_alert
+            WHERE sale_account_receivable_id = v_account.sale_account_receivable_id
+              AND collection_alert_type_id = v_alert_type_id
+              AND is_resolved = FALSE
+            LIMIT 1;
+
+            IF v_existing_id IS NULL THEN
+                INSERT INTO pos_schema.sale_collection_alert(
+                    sale_account_receivable_id,
+                    collection_alert_type_id,
+                    alert_date,
+                    is_resolved
+                ) VALUES (
+                    v_account.sale_account_receivable_id,
+                    v_alert_type_id,
+                    CURRENT_TIMESTAMP,
+                    FALSE
+                );
+            END IF;
+        END LOOP;
+    END LOOP;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error generating collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP FUNCTION IF EXISTS get_pending_collection_alerts(UUID);
+
+CREATE OR REPLACE FUNCTION get_pending_collection_alerts(p_tenant_id UUID)
+RETURNS TABLE(
+    collection_alert_id        UUID,
+    sale_account_receivable_id UUID,
+    sale_id                    UUID,
+    customer_name              VARCHAR,
+    alert_type                 VARCHAR,
+    alert_type_description     TEXT,
+    due_date                   DATE,
+    days_until_due             INTEGER,
+    balance_remaining          NUMERIC,
+    alert_date                 TIMESTAMP,
+    created_at                 TIMESTAMP
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sca.collection_alert_id,
+        sar.sale_account_receivable_id,
+        sar.sale_id,
+        (tc.first_name || ' ' || tc.last_name)::VARCHAR AS customer_name,
+        scat.collection_alert_type_name,
+        scat.description,
+        ar.due_date,
+        (ar.due_date - CURRENT_DATE)::INTEGER AS days_until_due,
+        (ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid) AS balance_remaining,
+        sca.alert_date,
+        sca.created_at
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    LEFT JOIN general_schema.tenant_customer tc
+        ON ar.tenant_customer_id = tc.tenant_customer_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE
+    ORDER BY ar.due_date ASC, sca.alert_date DESC;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error fetching pending collection alerts: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION resolve_collection_alert(p_alert_id UUID) RETURNS VOID AS $$
+BEGIN
+    UPDATE pos_schema.sale_collection_alert
+    SET is_resolved = TRUE,
+        updated_at  = CURRENT_TIMESTAMP
+    WHERE collection_alert_id = p_alert_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION initialize_collection_alert_config(
+    p_tenant_id     UUID,
+    p_warning_days  INTEGER DEFAULT 7,
+    p_urgent_days   INTEGER DEFAULT 3,
+    p_email_enabled BOOLEAN DEFAULT TRUE,
+    p_sms_enabled   BOOLEAN DEFAULT FALSE
+) RETURNS UUID AS $$
+DECLARE
+    v_config_id UUID;
+BEGIN
+    INSERT INTO pos_schema.sale_collection_alert_config(
+        tenant_id,
+        warning_days_before_due,
+        urgent_days_before_due,
+        email_notifications_enabled,
+        sms_notifications_enabled
+    ) VALUES (
+        p_tenant_id,
+        p_warning_days,
+        p_urgent_days,
+        p_email_enabled,
+        p_sms_enabled
+    )
+    ON CONFLICT (tenant_id) DO UPDATE
+    SET warning_days_before_due     = EXCLUDED.warning_days_before_due,
+        urgent_days_before_due      = EXCLUDED.urgent_days_before_due,
+        email_notifications_enabled = EXCLUDED.email_notifications_enabled,
+        sms_notifications_enabled   = EXCLUDED.sms_notifications_enabled,
+        updated_at                  = CURRENT_TIMESTAMP
+    RETURNING collection_alert_config_id INTO v_config_id;
+
+    RETURN v_config_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION get_collection_alert_stats(p_tenant_id UUID)
+RETURNS TABLE(
+    total_alerts        INTEGER,
+    overdue_count       INTEGER,
+    urgent_count        INTEGER,
+    warning_count       INTEGER,
+    total_amount_at_risk NUMERIC
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::INTEGER AS total_alerts,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 3)::INTEGER AS overdue_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 2)::INTEGER AS urgent_count,
+        COUNT(*) FILTER (WHERE scat.collection_alert_type_id = 1)::INTEGER AS warning_count,
+        COALESCE(SUM(ar.subtotal + COALESCE(sar.tax_amount, 0) - ar.amount_paid), 0) AS total_amount_at_risk
+    FROM pos_schema.sale_collection_alert sca
+    JOIN pos_schema.sale_collection_alert_type scat
+        ON sca.collection_alert_type_id = scat.collection_alert_type_id
+    JOIN pos_schema.sale_account_receivable sar
+        ON sca.sale_account_receivable_id = sar.sale_account_receivable_id
+    JOIN general_schema.account_receivable ar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    WHERE ar.tenant_id = p_tenant_id
+      AND sca.is_resolved = FALSE;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error calculating collection alert stats: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS update_sale_account_receivable_timestamp ON pos_schema.sale_account_receivable;
+
+CREATE TRIGGER update_sale_account_receivable_timestamp
+BEFORE UPDATE ON pos_schema.sale_account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_timestamp ON pos_schema.sale_collection;
+
+CREATE TRIGGER update_sale_collection_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_timestamp ON pos_schema.sale_collection_alert;
+
+CREATE TRIGGER update_sale_collection_alert_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_sale_collection_alert_config_timestamp ON pos_schema.sale_collection_alert_config;
+
+CREATE TRIGGER update_sale_collection_alert_config_timestamp
+BEFORE UPDATE ON pos_schema.sale_collection_alert_config
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+
+DROP TRIGGER IF EXISTS update_account_receivable_timestamp ON general_schema.account_receivable;
+
+CREATE TRIGGER update_account_receivable_timestamp
+BEFORE UPDATE ON general_schema.account_receivable
+FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
 
 
 
@@ -4161,11 +5308,11 @@ for each row execute function general_schema.update_timestamp();
 -- FUNCTIONS: PURCHASE
 -- Source: functions/purchase/purchase_functions.sql
 -- =============================================
+
 SET SEARCH_PATH = purchase_schema;
 
-CREATE OR REPLACE FUNCTION calculate_purchase_order_total(
-    p_purchase_order_id uuid
-) returns numeric as $$
+
+CREATE OR REPLACE FUNCTION calculate_purchase_order_total(p_purchase_order_id uuid) returns numeric as $$
 declare
     v_total numeric(12,3);
 BEGIN
@@ -4178,14 +5325,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION create_purchase_order(
-    p_supplier_id uuid,
-    p_warehouse_id uuid,
-    p_expected_delivery_date date,
-    p_items jsonb default '[]'::jsonb,
-    p_has_invoice BOOLEAN default true,
-    p_payment_condition VARCHAR(10) default 'CREDIT'
-) returns uuid as $$
+
+CREATE OR REPLACE FUNCTION create_purchase_order(p_supplier_id uuid, p_warehouse_id uuid, p_expected_delivery_date date, p_items jsonb default '[]'::jsonb, p_has_invoice BOOLEAN default true, p_payment_condition VARCHAR(10) default 'CREDIT') returns uuid as $$
 declare
     v_purchase_order_id uuid;
     v_supplier_invoice_id uuid;
@@ -4202,10 +5343,8 @@ declare
     v_due_date date;
 BEGIN
     -- Obtener tenant_id desde la relación supplier -> supplier_branch -> branch
-    select b.tenant_id into v_tenant_id
+    select s.added_by into v_tenant_id
     from purchase_schema.supplier s
-    join purchase_schema.supplier_branch sb on s.supplier_id = sb.supplier_id
-    join general_schema.branch b on b.branch_id = sb.branch_id
     where s.supplier_id = p_supplier_id
     limit 1;
 
@@ -4253,13 +5392,13 @@ BEGIN
         -- Para cada product_variant que se está comprando y que no tiene supplier_id,
         -- asignar el supplier_id de esta orden de compra
         UPDATE general_schema.product_variant
-        SET 
+        SET
             supplier_id = p_supplier_id,
             updated_at = CURRENT_TIMESTAMP
-        WHERE 
+        WHERE
             tenant_id = v_tenant_id
             AND product_variant_id IN (
-                SELECT (value ->> 'product_variant_id')::uuid 
+                SELECT (value ->> 'product_variant_id')::uuid
                 FROM jsonb_array_elements(p_items)
             )
             AND supplier_id IS NULL;
@@ -4268,10 +5407,10 @@ BEGIN
         -- Para cada producto compuesto que recibió supplier_id, asignar el mismo supplier_id
         -- a todos sus componentes que no tengan proveedor asignado
         UPDATE general_schema.product_variant child
-        SET 
+        SET
             supplier_id = p_supplier_id,
             updated_at = CURRENT_TIMESTAMP
-        WHERE 
+        WHERE
             child.tenant_id = v_tenant_id
             AND child.supplier_id IS NULL
             AND child.product_variant_id IN (
@@ -4279,7 +5418,7 @@ BEGIN
                 FROM general_schema.product_variant_composition pvc
                 WHERE pvc.tenant_id = v_tenant_id
                   AND pvc.parent_product_variant_id IN (
-                      SELECT (value ->> 'product_variant_id')::uuid 
+                      SELECT (value ->> 'product_variant_id')::uuid
                       FROM jsonb_array_elements(p_items)
                   )
             );
@@ -4371,7 +5510,7 @@ BEGIN
             quantity_billed,
             unit_price
         )
-        select 
+        select
             v_supplier_invoice_id,
             tenant_id,
             product_variant_id,
@@ -4385,8 +5524,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION update_order_status()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION update_order_status() returns trigger as $$
 BEGIN
     INSERT INTO purchase_schema.purchase_order_tracking(
         purchase_order_id,
@@ -4406,16 +5545,19 @@ BEGIN
 end;
 $$ language plpgsql;
 
+
 drop trigger if exists on_order_status_update on purchase_schema.purchase_order;
-create trigger on_order_status_update
-after update of purchase_order_status_id on purchase_schema.purchase_order
+
+
+create trigger on_order_status_update after
+update of purchase_order_status_id on purchase_schema.purchase_order
 for each row execute function update_order_status();
+
 
 DROP FUNCTION IF EXISTS check_account_payable_completion(UUID);
 
-CREATE OR REPLACE FUNCTION check_account_payable_completion(
-    _account_payable_id UUID
-) RETURNS BOOLEAN AS $$
+
+CREATE OR REPLACE FUNCTION check_account_payable_completion(_account_payable_id UUID) RETURNS BOOLEAN AS $$
 DECLARE
     _subtotal NUMERIC(12,3);
     _tax_amount NUMERIC(12,3);
@@ -4425,20 +5567,20 @@ DECLARE
     _balance NUMERIC(12,3);
     _target_purchase_ap_id UUID;
 BEGIN
-    SELECT 
+    SELECT
         ap.subtotal,
         sap.tax_amount,
         (ap.subtotal + COALESCE(sap.tax_amount, 0)) AS amount_due,
         ap.amount_paid,
         sap.purchase_account_payable_id
-    INTO 
+    INTO
         _subtotal,
         _tax_amount,
         _amount_due,
         _current_amount_paid,
         _target_purchase_ap_id
     FROM general_schema.account_payable ap
-    JOIN purchase_schema.purchase_account_payable sap 
+    JOIN purchase_schema.purchase_account_payable sap
         ON ap.account_payable_id = sap.account_payable_id
     WHERE ap.account_payable_id = _account_payable_id;
 
@@ -4484,26 +5626,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION recalc_account_payable_on_payment()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION recalc_account_payable_on_payment() returns trigger as $$
 BEGIN
     perform purchase_schema.check_account_payable_completion(
-        (select account_payable_id 
-         from purchase_schema.purchase_account_payable 
+        (select account_payable_id
+         from purchase_schema.purchase_account_payable
          where purchase_account_payable_id = new.purchase_account_payable_id)
     );
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists recalc_account_payable_on_payment_trigger on purchase_schema.purchase_order_payment;
-create trigger recalc_account_payable_on_payment_trigger
-    after insert or update of amount_paid on purchase_schema.purchase_order_payment
-    for each row
-    execute function recalc_account_payable_on_payment();
 
-CREATE OR REPLACE FUNCTION update_invoice_paid_status()
-returns trigger as $$
+drop trigger if exists recalc_account_payable_on_payment_trigger on purchase_schema.purchase_order_payment;
+
+
+create trigger recalc_account_payable_on_payment_trigger after
+insert
+or
+update of amount_paid on purchase_schema.purchase_order_payment
+for each row execute function recalc_account_payable_on_payment();
+
+
+CREATE OR REPLACE FUNCTION update_invoice_paid_status() returns trigger as $$
 declare
     v_is_paid BOOLEAN;
 BEGIN
@@ -4511,7 +5657,7 @@ BEGIN
         select is_paid into v_is_paid
         from general_schema.account_payable
         where account_payable_id = new.account_payable_id;
-        
+
         if v_is_paid = true then
             update purchase_schema.supplier_invoice
             set paid = true,
@@ -4519,25 +5665,21 @@ BEGIN
             where purchase_order_id = new.purchase_order_id;
         end if;
     end if;
-    
+
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists update_invoice_paid_status_trigger on purchase_schema.purchase_account_payable;
-create trigger update_invoice_paid_status_trigger
-    after update of account_payable_status on purchase_schema.purchase_account_payable
-    for each row
-    execute function purchase_schema.update_invoice_paid_status();
 
-CREATE OR REPLACE FUNCTION purchase_schema.upsert_inventory_stock(
-    p_tenant_id UUID,
-    p_product_variant_id UUID,
-    p_warehouse_id UUID,
-    p_quantity INTEGER,
-    p_log_in_type_id INTEGER
-) RETURNS VOID
-LANGUAGE plpgsql AS $$
+drop trigger if exists update_invoice_paid_status_trigger on purchase_schema.purchase_account_payable;
+
+
+create trigger update_invoice_paid_status_trigger after
+update of account_payable_status on purchase_schema.purchase_account_payable
+for each row execute function purchase_schema.update_invoice_paid_status();
+
+
+CREATE OR REPLACE FUNCTION purchase_schema.upsert_inventory_stock(p_tenant_id UUID, p_product_variant_id UUID, p_warehouse_id UUID, p_quantity INTEGER, p_log_in_type_id INTEGER) RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     v_existing_id UUID;
 BEGIN
@@ -4577,10 +5719,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(
-    p_purchase_order_id UUID
-) RETURNS VOID
-LANGUAGE plpgsql AS $$
+
+CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(p_purchase_order_id UUID) RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     v_warehouse_id UUID;
     v_log_in_type_id INTEGER;
@@ -4588,6 +5728,7 @@ DECLARE
     v_component RECORD;
     v_is_composite BOOLEAN;
     v_total_qty INTEGER;
+    v_target_is_branch BOOLEAN;
 BEGIN
     SELECT po.warehouse_id INTO v_warehouse_id
     FROM purchase_schema.purchase_order po
@@ -4596,6 +5737,14 @@ BEGIN
     IF v_warehouse_id IS NULL THEN
         RAISE EXCEPTION 'apply_inventory_on_delivery: warehouse not found for PO %', p_purchase_order_id;
     END IF;
+
+    -- Determine if the target warehouse is a branch (sales floor).
+    -- Composite products (lotes) are only expanded into their components
+    -- when delivered to a branch warehouse. A regular warehouse (bodega)
+    -- receives the lot as a single intact unit.
+    SELECT w.is_branch INTO v_target_is_branch
+    FROM inventory_schema.warehouse w
+    WHERE w.warehouse_id = v_warehouse_id;
 
     SELECT inventory_log_type_id INTO v_log_in_type_id
     FROM inventory_schema.inventory_log_type
@@ -4612,7 +5761,10 @@ BEGIN
         WHERE pv.tenant_id = v_item.tenant_id
           AND pv.product_variant_id = v_item.product_variant_id;
 
-        IF v_is_composite IS TRUE THEN
+        -- Only disaggregate (expand) the lot if the product is composite
+        -- AND the destination warehouse is a branch (is_branch = true).
+        -- Non-branch warehouses (bodegas) store the lot as a whole unit.
+        IF v_is_composite IS TRUE AND v_target_is_branch IS TRUE THEN
             FOR v_component IN
                 SELECT pvc.child_product_variant_id, pvc.quantity AS component_qty
                 FROM general_schema.product_variant_composition pvc
@@ -4630,6 +5782,7 @@ BEGIN
                 );
             END LOOP;
         ELSE
+            -- Non-branch warehouse OR non-composite product: insert as-is.
             PERFORM purchase_schema.upsert_inventory_stock(
                 v_item.tenant_id,
                 v_item.product_variant_id,
@@ -4642,8 +5795,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION create_goods_receipt()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION create_goods_receipt() returns trigger as $$
 declare
     v_goods_receipt_id uuid;
     v_subtotal numeric(12,3);
@@ -4708,16 +5861,16 @@ BEGIN
 end;
 $$ language plpgsql;
 
-drop trigger if exists create_goods_receipt_trigger on purchase_schema.purchase_order;
-create trigger create_goods_receipt_trigger
-    after update of purchase_order_status_id on purchase_schema.purchase_order
-    for each row
-    execute function purchase_schema.create_goods_receipt();
 
-CREATE OR REPLACE FUNCTION execute_three_way_matching(
-    p_purchase_order_id uuid,
-    p_goods_receipt_id uuid
-) returns void as $$
+drop trigger if exists create_goods_receipt_trigger on purchase_schema.purchase_order;
+
+
+create trigger create_goods_receipt_trigger after
+update of purchase_order_status_id on purchase_schema.purchase_order
+for each row execute function purchase_schema.create_goods_receipt();
+
+
+CREATE OR REPLACE FUNCTION execute_three_way_matching(p_purchase_order_id uuid, p_goods_receipt_id uuid) returns void as $$
 declare
     v_supplier_invoice_id uuid;
     v_order_subtotal numeric(12,3);
@@ -4744,42 +5897,42 @@ BEGIN
     end if;
 
     if exists(
-        select 1 
-        from purchase_schema.three_way_matching 
+        select 1
+        from purchase_schema.three_way_matching
         where purchase_order_id = p_purchase_order_id
     ) then
         return;
     end if;
 
-    select 
+    select
         ap.subtotal,
         sap.tax_amount,
         (ap.subtotal + sap.tax_amount) AS total_amount
-    into 
+    into
         v_order_subtotal,
         v_order_tax,
         v_order_total
     from general_schema.account_payable ap
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on ap.account_payable_id = sap.account_payable_id
     where sap.purchase_order_id = p_purchase_order_id;
 
-    select 
+    select
         subtotal_amount,
         tax_amount,
         total_amount
-    into 
+    into
         v_invoice_subtotal,
         v_invoice_tax,
         v_invoice_total
     from purchase_schema.supplier_invoice
     where supplier_invoice_id = v_supplier_invoice_id;
 
-    select 
+    select
         subtotal_amount,
         tax_amount,
         total_amount
-    into 
+    into
         v_receipt_subtotal,
         v_receipt_tax,
         v_receipt_total
@@ -4798,7 +5951,7 @@ BEGIN
     from purchase_schema.goods_receipt_item
     where goods_receipt_id = p_goods_receipt_id;
 
-    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and 
+    v_amounts_matched := (abs(v_order_subtotal - v_invoice_subtotal) <= 0.01) and
                          (abs(v_order_subtotal - v_receipt_subtotal) <= 0.01) and
                          (abs(v_invoice_subtotal - v_receipt_subtotal) <= 0.01) and
                          (abs(v_order_tax - v_invoice_tax) <= 0.01) and
@@ -4807,8 +5960,8 @@ BEGIN
                          (abs(v_order_total - v_invoice_total) <= 0.01) and
                          (abs(v_order_total - v_receipt_total) <= 0.01) and
                          (abs(v_invoice_total - v_receipt_total) <= 0.01);
-    
-    v_quantities_matched := (v_order_qty = v_invoice_qty) and 
+
+    v_quantities_matched := (v_order_qty = v_invoice_qty) and
                             (v_order_qty = v_receipt_qty);
 
     INSERT INTO purchase_schema.three_way_matching(
@@ -4828,15 +5981,15 @@ BEGIN
         v_amounts_matched and v_quantities_matched,
         current_timestamp
     );
-    
+
 exception
     when others then
         raise exception 'Error executing three-way matching: %', sqlerrm;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION generate_payment_alerts()
-returns void as $$
+
+CREATE OR REPLACE FUNCTION generate_payment_alerts() returns void as $$
 declare
     v_config record;
     v_account record;
@@ -4844,15 +5997,15 @@ declare
     v_alert_type_id INTEGER;
     v_existing_alert_id uuid;
 BEGIN
-    for v_config in 
-        select 
+    for v_config in
+        select
             pac.tenant_id,
             pac.warning_days_before_due,
             pac.urgent_days_before_due
         from purchase_schema.purchase_order_payment_alert_config pac
     loop
         for v_account in
-            select 
+            select
                 ap.account_payable_id,
                 ap.due_date,
                 ap.is_paid,
@@ -4863,40 +6016,40 @@ BEGIN
                 (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) as balance_remaining,
                 so.purchase_order_id
             from general_schema.account_payable ap
-            join purchase_schema.purchase_account_payable sap 
+            join purchase_schema.purchase_account_payable sap
                 on ap.account_payable_id = sap.account_payable_id
-            join purchase_schema.purchase_order so 
+            join purchase_schema.purchase_order so
                 on sap.purchase_order_id = so.purchase_order_id
-            join purchase_schema.supplier s 
+            join purchase_schema.supplier s
                 on so.supplier_id = s.supplier_id
-            join purchase_schema.supplier_branch sb 
+            join purchase_schema.supplier_branch sb
                 on s.supplier_id = sb.supplier_id
-            join general_schema.branch b 
+            join general_schema.branch b
                 on sb.branch_id = b.branch_id
             where b.tenant_id = v_config.tenant_id
             and ap.is_paid = false
             and (ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid) > 0
         loop
             v_days_until_due := v_account.due_date - current_date;
-            
-  
+
+
             if v_days_until_due < 0 then
-                v_alert_type_id := 3; 
+                v_alert_type_id := 3;
             elsif v_days_until_due <= v_config.urgent_days_before_due then
-                v_alert_type_id := 2; 
+                v_alert_type_id := 2;
             elsif v_days_until_due <= v_config.warning_days_before_due then
-                v_alert_type_id := 1; 
+                v_alert_type_id := 1;
             else
-                continue; 
+                continue;
             end if;
-            
+
             select payment_alert_id into v_existing_alert_id
             from purchase_schema.purchase_order_payment_alert
             where purchase_account_payable_id = v_account.purchase_account_payable_id
             and payment_alert_type_id = v_alert_type_id
             and is_resolved = false
             limit 1;
-            
+
             if v_existing_alert_id is null then
                 INSERT INTO purchase_schema.purchase_order_payment_alert(
                     purchase_account_payable_id,
@@ -4912,33 +6065,21 @@ BEGIN
             end if;
         end loop;
     end loop;
-    
+
 exception
     when others then
         raise exception 'Error generating payment alerts: %', sqlerrm;
 end;
 $$ language plpgsql;
 
+
 drop function if exists get_pending_payment_alerts(uuid);
 
-CREATE OR REPLACE FUNCTION get_pending_payment_alerts(p_tenant_id uuid)
-returns table(
-    payment_alert_id uuid,
-    purchase_account_payable_id uuid,
-    purchase_order_id uuid,
-    supplier_name VARCHAR,
-    invoice_number VARCHAR,
-    alert_type VARCHAR,
-    alert_type_description text,
-    due_date date,
-    days_until_due INTEGER,
-    balance_remaining numeric,
-    alert_date timestamp,
-    created_at timestamp
-) as $$
+
+CREATE OR REPLACE FUNCTION get_pending_payment_alerts(p_tenant_id uuid) returns table(payment_alert_id uuid, purchase_account_payable_id uuid, purchase_order_id uuid, supplier_name VARCHAR, invoice_number VARCHAR, alert_type VARCHAR, alert_type_description text, due_date date, days_until_due INTEGER, balance_remaining numeric, alert_date timestamp, created_at timestamp) as $$
 BEGIN
     return query
-    select 
+    select
         spa.payment_alert_id,
         sap.purchase_account_payable_id,
         so.purchase_order_id,
@@ -4952,34 +6093,34 @@ BEGIN
         spa.alert_date,
         spa.created_at
     from purchase_schema.purchase_order_payment_alert spa
-    join purchase_schema.purchase_order_payment_alert_type spat 
+    join purchase_schema.purchase_order_payment_alert_type spat
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on spa.purchase_account_payable_id = sap.purchase_account_payable_id
-    join general_schema.account_payable ap 
+    join general_schema.account_payable ap
         on sap.account_payable_id = ap.account_payable_id
-    join purchase_schema.purchase_order so 
+    join purchase_schema.purchase_order so
         on sap.purchase_order_id = so.purchase_order_id
-    join purchase_schema.supplier s 
+    join purchase_schema.supplier s
         on so.supplier_id = s.supplier_id
-    left join purchase_schema.supplier_invoice si 
+    left join purchase_schema.supplier_invoice si
         on so.purchase_order_id = si.purchase_order_id
-    join purchase_schema.supplier_branch sb 
+    join purchase_schema.supplier_branch sb
         on s.supplier_id = sb.supplier_id
-    join general_schema.branch b 
+    join general_schema.branch b
         on sb.branch_id = b.branch_id
     where b.tenant_id = p_tenant_id
     and spa.is_resolved = false
     order by ap.due_date asc, spa.alert_date desc;
-    
+
 exception
     when others then
         raise exception 'Error fetching pending payment alerts: %', sqlerrm;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION resolve_payment_alert(p_alert_id uuid)
-returns void as $$
+
+CREATE OR REPLACE FUNCTION resolve_payment_alert(p_alert_id uuid) returns void as $$
 BEGIN
     update purchase_schema.purchase_order_payment_alert
     set is_resolved = true,
@@ -4988,8 +6129,8 @@ BEGIN
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts()
-returns trigger as $$
+
+CREATE OR REPLACE FUNCTION auto_resolve_payment_alerts() returns trigger as $$
 declare
     v_is_paid BOOLEAN;
 BEGIN
@@ -4997,7 +6138,7 @@ BEGIN
         select is_paid into v_is_paid
         from general_schema.account_payable
         where account_payable_id = new.account_payable_id;
-        
+
         if v_is_paid = true then
             update purchase_schema.purchase_order_payment_alert
             set is_resolved = true,
@@ -5006,24 +6147,21 @@ BEGIN
             and is_resolved = false;
         end if;
     end if;
-    
+
     return new;
 end;
 $$ language plpgsql;
 
-drop trigger if exists auto_resolve_payment_alerts_trigger on purchase_schema.purchase_account_payable;
-create trigger auto_resolve_payment_alerts_trigger
-    after update of account_payable_status on purchase_schema.purchase_account_payable
-    for each row
-    execute function purchase_schema.auto_resolve_payment_alerts();
 
-CREATE OR REPLACE FUNCTION initialize_payment_alert_config(
-    p_tenant_id uuid,
-    p_warning_days INTEGER default 7,
-    p_urgent_days INTEGER default 3,
-    p_email_enabled BOOLEAN default true,
-    p_sms_enabled BOOLEAN default false
-) returns uuid as $$
+drop trigger if exists auto_resolve_payment_alerts_trigger on purchase_schema.purchase_account_payable;
+
+
+create trigger auto_resolve_payment_alerts_trigger after
+update of account_payable_status on purchase_schema.purchase_account_payable
+for each row execute function purchase_schema.auto_resolve_payment_alerts();
+
+
+CREATE OR REPLACE FUNCTION initialize_payment_alert_config(p_tenant_id uuid, p_warning_days INTEGER default 7, p_urgent_days INTEGER default 3, p_email_enabled BOOLEAN default true, p_sms_enabled BOOLEAN default false) returns uuid as $$
 declare
     v_config_id uuid;
 BEGIN
@@ -5047,45 +6185,39 @@ BEGIN
         sms_notifications_enabled = excluded.sms_notifications_enabled,
         updated_at = current_timestamp
     returning payment_alert_config_id into v_config_id;
-    
+
     return v_config_id;
 end;
 $$ language plpgsql;
 
-CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid)
-returns table(
-    total_alerts INTEGER,
-    overdue_count INTEGER,
-    urgent_count INTEGER,
-    warning_count INTEGER,
-    total_amount_at_risk numeric
-) as $$
+
+CREATE OR REPLACE FUNCTION get_payment_alert_stats(p_tenant_id uuid) returns table(total_alerts INTEGER, overdue_count INTEGER, urgent_count INTEGER, warning_count INTEGER, total_amount_at_risk numeric) as $$
 BEGIN
     return query
-    select 
+    select
         count(*)::INTEGER as total_alerts,
         count(*) filter (where spat.payment_alert_type_id = 3)::INTEGER as overdue_count,
         count(*) filter (where spat.payment_alert_type_id = 2)::INTEGER as urgent_count,
         count(*) filter (where spat.payment_alert_type_id = 1)::INTEGER as warning_count,
         coalesce(sum(ap.subtotal + coalesce(sap.tax_amount, 0) - ap.amount_paid), 0) as total_amount_at_risk
     from purchase_schema.purchase_order_payment_alert spa
-    join purchase_schema.purchase_order_payment_alert_type spat 
+    join purchase_schema.purchase_order_payment_alert_type spat
         on spa.payment_alert_type_id = spat.payment_alert_type_id
-    join purchase_schema.purchase_account_payable sap 
+    join purchase_schema.purchase_account_payable sap
         on spa.purchase_account_payable_id = sap.purchase_account_payable_id
-    join general_schema.account_payable ap 
+    join general_schema.account_payable ap
         on sap.account_payable_id = ap.account_payable_id
-    join purchase_schema.purchase_order so 
+    join purchase_schema.purchase_order so
         on sap.purchase_order_id = so.purchase_order_id
-    join purchase_schema.supplier s 
+    join purchase_schema.supplier s
         on so.supplier_id = s.supplier_id
-    join purchase_schema.supplier_branch sb 
+    join purchase_schema.supplier_branch sb
         on s.supplier_id = sb.supplier_id
-    join general_schema.branch b 
+    join general_schema.branch b
         on sb.branch_id = b.branch_id
     where b.tenant_id = p_tenant_id
     and spa.is_resolved = false;
-    
+
 EXCEPTION
     WHEN OTHERS THEN
         RAISE EXCEPTION 'Error calculating payment alert stats: %', SQLERRM;
@@ -5094,51 +6226,110 @@ $$ LANGUAGE plpgsql;
 
 
 drop trigger if exists update_supplier_timestamp on purchase_schema.supplier;
-create trigger update_supplier_timestamp before update on purchase_schema.supplier
+
+
+create trigger update_supplier_timestamp
+before
+update on purchase_schema.supplier
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_timestamp on purchase_schema.purchase_order;
-create trigger update_purchase_order_timestamp before update on purchase_schema.purchase_order
+
+
+create trigger update_purchase_order_timestamp
+before
+update on purchase_schema.purchase_order
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_item_timestamp on purchase_schema.purchase_order_item;
-create trigger update_purchase_order_item_timestamp before update on purchase_schema.purchase_order_item
+
+
+create trigger update_purchase_order_item_timestamp
+before
+update on purchase_schema.purchase_order_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_supplier_invoice_timestamp on purchase_schema.supplier_invoice;
-create trigger update_supplier_invoice_timestamp before update on purchase_schema.supplier_invoice
+
+
+create trigger update_supplier_invoice_timestamp
+before
+update on purchase_schema.supplier_invoice
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_supplier_invoice_item_timestamp on purchase_schema.supplier_invoice_item;
-create trigger update_supplier_invoice_item_timestamp before update on purchase_schema.supplier_invoice_item
+
+
+create trigger update_supplier_invoice_item_timestamp
+before
+update on purchase_schema.supplier_invoice_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_goods_receipt_timestamp on purchase_schema.goods_receipt;
-create trigger update_goods_receipt_timestamp before update on purchase_schema.goods_receipt
+
+
+create trigger update_goods_receipt_timestamp
+before
+update on purchase_schema.goods_receipt
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_goods_receipt_item_timestamp on purchase_schema.goods_receipt_item;
-create trigger update_goods_receipt_item_timestamp before update on purchase_schema.goods_receipt_item
+
+
+create trigger update_goods_receipt_item_timestamp
+before
+update on purchase_schema.goods_receipt_item
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_account_payable_timestamp on purchase_schema.purchase_account_payable;
-create trigger update_account_payable_timestamp before update on purchase_schema.purchase_account_payable
+
+
+create trigger update_account_payable_timestamp
+before
+update on purchase_schema.purchase_account_payable
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_timestamp on purchase_schema.purchase_order_payment;
-create trigger update_purchase_order_payment_timestamp before update on purchase_schema.purchase_order_payment
+
+
+create trigger update_purchase_order_payment_timestamp
+before
+update on purchase_schema.purchase_order_payment
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_alert_timestamp on purchase_schema.purchase_order_payment_alert;
-create trigger update_purchase_order_payment_alert_timestamp before update on purchase_schema.purchase_order_payment_alert
+
+
+create trigger update_purchase_order_payment_alert_timestamp
+before
+update on purchase_schema.purchase_order_payment_alert
 for each row execute function general_schema.update_timestamp();
+
 
 drop trigger if exists update_purchase_order_payment_alert_config_timestamp on purchase_schema.purchase_order_payment_alert_config;
-create trigger update_purchase_order_payment_alert_config_timestamp before update on purchase_schema.purchase_order_payment_alert_config
+
+
+create trigger update_purchase_order_payment_alert_config_timestamp
+before
+update on purchase_schema.purchase_order_payment_alert_config
 for each row execute function general_schema.update_timestamp();
 
+
 drop trigger if exists update_three_way_matching_timestamp on purchase_schema.three_way_matching;
-create trigger update_three_way_matching_timestamp before update on purchase_schema.three_way_matching
+
+
+create trigger update_three_way_matching_timestamp
+before
+update on purchase_schema.three_way_matching
 for each row execute function general_schema.update_timestamp();
 
 
@@ -5166,7 +6357,8 @@ CREATE OR REPLACE FUNCTION hr_schema.create_new_employee(
     p_email CHARACTER VARYING,
     p_payment_schedule_id INTEGER,
     p_branch_id UUID,
-    p_identification_type_id INTEGER DEFAULT 1
+    p_identification_type_id INTEGER DEFAULT 1,
+    p_duties_type_id INTEGER DEFAULT NULL
   )
  RETURNS UUID
  LANGUAGE plpgsql
@@ -5181,16 +6373,19 @@ BEGIN
     RAISE EXCEPTION 'Integrity error: payment_schedule_id (payment_schedule_id: %) doesnt exists', p_payment_schedule_id;
   END IF;
 
-  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id)
-  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties, p_turn_type, p_turn_id)
+  INSERT INTO hr_schema.contract (tenant_id, start_date, end_date, hours, base_salary, duties, turn_type, turn_id, duties_type_id)
+  VALUES (p_tenant_id, p_start_date, p_end_date, p_hours, p_base_salary, p_duties, p_turn_type, p_turn_id, p_duties_type_id)
   RETURNING contract_id INTO v_new_contract_id;
 
   v_new_employee_id := gen_random_uuid();
 
+  -- hire_date toma la fecha de inicio del contrato. Es la base del computo
+  -- de antiguedad (Art. 142 LOTTT) y vive en employee porque un trabajador
+  -- puede encadenar contratos sin perder antiguedad.
   INSERT INTO hr_schema.employee (
     employee_id, user_id, first_name, last_name, doc_number,
     identification_type_id, phone, email, contract_id,
-    payment_schedule_id, tenant_id, branch_id
+    payment_schedule_id, tenant_id, branch_id, hire_date
   )
   VALUES (
     v_new_employee_id,
@@ -5204,7 +6399,21 @@ BEGIN
     v_new_contract_id,
     p_payment_schedule_id,
     p_tenant_id,
-    p_branch_id
+    p_branch_id,
+    p_start_date
+  );
+
+  -- Abre el historial salarial (Art. 122): el salario integral necesita
+  -- reconstruir la base vigente en cada trimestre.
+  INSERT INTO hr_schema.salary_history (
+    employee_id, tenant_id, monthly_salary, valid_from, reason
+  )
+  VALUES (
+    v_new_employee_id,
+    p_tenant_id,
+    p_base_salary,
+    p_start_date,
+    'Salario inicial del contrato'
   );
 
   RETURN v_new_employee_id;
@@ -5213,7 +6422,7 @@ EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'Data Error: Document Number (%) or Email already exists.', p_doc_number;
   WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'Integrity Error: Insert failed, cause of the error a non existent FOREIGN KEY (user_id, payment_schedule_id, or identification_type_id).';
+    RAISE EXCEPTION 'Integrity Error: Insert failed due to a non-existent FOREIGN KEY (payment_schedule_id, identification_type_id, or duties_type_id).';
   WHEN others THEN
     RAISE EXCEPTION 'Error creating employee or contract: %', SQLERRM;
 END;
@@ -5274,44 +6483,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Funcion para la generacion de reportes ccss mensuales de periodos especificos
-CREATE OR REPLACE FUNCTION hr_schema.generate_monthly_ccss(
-	p_year INTEGER,
-	p_month INTEGER
-)
-RETURNS TABLE (
-	total_employee NUMERIC(10, 2),
-	total_tenant NUMERIC(10, 2),
-	total NUMERIC(10, 2)
-) AS $$
-DECLARE
-	v_status_completed_id INTEGER;
-	v_completed_status VARCHAR(15) := 'Completed';
-BEGIN
-	SELECT status_id INTO v_status_completed_id
-	FROM hr_schema.paysheet_status
-	WHERE status_description = v_completed_status;
-
-	IF v_status_completed_id IS NULL THEN
-		RAISE EXCEPTION 'Status Completed not found in db.';
-	END IF;
-
-	RETURN QUERY
-	SELECT
-		COALESCE(SUM(pd.ccss_employee_deduction), 0) AS total_employee,
-		COALESCE(SUM(pd.ccss_tenant_deduction), 0) AS total_tenant,
-		COALESCE(SUM(pd.ccss_employee_deduction + ccss_tenant_deduction), 0) AS total
-	FROM
-		hr_schema.paysheet_detail pd
-	INNER JOIN
-		hr_schema.paysheet p ON pd.paysheet_id = p.paysheet_id
-	WHERE
-		EXTRACT(YEAR FROM p.payment_day) = p_year
-		AND EXTRACT(MONTH FROM p.payment_day) = p_month
-		AND p.status_id = v_status_completed_id;
-
-END;
-$$ LANGUAGE plpgsql;
+-- ============================================================
+-- generate_monthly_ccss: ELIMINADA en la migracion 009.
+-- Era especifica de la Caja Costarricense de Seguro Social y ademas
+-- estaba rota: referenciaba las columnas ccss_employee_deduction,
+-- ccss_tenant_deduction y paysheet.payment_day, ninguna de las cuales
+-- existe en el esquema.
+-- Su equivalente venezolano (reporte de retenciones IVSS/INCES/FAOV)
+-- requiere una especificacion de calculo que aun no existe.
+-- ============================================================
 
 CREATE OR REPLACE FUNCTION hr_schema.validate_contract_dates()
 RETURNS TRIGGER AS $$
@@ -5382,10 +6562,135 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_close_suspention_on_write ON hr_schema.suspention;
 CREATE TRIGGER trg_close_suspention_on_write
 BEFORE INSERT OR UPDATE ON hr_schema.suspention
 FOR EACH ROW
 EXECUTE FUNCTION hr_schema.close_suspention_trigger();
+
+-- ============================================================
+-- provision_tenant_payroll_concepts
+-- Copia la plantilla payroll_concept_template a un tenant.
+-- Idempotente: si el tenant ya tiene conceptos, no inserta nada.
+-- Llamada durante el onboarding del tenant o bajo demanda.
+-- ============================================================
+CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_concepts(_tenant_id UUID)
+RETURNS INT AS $$
+DECLARE
+	_inserted INT := 0;
+BEGIN
+	-- Verificar que el tenant existe
+	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
+		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
+	END IF;
+
+	-- Si el tenant ya tiene conceptos, no re-provisionar
+	IF EXISTS (SELECT 1 FROM hr_schema.payroll_concept WHERE tenant_id = _tenant_id LIMIT 1) THEN
+		RAISE NOTICE 'Tenant % already has payroll concepts provisioned', _tenant_id;
+		RETURN 0;
+	END IF;
+
+	-- is_active se toma de la plantilla, no se fuerza a TRUE: hay
+	-- conceptos definidos pero no liberados (retenciones venezolanas
+	-- sin especificacion de calculo) que deben provisionarse inactivos.
+	INSERT INTO hr_schema.payroll_concept(
+		tenant_id, name, type, calculation_method, is_taxable, is_active, base_value, code,
+		article, salary_basis
+	)
+	SELECT
+		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, t.is_active, t.base_value, t.code,
+		t.article, t.salary_basis
+	FROM hr_schema.payroll_concept_template t
+	ORDER BY t.template_id;
+
+	GET DIAGNOSTICS _inserted = ROW_COUNT;
+
+	RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	RETURN _inserted;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================
+-- provision_tenant_payroll_parameters
+-- Siembra los PISOS LEGALES de la LOTTT (Arts. 117, 118, 120, 131,
+-- 142, 144, 154, 178, 190, 192) en hr_schema.payroll_parameters para
+-- un tenant. Idempotente (ON CONFLICT DO NOTHING).
+--
+-- La LOTTT es de orden publico e irrenunciable (Arts. 2, 19): estos
+-- valores son el MINIMO. Una convencion colectiva solo puede
+-- mejorarlos (Arts. 18.2, 434), nunca reducirlos.
+--
+-- valid_from se fija en la vigencia de la LOTTT (07-05-2012) para que
+-- cualquier calculo historico resuelva el parametro.
+--
+-- NO se siembran salario_minimo_nacional (Art. 129) ni tasa_activa_bcv
+-- (Arts. 128, 142.f, 143): dependen de un decreto del Ejecutivo y de
+-- un aviso del BCV, no tienen piso legal estable y deben cargarse por
+-- tenant antes de la primera corrida.
+--
+-- Llamada durante el onboarding del tenant o bajo demanda.
+-- ============================================================
+CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_parameters(_tenant_id UUID)
+RETURNS INT AS $$
+DECLARE
+	_inserted INT := 0;
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
+		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
+	END IF;
+
+	INSERT INTO hr_schema.payroll_parameters (tenant_id, param_key, param_value, valid_from, source)
+	SELECT _tenant_id, p.param_key, p.param_value, DATE '2012-05-07', 'Piso legal LOTTT'
+	FROM (
+		VALUES
+			-- Dias de utilidades (Art. 131): minimo 30, tope 120.
+			('dias_utilidades',                    30.000000),
+			-- Bono vacacional (Art. 192): 15 dias mas 1 por anio, tope 30.
+			('dias_bono_vacacional_base',          15.000000),
+			-- Vacaciones (Art. 190): 15 dias habiles mas 1 por anio, tope 30.
+			('dias_vacaciones_base',               15.000000),
+			-- Recargo nocturno (Art. 117): 30%.
+			('recargo_nocturno',                    0.300000),
+			-- Recargo de hora extraordinaria (Art. 118): 50%. Sin permiso
+			-- de la Inspectoria se duplica (Art. 182), eso lo aplica el servicio.
+			('recargo_hora_extra',                  0.500000),
+			-- Recargo por feriado o descanso trabajado (Art. 120): 50%.
+			('recargo_feriado',                     0.500000),
+			-- Participacion en beneficios (Art. 131): 15% de los liquidos.
+			('porcentaje_prestaciones_utilidades',  0.150000),
+			-- Garantia de prestaciones (Art. 142.a): 15 dias por trimestre.
+			('dias_garantia_trimestral',           15.000000),
+			-- Dias adicionales por antiguedad (Art. 142.b): 2 por anio, tope 30.
+			('dias_adicionales_por_anio',           2.000000),
+			('tope_dias_adicionales',              30.000000),
+			-- Retroactivo (Art. 142.c): 30 dias por anio.
+			('dias_retroactivo_por_anio',          30.000000),
+			-- Antiguedad menor a 3 meses (Art. 142.e): 5 dias por mes o fraccion.
+			('dias_por_mes_antiguedad_corta',       5.000000),
+			-- Anticipo de prestaciones (Art. 144): hasta 75% de la garantia.
+			('tope_anticipo_prestaciones',          0.750000),
+			-- Descuentos (Art. 154): 1/3 del periodo; 50% del credito al liquidar.
+			('tope_descuento_periodo',              0.333333),
+			('tope_compensacion_liquidacion',       0.500000),
+			-- Plazo de pago de prestaciones (Art. 142.f): 5 dias.
+			('dias_gracia_pago_prestaciones',       5.000000),
+			-- Topes de horas extraordinarias (Art. 178).
+			('tope_horas_dia',                     10.000000),
+			('tope_horas_extra_semana',            10.000000),
+			('tope_horas_extra_anio',             100.000000),
+			-- Anio comercial para las alicuotas del salario integral (Art. 122).
+			('dias_anio_comercial',               360.000000),
+			-- Divisor del salario diario (Art. 113): salario mensual / 30.
+			('divisor_salario_diario',             30.000000)
+	) AS p(param_key, param_value)
+	ON CONFLICT (tenant_id, param_key, valid_from) DO NOTHING;
+
+	GET DIAGNOSTICS _inserted = ROW_COUNT;
+
+	RAISE NOTICE 'Provisioned % payroll parameters for tenant %', _inserted, _tenant_id;
+	RETURN _inserted;
+END;
+$$ LANGUAGE plpgsql;
 
 
 
@@ -5618,13 +6923,15 @@ $$ LANGUAGE plpgsql;
 -- =============================================
 SET SEARCH_PATH TO general_schema;
 
-INSERT INTO general_schema.region(region_name) VALUES
-    ('Costa Rica'),
-    ('Panama'),
-    ('United States'),
-    ('United Kingdom'),
-    ('Japan')
-ON CONFLICT DO NOTHING;
+INSERT INTO general_schema.region(region_name, country_code) VALUES
+    ('Venezuela',     '+58'),
+    ('Costa Rica',    '+506'),
+    ('Panama',        '+507'),
+    ('United States', '+1'),
+    ('United Kingdom','+44'),
+    ('Japan',         '+81'),
+    ('Spain',         '+34')
+ON CONFLICT (region_name) DO UPDATE SET country_code = EXCLUDED.country_code;
 
 
 
@@ -5635,12 +6942,11 @@ ON CONFLICT DO NOTHING;
 SET SEARCH_PATH TO general_schema;
 
 INSERT INTO general_schema.identification_type(type_name, description, ident_code) VALUES
-    ('Cedula Fisica', 'Tarjeta de identificacion en fisico', '01'),
-    ('Cedula Juridica', 'Numero de identificacion asignado por el Registro Nacional', '02'),
-    ('DIMEX', 'Documento de Identidad Migratorio para Extranjeros', '03'),
-    ('NITE', 'Numero de Identificacion Tributaria Especial', '04'),
-    ('Extranjero No Domiciliado', 'Cliente o proveedor sin residencia en el pais', '05'),
-    ('No Contribuyente', 'Persona no inscrita en el DGT', '06')
+    ('Cedula de Identidad', 'Cedula de identidad venezolana (persona natural)', 'V'),
+    ('RIF Persona Juridica', 'Registro de Informacion Fiscal de persona juridica', 'J'),
+    ('Cedula de Identidad Extranjero', 'Cedula de identidad venezolana para extranjero residente', 'E'),
+    ('RIF Ente Gubernamental', 'Registro de Informacion Fiscal de ente gubernamental', 'G'),
+    ('Pasaporte', 'Pasaporte de extranjero no residente', 'P')
 ON CONFLICT DO NOTHING;
 
 
@@ -5698,7 +7004,7 @@ ON CONFLICT DO NOTHING;
 SET SEARCH_PATH TO general_schema;
 
 INSERT INTO general_schema.currency(currency_code, currency_name, symbol) VALUES
-('CRC', 'Costa Rican Colón', '₡'),
+('VES', 'Bolivar', 'Bs.'),
 ('USD', 'US Dollar', '$'),
 ('EUR', 'Euro', '€'),
 ('GBP', 'British Pound', '£'),
@@ -5713,14 +7019,12 @@ ON CONFLICT DO NOTHING;
 -- =============================================
 SET SEARCH_PATH TO general_schema;
 
--- Tasas IVA Costa Rica según DGT-R-48-2016 (CodigoTarifa v4.4)
--- rate_code = CodigoTarifa requerido por Hacienda en <Impuesto><CodigoTarifa>
+-- Tasas IVA Venezuela (SENIAT). Un unico tramo general vigente al momento de
+-- esta migracion; sin desglose de tarifas reducidas (pendiente de spec legal
+-- propia, ver CLAUDE.md raiz - retenciones legales VE).
 INSERT INTO general_schema.tax_rate (region, region_id, rate_percentage, rate_code, rate_name) VALUES
-('CR Exento',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 0.00,  '01', 'Exento'),
-('CR IVA 1%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 1.00,  '05', 'IVA 1%'),
-('CR IVA 2%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 2.00,  '06', 'IVA 2%'),
-('CR IVA 4%',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 4.00,  '07', 'IVA 4% - Servicios de Salud'),
-('CR Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Costa Rica'), 13.00, '08', 'IVA General 13%'),
+('VE Exento',   (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 0.00,  'EX', 'Exento'),
+('VE Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 16.00, 'IVA', 'IVA General 16%'),
 ('PA Standard', (SELECT region_id FROM general_schema.region WHERE region_name = 'Panama'),     7.00,  NULL, NULL),
 ('US Federal',  (SELECT region_id FROM general_schema.region WHERE region_name = 'United States'), 10.00, NULL, NULL),
 ('EU Standard', NULL,                                                                            20.00, NULL, NULL),
@@ -5793,610 +7097,26 @@ ON CONFLICT DO NOTHING;
 
 
 -- =============================================
--- SEED: BRANCH LOCATIONS
--- Source: seeds/catalog/general/012-insert-branch-locations.sql
+-- SEED: ACCOUNT RECEIVABLE STATUS
+-- Source: seeds/catalog/general/013-insert-account-receivable-status.sql
 -- =============================================
--- ======================================================
--- SEED: general/012-insert-branch-locations.sql
--- ======================================================
--- Descripción: Llena la tabla territorio_catalog con TODOS los territorios
---              de Costa Rica según División del Territorio 2007
---              (Provincia, Cantón y Distrito)
--- Fuente: División del Territorio de Costa Rica Por: Provincia, Cantón y Distrito
---         Según: Código 2007
--- ======================================================
+INSERT INTO general_schema.account_receivable_status (status_name, description) VALUES
+    ('Pending',      'Payment is pending'),
+    ('Partial Paid', 'Partial payment has been received'),
+    ('Paid',         'Payment has been received in full'),
+    ('Overdue',      'Payment is overdue')
+ON CONFLICT DO NOTHING;
 
-BEGIN;
 
--- Crear tabla de catálogo de territorios si no existe
-CREATE TABLE IF NOT EXISTS general_schema.territorio_catalog (
-    territorio_id SERIAL PRIMARY KEY,
-    codigo VARCHAR(5) UNIQUE NOT NULL,  -- PPCDD (Provincia, Cantón, Distrito)
-    provincia VARCHAR(1) NOT NULL,      -- 1-7
-    canton VARCHAR(2) NOT NULL,         -- 01-XX
-    distrito VARCHAR(2) NOT NULL,       -- 01-XX
-    provincia_nombre VARCHAR(100) NOT NULL,
-    canton_nombre VARCHAR(100) NOT NULL,
-    distrito_nombre VARCHAR(100) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 
--- Crear índices para búsquedas rápidas
-CREATE INDEX IF NOT EXISTS idx_territorio_codigo ON general_schema.territorio_catalog(codigo);
-CREATE INDEX IF NOT EXISTS idx_territorio_provincia ON general_schema.territorio_catalog(provincia);
-CREATE INDEX IF NOT EXISTS idx_territorio_canton ON general_schema.territorio_catalog(canton);
-
--- Insertar TODOS los territorios de Costa Rica
-INSERT INTO general_schema.territorio_catalog (codigo, provincia, canton, distrito, provincia_nombre, canton_nombre, distrito_nombre)
-VALUES
--- PROVINCIA 1: SAN JOSE
--- CANTON 101: SAN JOSE
-('10101', '1', '01', '01', 'San José', 'San José', 'Carmen'),
-('10102', '1', '01', '02', 'San José', 'San José', 'Merced'),
-('10103', '1', '01', '03', 'San José', 'San José', 'Hospital'),
-('10104', '1', '01', '04', 'San José', 'San José', 'Catedral'),
-('10105', '1', '01', '05', 'San José', 'San José', 'Zapote'),
-('10106', '1', '01', '06', 'San José', 'San José', 'San Francisco de Dos Ríos'),
-('10107', '1', '01', '07', 'San José', 'San José', 'Uruca'),
-('10108', '1', '01', '08', 'San José', 'San José', 'Mata Redonda'),
-('10109', '1', '01', '09', 'San José', 'San José', 'Pavas'),
-('10110', '1', '01', '10', 'San José', 'San José', 'Hatillo'),
-('10111', '1', '01', '11', 'San José', 'San José', 'San Sebastián'),
--- CANTON 102: ESCAZU
-('10201', '1', '02', '01', 'San José', 'Escazú', 'Escazú'),
-('10202', '1', '02', '02', 'San José', 'Escazú', 'San Antonio'),
-('10203', '1', '02', '03', 'San José', 'Escazú', 'San Rafael'),
--- CANTON 103: DESAMPARADOS
-('10301', '1', '03', '01', 'San José', 'Desamparados', 'Desamparados'),
-('10302', '1', '03', '02', 'San José', 'Desamparados', 'San Miguel'),
-('10303', '1', '03', '03', 'San José', 'Desamparados', 'San Juan de Dios'),
-('10304', '1', '03', '04', 'San José', 'Desamparados', 'San Rafael Arriba'),
-('10305', '1', '03', '05', 'San José', 'Desamparados', 'San Antonio'),
-('10306', '1', '03', '06', 'San José', 'Desamparados', 'Frailes'),
-('10307', '1', '03', '07', 'San José', 'Desamparados', 'Patarrá'),
-('10308', '1', '03', '08', 'San José', 'Desamparados', 'San Cristóbal'),
-('10309', '1', '03', '09', 'San José', 'Desamparados', 'Rosario'),
-('10310', '1', '03', '10', 'San José', 'Desamparados', 'Damas'),
-('10311', '1', '03', '11', 'San José', 'Desamparados', 'San Rafael Abajo'),
-('10312', '1', '03', '12', 'San José', 'Desamparados', 'Gravilias'),
-('10313', '1', '03', '13', 'San José', 'Desamparados', 'Los Guido'),
--- CANTON 104: PURISCAL
-('10401', '1', '04', '01', 'San José', 'Puriscal', 'Santiago'),
-('10402', '1', '04', '02', 'San José', 'Puriscal', 'Mercedes Sur'),
-('10403', '1', '04', '03', 'San José', 'Puriscal', 'Barbacoas'),
-('10404', '1', '04', '04', 'San José', 'Puriscal', 'Grifo Alto'),
-('10405', '1', '04', '05', 'San José', 'Puriscal', 'San Rafael'),
-('10406', '1', '04', '06', 'San José', 'Puriscal', 'Candelaria'),
-('10407', '1', '04', '07', 'San José', 'Puriscal', 'Desamparaditos'),
-('10408', '1', '04', '08', 'San José', 'Puriscal', 'San Antonio'),
-('10409', '1', '04', '09', 'San José', 'Puriscal', 'Chires'),
--- CANTON 105: TARRAZU
-('10501', '1', '05', '01', 'San José', 'Tarrazú', 'San Marcos'),
-('10502', '1', '05', '02', 'San José', 'Tarrazú', 'San Lorenzo'),
-('10503', '1', '05', '03', 'San José', 'Tarrazú', 'San Carlos'),
--- CANTON 106: ASERRI
-('10601', '1', '06', '01', 'San José', 'Aserrí', 'Aserrí'),
-('10602', '1', '06', '02', 'San José', 'Aserrí', 'Tarbaca o Praga'),
-('10603', '1', '06', '03', 'San José', 'Aserrí', 'Vuelta de Jorco'),
-('10604', '1', '06', '04', 'San José', 'Aserrí', 'San Gabriel'),
-('10605', '1', '06', '05', 'San José', 'Aserrí', 'La Legua'),
-('10606', '1', '06', '06', 'San José', 'Aserrí', 'Monterrey'),
-('10607', '1', '06', '07', 'San José', 'Aserrí', 'Salitrillos'),
--- CANTON 107: MORA
-('10701', '1', '07', '01', 'San José', 'Mora', 'Colón'),
-('10702', '1', '07', '02', 'San José', 'Mora', 'Guayabo'),
-('10703', '1', '07', '03', 'San José', 'Mora', 'Tabarcia'),
-('10704', '1', '07', '04', 'San José', 'Mora', 'Piedras Negras'),
-('10705', '1', '07', '05', 'San José', 'Mora', 'Picagres'),
--- CANTON 108: GOICOECHEA
-('10801', '1', '08', '01', 'San José', 'Goicoechea', 'Guadalupe'),
-('10802', '1', '08', '02', 'San José', 'Goicoechea', 'San Francisco'),
-('10803', '1', '08', '03', 'San José', 'Goicoechea', 'Calle Blancos'),
-('10804', '1', '08', '04', 'San José', 'Goicoechea', 'Mata de Plátano'),
-('10805', '1', '08', '05', 'San José', 'Goicoechea', 'Ipís'),
-('10806', '1', '08', '06', 'San José', 'Goicoechea', 'Rancho Redondo'),
-('10807', '1', '08', '07', 'San José', 'Goicoechea', 'Purral'),
--- CANTON 109: SANTA ANA
-('10901', '1', '09', '01', 'San José', 'Santa Ana', 'Santa Ana'),
-('10902', '1', '09', '02', 'San José', 'Santa Ana', 'Salitral'),
-('10903', '1', '09', '03', 'San José', 'Santa Ana', 'Pozos o Concepción'),
-('10904', '1', '09', '04', 'San José', 'Santa Ana', 'Uruca o San Joaquín'),
-('10905', '1', '09', '05', 'San José', 'Santa Ana', 'Piedades'),
-('10906', '1', '09', '06', 'San José', 'Santa Ana', 'Brasil'),
--- CANTON 110: ALAJUELITA
-('11001', '1', '10', '01', 'San José', 'Alajuelita', 'Alajuelita'),
-('11002', '1', '10', '02', 'San José', 'Alajuelita', 'San Josecito'),
-('11003', '1', '10', '03', 'San José', 'Alajuelita', 'San Antonio'),
-('11004', '1', '10', '04', 'San José', 'Alajuelita', 'Concepción'),
-('11005', '1', '10', '05', 'San José', 'Alajuelita', 'San Felipe'),
--- CANTON 111: CORONADO
-('11101', '1', '11', '01', 'San José', 'Coronado', 'San Isidro'),
-('11102', '1', '11', '02', 'San José', 'Coronado', 'San Rafael'),
-('11103', '1', '11', '03', 'San José', 'Coronado', 'Dulce Nombre o Jesús'),
-('11104', '1', '11', '04', 'San José', 'Coronado', 'Patalillo'),
-('11105', '1', '11', '05', 'San José', 'Coronado', 'Cascajal'),
--- CANTON 112: ACOSTA
-('11201', '1', '12', '01', 'San José', 'Acosta', 'San Ignacio'),
-('11202', '1', '12', '02', 'San José', 'Acosta', 'Guaitil'),
-('11203', '1', '12', '03', 'San José', 'Acosta', 'Palmichal'),
-('11204', '1', '12', '04', 'San José', 'Acosta', 'Cangrejal'),
-('11205', '1', '12', '05', 'San José', 'Acosta', 'Sabanillas'),
--- CANTON 113: TIBAS
-('11301', '1', '13', '01', 'San José', 'Tibás', 'San Juan'),
-('11302', '1', '13', '02', 'San José', 'Tibás', 'Cinco Esquinas'),
-('11303', '1', '13', '03', 'San José', 'Tibás', 'Anselmo Llorente'),
-('11304', '1', '13', '04', 'San José', 'Tibás', 'León XIII'),
-('11305', '1', '13', '05', 'San José', 'Tibás', 'Colima'),
--- CANTON 114: MORAVIA
-('11401', '1', '14', '01', 'San José', 'Moravia', 'San Vicente'),
-('11402', '1', '14', '02', 'San José', 'Moravia', 'San Jerónimo'),
-('11403', '1', '14', '03', 'San José', 'Moravia', 'La Trinidad'),
--- CANTON 115: MONTES DE OCA
-('11501', '1', '15', '01', 'San José', 'Montes de Oca', 'San Pedro'),
-('11502', '1', '15', '02', 'San José', 'Montes de Oca', 'Sabanilla'),
-('11503', '1', '15', '03', 'San José', 'Montes de Oca', 'Mercedes o Betania'),
-('11504', '1', '15', '04', 'San José', 'Montes de Oca', 'San Rafael'),
--- CANTON 116: TURRUBARES
-('11601', '1', '16', '01', 'San José', 'Turrubares', 'San Pablo'),
-('11602', '1', '16', '02', 'San José', 'Turrubares', 'San Pedro'),
-('11603', '1', '16', '03', 'San José', 'Turrubares', 'San Juan de Mata'),
-('11604', '1', '16', '04', 'San José', 'Turrubares', 'San Luis'),
-('11605', '1', '16', '05', 'San José', 'Turrubares', 'Carara'),
--- CANTON 117: DOTA
-('11701', '1', '17', '01', 'San José', 'Dota', 'Santa María'),
-('11702', '1', '17', '02', 'San José', 'Dota', 'Jardín'),
-('11703', '1', '17', '03', 'San José', 'Dota', 'Copey'),
--- CANTON 118: CURRIDABAT
-('11801', '1', '18', '01', 'San José', 'Curridabat', 'Curridabat'),
-('11802', '1', '18', '02', 'San José', 'Curridabat', 'Granadilla'),
-('11803', '1', '18', '03', 'San José', 'Curridabat', 'Sánchez'),
-('11804', '1', '18', '04', 'San José', 'Curridabat', 'Tirrases'),
--- CANTON 119: PEREZ ZELEDON
-('11901', '1', '19', '01', 'San José', 'Pérez Zeledón', 'San Isidro'),
-('11902', '1', '19', '02', 'San José', 'Pérez Zeledón', 'General'),
-('11903', '1', '19', '03', 'San José', 'Pérez Zeledón', 'Daniel Flores'),
-('11904', '1', '19', '04', 'San José', 'Pérez Zeledón', 'Rivas'),
-('11905', '1', '19', '05', 'San José', 'Pérez Zeledón', 'San Pedro'),
-('11906', '1', '19', '06', 'San José', 'Pérez Zeledón', 'Platanares'),
-('11907', '1', '19', '07', 'San José', 'Pérez Zeledón', 'Pejibaye'),
-('11908', '1', '19', '08', 'San José', 'Pérez Zeledón', 'Cajón o Carmen'),
-('11909', '1', '19', '09', 'San José', 'Pérez Zeledón', 'Barú'),
-('11910', '1', '19', '10', 'San José', 'Pérez Zeledón', 'Río Nuevo'),
-('11911', '1', '19', '11', 'San José', 'Pérez Zeledón', 'Páramo'),
--- CANTON 120: LEON CORTES
-('12001', '1', '20', '01', 'San José', 'León Cortés', 'San Pablo'),
-('12002', '1', '20', '02', 'San José', 'León Cortés', 'San Andrés'),
-('12003', '1', '20', '03', 'San José', 'León Cortés', 'Llano Bonito'),
-('12004', '1', '20', '04', 'San José', 'León Cortés', 'San Isidro'),
-('12005', '1', '20', '05', 'San José', 'León Cortés', 'Santa Cruz'),
-('12006', '1', '20', '06', 'San José', 'León Cortés', 'San Antonio'),
-
--- PROVINCIA 2: ALAJUELA
--- CANTON 201: ALAJUELA
-('20101', '2', '01', '01', 'Alajuela', 'Alajuela', 'Alajuela'),
-('20102', '2', '01', '02', 'Alajuela', 'Alajuela', 'San José'),
-('20103', '2', '01', '03', 'Alajuela', 'Alajuela', 'Carrizal'),
-('20104', '2', '01', '04', 'Alajuela', 'Alajuela', 'San Antonio'),
-('20105', '2', '01', '05', 'Alajuela', 'Alajuela', 'Guácima'),
-('20106', '2', '01', '06', 'Alajuela', 'Alajuela', 'San Isidro'),
-('20107', '2', '01', '07', 'Alajuela', 'Alajuela', 'Sabanilla'),
-('20108', '2', '01', '08', 'Alajuela', 'Alajuela', 'San Rafael'),
-('20109', '2', '01', '09', 'Alajuela', 'Alajuela', 'Río Segundo'),
-('20110', '2', '01', '10', 'Alajuela', 'Alajuela', 'Desamparados'),
-('20111', '2', '01', '11', 'Alajuela', 'Alajuela', 'Turrucares'),
-('20112', '2', '01', '12', 'Alajuela', 'Alajuela', 'Tambor'),
-('20113', '2', '01', '13', 'Alajuela', 'Alajuela', 'La Garita'),
-('20114', '2', '01', '14', 'Alajuela', 'Alajuela', 'Sarapiquí'),
--- CANTON 202: SAN RAMON
-('20201', '2', '02', '01', 'Alajuela', 'San Ramón', 'San Ramón'),
-('20202', '2', '02', '02', 'Alajuela', 'San Ramón', 'Santiago'),
-('20203', '2', '02', '03', 'Alajuela', 'San Ramón', 'San Juan'),
-('20204', '2', '02', '04', 'Alajuela', 'San Ramón', 'Piedades Norte'),
-('20205', '2', '02', '05', 'Alajuela', 'San Ramón', 'Piedades Sur'),
-('20206', '2', '02', '06', 'Alajuela', 'San Ramón', 'San Rafael'),
-('20207', '2', '02', '07', 'Alajuela', 'San Ramón', 'San Isidro'),
-('20208', '2', '02', '08', 'Alajuela', 'San Ramón', 'Ángeles'),
-('20209', '2', '02', '09', 'Alajuela', 'San Ramón', 'Alfaro'),
-('20210', '2', '02', '10', 'Alajuela', 'San Ramón', 'Volio'),
-('20211', '2', '02', '11', 'Alajuela', 'San Ramón', 'Concepción'),
-('20212', '2', '02', '12', 'Alajuela', 'San Ramón', 'Zapotal'),
-('20213', '2', '02', '13', 'Alajuela', 'San Ramón', 'San Isidro de Peñas Blancas'),
--- CANTON 203: GRECIA
-('20301', '2', '03', '01', 'Alajuela', 'Grecia', 'Grecia'),
-('20302', '2', '03', '02', 'Alajuela', 'Grecia', 'San Isidro'),
-('20303', '2', '03', '03', 'Alajuela', 'Grecia', 'San José'),
-('20304', '2', '03', '04', 'Alajuela', 'Grecia', 'San Roque'),
-('20305', '2', '03', '05', 'Alajuela', 'Grecia', 'Tácares'),
-('20306', '2', '03', '06', 'Alajuela', 'Grecia', 'Río Cuarto'),
-('20307', '2', '03', '07', 'Alajuela', 'Grecia', 'Puente Piedra'),
-('20308', '2', '03', '08', 'Alajuela', 'Grecia', 'Bolívar'),
--- CANTON 204: SAN MATEO
-('20401', '2', '04', '01', 'Alajuela', 'San Mateo', 'San Mateo'),
-('20402', '2', '04', '02', 'Alajuela', 'San Mateo', 'Desmonte'),
-('20403', '2', '04', '03', 'Alajuela', 'San Mateo', 'Jesús María'),
--- CANTON 205: ATENAS
-('20501', '2', '05', '01', 'Alajuela', 'Atenas', 'Atenas'),
-('20502', '2', '05', '02', 'Alajuela', 'Atenas', 'Jesús'),
-('20503', '2', '05', '03', 'Alajuela', 'Atenas', 'Mercedes'),
-('20504', '2', '05', '04', 'Alajuela', 'Atenas', 'San Isidro'),
-('20505', '2', '05', '05', 'Alajuela', 'Atenas', 'Concepción'),
-('20506', '2', '05', '06', 'Alajuela', 'Atenas', 'San José'),
-('20507', '2', '05', '07', 'Alajuela', 'Atenas', 'Santa Eulalia'),
-('20508', '2', '05', '08', 'Alajuela', 'Atenas', 'Escobal'),
--- CANTON 206: NARANJO
-('20601', '2', '06', '01', 'Alajuela', 'Naranjo', 'Naranjo'),
-('20602', '2', '06', '02', 'Alajuela', 'Naranjo', 'San Miguel'),
-('20603', '2', '06', '03', 'Alajuela', 'Naranjo', 'San José'),
-('20604', '2', '06', '04', 'Alajuela', 'Naranjo', 'Cirrí Sur'),
-('20605', '2', '06', '05', 'Alajuela', 'Naranjo', 'San Jerónimo'),
-('20606', '2', '06', '06', 'Alajuela', 'Naranjo', 'San Juan'),
-('20607', '2', '06', '07', 'Alajuela', 'Naranjo', 'Rosario'),
--- CANTON 207: PALMARES
-('20701', '2', '07', '01', 'Alajuela', 'Palmares', 'Palmares'),
-('20702', '2', '07', '02', 'Alajuela', 'Palmares', 'Zaragoza'),
-('20703', '2', '07', '03', 'Alajuela', 'Palmares', 'Buenos Aires'),
-('20704', '2', '07', '04', 'Alajuela', 'Palmares', 'Santiago'),
-('20705', '2', '07', '05', 'Alajuela', 'Palmares', 'Candelaria'),
-('20706', '2', '07', '06', 'Alajuela', 'Palmares', 'Esquipulas'),
-('20707', '2', '07', '07', 'Alajuela', 'Palmares', 'La Granja'),
--- CANTON 208: POAS
-('20801', '2', '08', '01', 'Alajuela', 'Poás', 'San Pedro'),
-('20802', '2', '08', '02', 'Alajuela', 'Poás', 'San Juan'),
-('20803', '2', '08', '03', 'Alajuela', 'Poás', 'San Rafael'),
-('20804', '2', '08', '04', 'Alajuela', 'Poás', 'Carrillos'),
-('20805', '2', '08', '05', 'Alajuela', 'Poás', 'Sabana Redonda'),
--- CANTON 209: OROTINA
-('20901', '2', '09', '01', 'Alajuela', 'Orotina', 'Orotina'),
-('20902', '2', '09', '02', 'Alajuela', 'Orotina', 'Mastate'),
-('20903', '2', '09', '03', 'Alajuela', 'Orotina', 'Hacienda Vieja'),
-('20904', '2', '09', '04', 'Alajuela', 'Orotina', 'Coyolar'),
-('20905', '2', '09', '05', 'Alajuela', 'Orotina', 'Ceiba'),
--- CANTON 210: SAN CARLOS
-('21001', '2', '10', '01', 'Alajuela', 'San Carlos', 'Quesada'),
-('21002', '2', '10', '02', 'Alajuela', 'San Carlos', 'Florencia'),
-('21003', '2', '10', '03', 'Alajuela', 'San Carlos', 'Buenavista'),
-('21004', '2', '10', '04', 'Alajuela', 'San Carlos', 'Aguas Zarcas'),
-('21005', '2', '10', '05', 'Alajuela', 'San Carlos', 'Venecia'),
-('21006', '2', '10', '06', 'Alajuela', 'San Carlos', 'Pital'),
-('21007', '2', '10', '07', 'Alajuela', 'San Carlos', 'Fortuna'),
-('21008', '2', '10', '08', 'Alajuela', 'San Carlos', 'Tigra'),
-('21009', '2', '10', '09', 'Alajuela', 'San Carlos', 'Palmera'),
-('21010', '2', '10', '10', 'Alajuela', 'San Carlos', 'Venado'),
-('21011', '2', '10', '11', 'Alajuela', 'San Carlos', 'Cutris'),
-('21012', '2', '10', '12', 'Alajuela', 'San Carlos', 'Monterrey'),
-('21013', '2', '10', '13', 'Alajuela', 'San Carlos', 'Pocosol'),
--- CANTON 211: ALFARO RUIZ
-('21101', '2', '11', '01', 'Alajuela', 'Alfaro Ruiz', 'Zarcero'),
-('21102', '2', '11', '02', 'Alajuela', 'Alfaro Ruiz', 'Laguna'),
-('21103', '2', '11', '03', 'Alajuela', 'Alfaro Ruiz', 'Tapezco'),
-('21104', '2', '11', '04', 'Alajuela', 'Alfaro Ruiz', 'Guadalupe'),
-('21105', '2', '11', '05', 'Alajuela', 'Alfaro Ruiz', 'Palmira'),
-('21106', '2', '11', '06', 'Alajuela', 'Alfaro Ruiz', 'Zapote'),
-('21107', '2', '11', '07', 'Alajuela', 'Alfaro Ruiz', 'Brisas'),
--- CANTON 212: VALVERDE VEGA
-('21201', '2', '12', '01', 'Alajuela', 'Valverde Vega', 'Sarchí Norte'),
-('21202', '2', '12', '02', 'Alajuela', 'Valverde Vega', 'Sarchí Sur'),
-('21203', '2', '12', '03', 'Alajuela', 'Valverde Vega', 'Toro Amarillo'),
-('21204', '2', '12', '04', 'Alajuela', 'Valverde Vega', 'San Pedro'),
-('21205', '2', '12', '05', 'Alajuela', 'Valverde Vega', 'Rodríguez'),
--- CANTON 213: UPALA
-('21301', '2', '13', '01', 'Alajuela', 'Upala', 'Upala'),
-('21302', '2', '13', '02', 'Alajuela', 'Upala', 'Aguas Claras'),
-('21303', '2', '13', '03', 'Alajuela', 'Upala', 'San José o Pizote'),
-('21304', '2', '13', '04', 'Alajuela', 'Upala', 'Bijagua'),
-('21305', '2', '13', '05', 'Alajuela', 'Upala', 'Delicias'),
-('21306', '2', '13', '06', 'Alajuela', 'Upala', 'Dos Ríos'),
-('21307', '2', '13', '07', 'Alajuela', 'Upala', 'Yolillal'),
--- CANTON 214: LOS CHILES
-('21401', '2', '14', '01', 'Alajuela', 'Los Chiles', 'Los Chiles'),
-('21402', '2', '14', '02', 'Alajuela', 'Los Chiles', 'Caño Negro'),
-('21403', '2', '14', '03', 'Alajuela', 'Los Chiles', 'Amparo'),
-('21404', '2', '14', '04', 'Alajuela', 'Los Chiles', 'San Jorge'),
--- CANTON 215: GUATUSO
-('21501', '2', '15', '01', 'Alajuela', 'Guatuso', 'San Rafael'),
-('21502', '2', '15', '02', 'Alajuela', 'Guatuso', 'Buenavista'),
-('21503', '2', '15', '03', 'Alajuela', 'Guatuso', 'Cote'),
-
--- PROVINCIA 3: CARTAGO
--- CANTON 301: CARTAGO
-('30101', '3', '01', '01', 'Cartago', 'Cartago', 'Oriental'),
-('30102', '3', '01', '02', 'Cartago', 'Cartago', 'Occidental'),
-('30103', '3', '01', '03', 'Cartago', 'Cartago', 'Carmen'),
-('30104', '3', '01', '04', 'Cartago', 'Cartago', 'San Nicolás'),
-('30105', '3', '01', '05', 'Cartago', 'Cartago', 'Aguacaliente (San Francisco)'),
-('30106', '3', '01', '06', 'Cartago', 'Cartago', 'Guadalupe (Arenilla)'),
-('30107', '3', '01', '07', 'Cartago', 'Cartago', 'Corralillo'),
-('30108', '3', '01', '08', 'Cartago', 'Cartago', 'Tierra Blanca'),
-('30109', '3', '01', '09', 'Cartago', 'Cartago', 'Dulce Nombre'),
-('30110', '3', '01', '10', 'Cartago', 'Cartago', 'Llano Grande'),
-('30111', '3', '01', '11', 'Cartago', 'Cartago', 'Quebradilla'),
--- CANTON 302: PARAISO
-('30201', '3', '02', '01', 'Cartago', 'Paraíso', 'Paraíso'),
-('30202', '3', '02', '02', 'Cartago', 'Paraíso', 'Santiago'),
-('30203', '3', '02', '03', 'Cartago', 'Paraíso', 'Orosi'),
-('30204', '3', '02', '04', 'Cartago', 'Paraíso', 'Cachí'),
-('30205', '3', '02', '05', 'Cartago', 'Paraíso', 'Llanos de Sta Lucia'),
--- CANTON 303: LA UNION
-('30301', '3', '03', '01', 'Cartago', 'La Unión', 'Tres Ríos'),
-('30302', '3', '03', '02', 'Cartago', 'La Unión', 'San Diego'),
-('30303', '3', '03', '03', 'Cartago', 'La Unión', 'San Juan'),
-('30304', '3', '03', '04', 'Cartago', 'La Unión', 'San Rafael'),
-('30305', '3', '03', '05', 'Cartago', 'La Unión', 'Concepción'),
-('30306', '3', '03', '06', 'Cartago', 'La Unión', 'Dulce Nombre'),
-('30307', '3', '03', '07', 'Cartago', 'La Unión', 'San Ramón'),
-('30308', '3', '03', '08', 'Cartago', 'La Unión', 'Río Azul'),
--- CANTON 304: JIMENEZ
-('30401', '3', '04', '01', 'Cartago', 'Jiménez', 'Juan Viñas'),
-('30402', '3', '04', '02', 'Cartago', 'Jiménez', 'Tucurrique'),
-('30403', '3', '04', '03', 'Cartago', 'Jiménez', 'Pejibaye'),
--- CANTON 305: TURRIALBA
-('30501', '3', '05', '01', 'Cartago', 'Turrialba', 'Turrialba'),
-('30502', '3', '05', '02', 'Cartago', 'Turrialba', 'La Suiza'),
-('30503', '3', '05', '03', 'Cartago', 'Turrialba', 'Peralta'),
-('30504', '3', '05', '04', 'Cartago', 'Turrialba', 'Santa Cruz'),
-('30505', '3', '05', '05', 'Cartago', 'Turrialba', 'Santa Teresita'),
-('30506', '3', '05', '06', 'Cartago', 'Turrialba', 'Pavones'),
-('30507', '3', '05', '07', 'Cartago', 'Turrialba', 'Tuis'),
-('30508', '3', '05', '08', 'Cartago', 'Turrialba', 'Tayutic'),
-('30509', '3', '05', '09', 'Cartago', 'Turrialba', 'Santa Rosa'),
-('30510', '3', '05', '10', 'Cartago', 'Turrialba', 'Tres Equis'),
-('30511', '3', '05', '11', 'Cartago', 'Turrialba', 'La Isabel'),
-('30512', '3', '05', '12', 'Cartago', 'Turrialba', 'Chirripo'),
--- CANTON 306: ALVARADO
-('30601', '3', '06', '01', 'Cartago', 'Alvarado', 'Pacayas'),
-('30602', '3', '06', '02', 'Cartago', 'Alvarado', 'Cervantes'),
-('30603', '3', '06', '03', 'Cartago', 'Alvarado', 'Capellades'),
--- CANTON 307: OREAMUNO
-('30701', '3', '07', '01', 'Cartago', 'Oreamuno', 'San Rafael'),
-('30702', '3', '07', '02', 'Cartago', 'Oreamuno', 'Cot'),
-('30703', '3', '07', '03', 'Cartago', 'Oreamuno', 'Potrero Cerrado'),
-('30704', '3', '07', '04', 'Cartago', 'Oreamuno', 'Cipreses'),
-('30705', '3', '07', '05', 'Cartago', 'Oreamuno', 'Santa Rosa'),
--- CANTON 308: EL GUARCO
-('30801', '3', '08', '01', 'Cartago', 'El Guarco', 'El Tejar'),
-('30802', '3', '08', '02', 'Cartago', 'El Guarco', 'San Isidro'),
-('30803', '3', '08', '03', 'Cartago', 'El Guarco', 'Tobosi'),
-('30804', '3', '08', '04', 'Cartago', 'El Guarco', 'Patio de Agua'),
-
--- PROVINCIA 4: HEREDIA
--- CANTON 401: HEREDIA
-('40101', '4', '01', '01', 'Heredia', 'Heredia', 'Heredia'),
-('40102', '4', '01', '02', 'Heredia', 'Heredia', 'Mercedes'),
-('40103', '4', '01', '03', 'Heredia', 'Heredia', 'San Francisco'),
-('40104', '4', '01', '04', 'Heredia', 'Heredia', 'Ulloa'),
-('40105', '4', '01', '05', 'Heredia', 'Heredia', 'Vara Blanca'),
--- CANTON 402: BARVA
-('40201', '4', '02', '01', 'Heredia', 'Barva', 'Barva'),
-('40202', '4', '02', '02', 'Heredia', 'Barva', 'San Pedro'),
-('40203', '4', '02', '03', 'Heredia', 'Barva', 'San Pablo'),
-('40204', '4', '02', '04', 'Heredia', 'Barva', 'San Roque'),
-('40205', '4', '02', '05', 'Heredia', 'Barva', 'Santa Lucía'),
-('40206', '4', '02', '06', 'Heredia', 'Barva', 'San José de la Montaña'),
--- CANTON 403: SANTO DOMINGO
-('40301', '4', '03', '01', 'Heredia', 'Santo Domingo', 'Santo Domingo'),
-('40302', '4', '03', '02', 'Heredia', 'Santo Domingo', 'San Vicente'),
-('40303', '4', '03', '03', 'Heredia', 'Santo Domingo', 'San Miguel'),
-('40304', '4', '03', '04', 'Heredia', 'Santo Domingo', 'Paracito'),
-('40305', '4', '03', '05', 'Heredia', 'Santo Domingo', 'Santo Tomás'),
-('40306', '4', '03', '06', 'Heredia', 'Santo Domingo', 'Santa Rosa'),
-('40307', '4', '03', '07', 'Heredia', 'Santo Domingo', 'Tures'),
-('40308', '4', '03', '08', 'Heredia', 'Santo Domingo', 'Pará'),
--- CANTON 404: SANTA BARBARA
-('40401', '4', '04', '01', 'Heredia', 'Santa Bárbara', 'Santa Bárbara'),
-('40402', '4', '04', '02', 'Heredia', 'Santa Bárbara', 'San Pedro'),
-('40403', '4', '04', '03', 'Heredia', 'Santa Bárbara', 'San Juan'),
-('40404', '4', '04', '04', 'Heredia', 'Santa Bárbara', 'Jesús'),
-('40405', '4', '04', '05', 'Heredia', 'Santa Bárbara', 'Santo Domingo del Roble'),
-('40406', '4', '04', '06', 'Heredia', 'Santa Bárbara', 'Puraba'),
--- CANTON 405: SAN RAFAEL
-('40501', '4', '05', '01', 'Heredia', 'San Rafael', 'San Rafael'),
-('40502', '4', '05', '02', 'Heredia', 'San Rafael', 'San Josecito'),
-('40503', '4', '05', '03', 'Heredia', 'San Rafael', 'Santiago'),
-('40504', '4', '05', '04', 'Heredia', 'San Rafael', 'Ángeles'),
-('40505', '4', '05', '05', 'Heredia', 'San Rafael', 'Concepción'),
--- CANTON 406: SAN ISIDRO
-('40601', '4', '06', '01', 'Heredia', 'San Isidro', 'San Isidro'),
-('40602', '4', '06', '02', 'Heredia', 'San Isidro', 'San José'),
-('40603', '4', '06', '03', 'Heredia', 'San Isidro', 'Concepción'),
-('40604', '4', '06', '04', 'Heredia', 'San Isidro', 'San Francisco'),
--- CANTON 407: BELEN
-('40701', '4', '07', '01', 'Heredia', 'Belén', 'San Antonio'),
-('40702', '4', '07', '02', 'Heredia', 'Belén', 'La Rivera'),
-('40703', '4', '07', '03', 'Heredia', 'Belén', 'Asunción'),
--- CANTON 408: FLORES
-('40801', '4', '08', '01', 'Heredia', 'Flores', 'San Joaquín'),
-('40802', '4', '08', '02', 'Heredia', 'Flores', 'Barrantes'),
-('40803', '4', '08', '03', 'Heredia', 'Flores', 'Llorente'),
--- CANTON 409: SAN PABLO
-('40901', '4', '09', '01', 'Heredia', 'San Pablo', 'San Pablo'),
--- CANTON 410: SARAPIQUI
-('41001', '4', '10', '01', 'Heredia', 'Sarapiquí', 'Puerto Viejo'),
-('41002', '4', '10', '02', 'Heredia', 'Sarapiquí', 'La Virgen'),
-('41003', '4', '10', '03', 'Heredia', 'Sarapiquí', 'Horquetas'),
-('41004', '4', '10', '04', 'Heredia', 'Sarapiquí', 'Llanuras del Gaspar'),
-('41005', '4', '10', '05', 'Heredia', 'Sarapiquí', 'Cureña'),
-
--- PROVINCIA 5: GUANACASTE
--- CANTON 501: LIBERIA
-('50101', '5', '01', '01', 'Guanacaste', 'Liberia', 'Liberia'),
-('50102', '5', '01', '02', 'Guanacaste', 'Liberia', 'Cañas Dulces'),
-('50103', '5', '01', '03', 'Guanacaste', 'Liberia', 'Mayorga'),
-('50104', '5', '01', '04', 'Guanacaste', 'Liberia', 'Nacascolo'),
-('50105', '5', '01', '05', 'Guanacaste', 'Liberia', 'Curubande'),
--- CANTON 502: NICOYA
-('50201', '5', '02', '01', 'Guanacaste', 'Nicoya', 'Nicoya'),
-('50202', '5', '02', '02', 'Guanacaste', 'Nicoya', 'Mansión'),
-('50203', '5', '02', '03', 'Guanacaste', 'Nicoya', 'San Antonio'),
-('50204', '5', '02', '04', 'Guanacaste', 'Nicoya', 'Quebrada Honda'),
-('50205', '5', '02', '05', 'Guanacaste', 'Nicoya', 'Sámara'),
-('50206', '5', '02', '06', 'Guanacaste', 'Nicoya', 'Nosara'),
-('50207', '5', '02', '07', 'Guanacaste', 'Nicoya', 'Belén de Nosarita'),
--- CANTON 503: SANTA CRUZ
-('50301', '5', '03', '01', 'Guanacaste', 'Santa Cruz', 'Santa Cruz'),
-('50302', '5', '03', '02', 'Guanacaste', 'Santa Cruz', 'Bolsón'),
-('50303', '5', '03', '03', 'Guanacaste', 'Santa Cruz', 'Veintisiete de Abril'),
-('50304', '5', '03', '04', 'Guanacaste', 'Santa Cruz', 'Tempate'),
-('50305', '5', '03', '05', 'Guanacaste', 'Santa Cruz', 'Cartagena'),
-('50306', '5', '03', '06', 'Guanacaste', 'Santa Cruz', 'Cuajiniquil'),
-('50307', '5', '03', '07', 'Guanacaste', 'Santa Cruz', 'Diriá'),
-('50308', '5', '03', '08', 'Guanacaste', 'Santa Cruz', 'Cabo Velas'),
-('50309', '5', '03', '09', 'Guanacaste', 'Santa Cruz', 'Tamarindo'),
--- CANTON 504: BAGACES
-('50401', '5', '04', '01', 'Guanacaste', 'Bagaces', 'Bagaces'),
-('50402', '5', '04', '02', 'Guanacaste', 'Bagaces', 'Fortuna'),
-('50403', '5', '04', '03', 'Guanacaste', 'Bagaces', 'Mogote'),
-('50404', '5', '04', '04', 'Guanacaste', 'Bagaces', 'Río Naranjo'),
--- CANTON 505: CARRILLO
-('50501', '5', '05', '01', 'Guanacaste', 'Carrillo', 'Filadelfia'),
-('50502', '5', '05', '02', 'Guanacaste', 'Carrillo', 'Palmira'),
-('50503', '5', '05', '03', 'Guanacaste', 'Carrillo', 'Sardinal'),
-('50504', '5', '05', '04', 'Guanacaste', 'Carrillo', 'Belén'),
--- CANTON 506: CAÑAS
-('50601', '5', '06', '01', 'Guanacaste', 'Cañas', 'Cañas'),
-('50602', '5', '06', '02', 'Guanacaste', 'Cañas', 'Palmira'),
-('50603', '5', '06', '03', 'Guanacaste', 'Cañas', 'San Miguel'),
-('50604', '5', '06', '04', 'Guanacaste', 'Cañas', 'Bebedero'),
-('50605', '5', '06', '05', 'Guanacaste', 'Cañas', 'Porozal'),
--- CANTON 507: ABANGARES
-('50701', '5', '07', '01', 'Guanacaste', 'Abangares', 'Juntas'),
-('50702', '5', '07', '02', 'Guanacaste', 'Abangares', 'Sierra'),
-('50703', '5', '07', '03', 'Guanacaste', 'Abangares', 'San Juan'),
-('50704', '5', '07', '04', 'Guanacaste', 'Abangares', 'Colorado'),
--- CANTON 508: TILARAN
-('50801', '5', '08', '01', 'Guanacaste', 'Tilarán', 'Tilarán'),
-('50802', '5', '08', '02', 'Guanacaste', 'Tilarán', 'Quebrada Grande'),
-('50803', '5', '08', '03', 'Guanacaste', 'Tilarán', 'Tronadora'),
-('50804', '5', '08', '04', 'Guanacaste', 'Tilarán', 'Santa Rosa'),
-('50805', '5', '08', '05', 'Guanacaste', 'Tilarán', 'Líbano'),
-('50806', '5', '08', '06', 'Guanacaste', 'Tilarán', 'Tierras Morenas'),
-('50807', '5', '08', '07', 'Guanacaste', 'Tilarán', 'Arenal'),
--- CANTON 509: NANDAYURE
-('50901', '5', '09', '01', 'Guanacaste', 'Nandayure', 'Carmona'),
-('50902', '5', '09', '02', 'Guanacaste', 'Nandayure', 'Santa Rita'),
-('50903', '5', '09', '03', 'Guanacaste', 'Nandayure', 'Zapotal'),
-('50904', '5', '09', '04', 'Guanacaste', 'Nandayure', 'San Pablo'),
-('50905', '5', '09', '05', 'Guanacaste', 'Nandayure', 'Porvenir'),
-('50906', '5', '09', '06', 'Guanacaste', 'Nandayure', 'Bejuco'),
--- CANTON 510: LA CRUZ
-('51001', '5', '10', '01', 'Guanacaste', 'La Cruz', 'La Cruz'),
-('51002', '5', '10', '02', 'Guanacaste', 'La Cruz', 'Santa Cecilia'),
-('51003', '5', '10', '03', 'Guanacaste', 'La Cruz', 'Garita'),
-('51004', '5', '10', '04', 'Guanacaste', 'La Cruz', 'Santa Elena'),
--- CANTON 511: HOJANCHA
-('51101', '5', '11', '01', 'Guanacaste', 'Hojancha', 'Hojancha'),
-('51102', '5', '11', '02', 'Guanacaste', 'Hojancha', 'Monte Romo'),
-('51103', '5', '11', '03', 'Guanacaste', 'Hojancha', 'Puerto Carrillo'),
-('51104', '5', '11', '04', 'Guanacaste', 'Hojancha', 'Huacas'),
-
--- PROVINCIA 6: PUNTARENAS
--- CANTON 601: PUNTARENAS
-('60101', '6', '01', '01', 'Puntarenas', 'Puntarenas', 'Puntarenas'),
-('60102', '6', '01', '02', 'Puntarenas', 'Puntarenas', 'Pitahaya'),
-('60103', '6', '01', '03', 'Puntarenas', 'Puntarenas', 'Chomes'),
-('60104', '6', '01', '04', 'Puntarenas', 'Puntarenas', 'Lepanto'),
-('60105', '6', '01', '05', 'Puntarenas', 'Puntarenas', 'Paquera'),
-('60106', '6', '01', '06', 'Puntarenas', 'Puntarenas', 'Manzanillo'),
-('60107', '6', '01', '07', 'Puntarenas', 'Puntarenas', 'Guacimal'),
-('60108', '6', '01', '08', 'Puntarenas', 'Puntarenas', 'Barranca'),
-('60109', '6', '01', '09', 'Puntarenas', 'Puntarenas', 'Monte Verde'),
-('60110', '6', '01', '10', 'Puntarenas', 'Puntarenas', 'Isla del Coco'),
-('60111', '6', '01', '11', 'Puntarenas', 'Puntarenas', 'Cóbano'),
-('60112', '6', '01', '12', 'Puntarenas', 'Puntarenas', 'Chacarita'),
-('60113', '6', '01', '13', 'Puntarenas', 'Puntarenas', 'Chira (Isla)'),
-('60114', '6', '01', '14', 'Puntarenas', 'Puntarenas', 'Acapulco'),
-('60115', '6', '01', '15', 'Puntarenas', 'Puntarenas', 'El Roble'),
-('60116', '6', '01', '16', 'Puntarenas', 'Puntarenas', 'Arancibia'),
--- CANTON 602: ESPARZA
-('60201', '6', '02', '01', 'Puntarenas', 'Esparza', 'Espíritu Santo'),
-('60202', '6', '02', '02', 'Puntarenas', 'Esparza', 'San Juan Grande'),
-('60203', '6', '02', '03', 'Puntarenas', 'Esparza', 'Macacona'),
-('60204', '6', '02', '04', 'Puntarenas', 'Esparza', 'San Rafael'),
-('60205', '6', '02', '05', 'Puntarenas', 'Esparza', 'San Jerónimo'),
--- CANTON 603: BUENOS AIRES
-('60301', '6', '03', '01', 'Puntarenas', 'Buenos Aires', 'Buenos Aires'),
-('60302', '6', '03', '02', 'Puntarenas', 'Buenos Aires', 'Volcán'),
-('60303', '6', '03', '03', 'Puntarenas', 'Buenos Aires', 'Potrero Grande'),
-('60304', '6', '03', '04', 'Puntarenas', 'Buenos Aires', 'Boruca'),
-('60305', '6', '03', '05', 'Puntarenas', 'Buenos Aires', 'Pilas'),
-('60306', '6', '03', '06', 'Puntarenas', 'Buenos Aires', 'Colinas o Bajo de Maíz'),
-('60307', '6', '03', '07', 'Puntarenas', 'Buenos Aires', 'Chánguena'),
-('60308', '6', '03', '08', 'Puntarenas', 'Buenos Aires', 'Bioley'),
-('60309', '6', '03', '09', 'Puntarenas', 'Buenos Aires', 'Brunka'),
--- CANTON 604: MONTES DE ORO
-('60401', '6', '04', '01', 'Puntarenas', 'Montes de Oro', 'Miramar'),
-('60402', '6', '04', '02', 'Puntarenas', 'Montes de Oro', 'Unión'),
-('60403', '6', '04', '03', 'Puntarenas', 'Montes de Oro', 'San Isidro'),
--- CANTON 605: OSA
-('60501', '6', '05', '01', 'Puntarenas', 'Osa', 'Puerto Cortés'),
-('60502', '6', '05', '02', 'Puntarenas', 'Osa', 'Palmar'),
-('60503', '6', '05', '03', 'Puntarenas', 'Osa', 'Sierpe'),
-('60504', '6', '05', '04', 'Puntarenas', 'Osa', 'Bahía Ballena'),
-('60505', '6', '05', '05', 'Puntarenas', 'Osa', 'Piedras Blancas'),
--- CANTON 606: AGUIRRE
-('60601', '6', '06', '01', 'Puntarenas', 'Aguirre', 'Quepos'),
-('60602', '6', '06', '02', 'Puntarenas', 'Aguirre', 'Savegre'),
-('60603', '6', '06', '03', 'Puntarenas', 'Aguirre', 'Naranjito'),
--- CANTON 607: GOLFITO
-('60701', '6', '07', '01', 'Puntarenas', 'Golfito', 'Golfito'),
-('60702', '6', '07', '02', 'Puntarenas', 'Golfito', 'Puerto Jiménez'),
-('60703', '6', '07', '03', 'Puntarenas', 'Golfito', 'Guaycará'),
-('60704', '6', '07', '04', 'Puntarenas', 'Golfito', 'Pavones o Villa Conte'),
--- CANTON 608: COTO BRUS
-('60801', '6', '08', '01', 'Puntarenas', 'Coto Brus', 'San Vito'),
-('60802', '6', '08', '02', 'Puntarenas', 'Coto Brus', 'Sabalito'),
-('60803', '6', '08', '03', 'Puntarenas', 'Coto Brus', 'Agua Buena'),
-('60804', '6', '08', '04', 'Puntarenas', 'Coto Brus', 'Limoncito'),
-('60805', '6', '08', '05', 'Puntarenas', 'Coto Brus', 'Pittier'),
--- CANTON 609: PARRITA
-('60901', '6', '09', '01', 'Puntarenas', 'Parrita', 'Parrita'),
--- CANTON 610: CORREDORES
-('61001', '6', '10', '01', 'Puntarenas', 'Corredores', 'Corredores'),
-('61002', '6', '10', '02', 'Puntarenas', 'Corredores', 'La Cuesta'),
-('61003', '6', '10', '03', 'Puntarenas', 'Corredores', 'Paso Canoas'),
-('61004', '6', '10', '04', 'Puntarenas', 'Corredores', 'Laurel'),
--- CANTON 611: GARABITO
-('61101', '6', '11', '01', 'Puntarenas', 'Garabito', 'Jacó'),
-('61102', '6', '11', '02', 'Puntarenas', 'Garabito', 'Tárcoles'),
-
--- PROVINCIA 7: LIMON
--- CANTON 701: LIMON
-('70101', '7', '01', '01', 'Limón', 'Limón', 'Limón'),
-('70102', '7', '01', '02', 'Limón', 'Limón', 'Valle La Estrella'),
-('70103', '7', '01', '03', 'Limón', 'Limón', 'Río Blanco'),
-('70104', '7', '01', '04', 'Limón', 'Limón', 'Matama'),
--- CANTON 702: POCOCI
-('70201', '7', '02', '01', 'Limón', 'Pococí', 'Guápiles'),
-('70202', '7', '02', '02', 'Limón', 'Pococí', 'Jiménez'),
-('70203', '7', '02', '03', 'Limón', 'Pococí', 'Rita'),
-('70204', '7', '02', '04', 'Limón', 'Pococí', 'Roxana'),
-('70205', '7', '02', '05', 'Limón', 'Pococí', 'Cariari'),
-('70206', '7', '02', '06', 'Limón', 'Pococí', 'Colorado'),
--- CANTON 703: SIQUIRRES
-('70301', '7', '03', '01', 'Limón', 'Siquirres', 'Siquirres'),
-('70302', '7', '03', '02', 'Limón', 'Siquirres', 'Pacuarito'),
-('70303', '7', '03', '03', 'Limón', 'Siquirres', 'Florida'),
-('70304', '7', '03', '04', 'Limón', 'Siquirres', 'Germania'),
-('70305', '7', '03', '05', 'Limón', 'Siquirres', 'Cairo'),
-('70306', '7', '03', '06', 'Limón', 'Siquirres', 'Alegría'),
--- CANTON 704: TALAMANCA
-('70401', '7', '04', '01', 'Limón', 'Talamanca', 'Bratsi'),
-('70402', '7', '04', '02', 'Limón', 'Talamanca', 'Sixaola'),
-('70403', '7', '04', '03', 'Limón', 'Talamanca', 'Cahuita'),
-('70404', '7', '04', '04', 'Limón', 'Talamanca', 'Telire'),
--- CANTON 705: MATINA
-('70501', '7', '05', '01', 'Limón', 'Matina', 'Matina'),
-('70502', '7', '05', '02', 'Limón', 'Matina', 'Batán'),
-('70503', '7', '05', '03', 'Limón', 'Matina', 'Carrandí'),
--- CANTON 706: GUACIMO
-('70601', '7', '06', '01', 'Limón', 'Guácimo', 'Guácimo'),
-('70602', '7', '06', '02', 'Limón', 'Guácimo', 'Mercedes'),
-('70603', '7', '06', '03', 'Limón', 'Guácimo', 'Pocora'),
-('70604', '7', '06', '04', 'Limón', 'Guácimo', 'Río Jiménez'),
-('70605', '7', '06', '05', 'Limón', 'Guácimo', 'Duacari')
-ON CONFLICT (codigo) DO NOTHING;
-
-COMMIT;
+-- =============================================
+-- SEED: ACCOUNT RECEIVABLE TYPES
+-- Source: seeds/catalog/general/014-insert-account-receivable-types.sql
+-- =============================================
+INSERT INTO general_schema.account_receivable_type (type_name, description) VALUES
+    ('venta_credito', 'Venta a crédito a cliente registrado'),
+    ('venta_apartado', 'Venta con apartado — inventario reservado hasta liquidar saldo')
+ON CONFLICT (type_name) DO NOTHING;
 
 
 
@@ -6501,21 +7221,14 @@ ON CONFLICT DO NOTHING;
 
 
 -- =============================================
--- SEED: INVOICE STATUS
--- Source: seeds/catalog/pos/007-insert-invoice-status.sql
+-- SEED: COLLECTION ALERT TYPES
+-- Source: seeds/catalog/pos/008-insert-collection-alert-types.sql
 -- =============================================
--- Seed: pos_schema.invoice_status
--- status_id values are fixed constants referenced in application code
---   1 = pendiente  → recién generada, aún no enviada o sin respuesta de Hacienda
---   2 = aceptada   → Hacienda confirmó la factura
---   3 = rechazada  → Hacienda rechazó la factura
-
-INSERT INTO pos_schema.invoice_status (status_id, description)
-VALUES
-  (1, 'pendiente'),
-  (2, 'aceptada'),
-  (3, 'rechazada')
-ON CONFLICT (status_id) DO NOTHING;
+INSERT INTO pos_schema.sale_collection_alert_type (collection_alert_type_name, description) VALUES
+    ('Upcoming Due Date', 'Alert for upcoming collection due date'),
+    ('Urgent Collection', 'Alert for urgent collections near due date'),
+    ('Overdue Collection', 'Alert for overdue collections past due date')
+ON CONFLICT DO NOTHING;
 
 
 
@@ -6595,17 +7308,288 @@ ON CONFLICT DO NOTHING;
 -- SEED: HOLIDAYS
 -- Source: seeds/catalog/hr/003-insert-holidays.sql
 -- =============================================
-INSERT INTO hr_schema.holiday (date, holiday_name) VALUES 
-('2026-01-01', 'Ano Nuevo'),
-('2026-04-09', 'Jueves Santo'),
-('2026-04-10', 'Viernes Santo'),
-('2026-04-11', 'Juan Santamaria'),
-('2026-05-01', 'Dia del Trabajador'),
-('2026-07-25', 'Anexión del Partido de Nicoya'),
-('2026-08-02', 'Dia de la Virgen de los Ángeles'),
-('2026-08-15', 'Dia de la Madre'),
-('2026-09-15', 'Dia de la Independencia'),
-('2026-12-25', 'Navidad');
+-- ============================================================
+-- Dias feriados (Venezuela, LOTTT Art. 184)
+-- ============================================================
+-- Son dias feriados, a efectos de la LOTTT:
+--   a) Los domingos.
+--   b) 1 de enero; lunes y martes de carnaval; Jueves y Viernes
+--      Santo; 1 de mayo; 24, 25 y 31 de diciembre.
+--   c) Los declarados en la Ley de Fiestas Nacionales.
+--   d) Hasta 3 al anio declarados por el Ejecutivo, los estados o
+--      los municipios (source distinto de 'ley').
+--
+-- Los DOMINGOS no se siembran: son feriados por ley y se resuelven
+-- por calculo de calendario. Sembrarlos serian 52 filas por anio
+-- sin aportar informacion.
+--
+-- Convencion de la tabla:
+--   is_recurring = TRUE  -> misma fecha cada anio (no requiere
+--                           holiday_year, se resuelve por mes/dia).
+--   is_recurring = FALSE -> fecha movil, requiere una fila por anio
+--                           (carnaval y Semana Santa dependen de la
+--                           fecha de Pascua).
+--   tenant_id NULL       -> feriado nacional, aplica a todos.
+--   source               -> 'ley' | 'ejecutivo' | 'estadal' | 'municipal'
+--
+-- El trabajo en dia feriado se paga con el dia mas la labor con
+-- recargo del 50% sobre el salario normal (Art. 120).
+-- ============================================================
+
+SET SEARCH_PATH TO hr_schema;
+
+-- Limpieza de los feriados de Costa Rica del esquema anterior.
+DELETE FROM hr_schema.holiday WHERE tenant_id IS NULL;
+
+-- ------------------------------------------------------------
+-- Feriados recurrentes de fecha fija (Art. 184 literal b)
+-- ------------------------------------------------------------
+-- La columna date conserva un anio de referencia por compatibilidad
+-- con el tipo TIMESTAMP; con is_recurring = TRUE el backend debe
+-- resolver por mes y dia, ignorando el anio almacenado.
+
+INSERT INTO hr_schema.holiday (date, holiday_name, is_freeday, is_payable, is_recurring, holiday_year, source)
+VALUES
+  ('2026-01-01', 'Ano Nuevo',                          TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-05-01', 'Dia del Trabajador',                 TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-12-24', 'Nochebuena',                         TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-12-25', 'Navidad',                            TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-12-31', 'Fin de Ano',                         TRUE, TRUE, TRUE, NULL, 'ley')
+ON CONFLICT DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Ley de Fiestas Nacionales (Art. 184 literal c)
+-- ------------------------------------------------------------
+
+INSERT INTO hr_schema.holiday (date, holiday_name, is_freeday, is_payable, is_recurring, holiday_year, source)
+VALUES
+  ('2026-04-19', 'Declaracion de la Independencia',    TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-06-24', 'Batalla de Carabobo',                TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-07-05', 'Dia de la Independencia',            TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-07-24', 'Natalicio de Simon Bolivar',         TRUE, TRUE, TRUE, NULL, 'ley'),
+  ('2026-10-12', 'Dia de la Resistencia Indigena',     TRUE, TRUE, TRUE, NULL, 'ley')
+ON CONFLICT DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Feriados de fecha movil (Art. 184 literal b)
+-- ------------------------------------------------------------
+-- Dependen de la fecha de Pascua y cambian cada anio, por lo que
+-- requieren una fila por anio con is_recurring = FALSE.
+-- Pascua 2026: 5 de abril.
+
+INSERT INTO hr_schema.holiday (date, holiday_name, is_freeday, is_payable, is_recurring, holiday_year, source)
+VALUES
+  ('2026-02-16', 'Lunes de Carnaval',                  TRUE, TRUE, FALSE, 2026, 'ley'),
+  ('2026-02-17', 'Martes de Carnaval',                 TRUE, TRUE, FALSE, 2026, 'ley'),
+  ('2026-04-02', 'Jueves Santo',                       TRUE, TRUE, FALSE, 2026, 'ley'),
+  ('2026-04-03', 'Viernes Santo',                      TRUE, TRUE, FALSE, 2026, 'ley')
+ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- PENDIENTE OPERATIVO
+-- Los feriados de fecha movil deben cargarse cada anio. Sin la
+-- carga del anio en curso, carnaval y Semana Santa no se pagan con
+-- el recargo del Art. 120.
+--
+-- Los feriados declarados por el Ejecutivo, estados o municipios
+-- (source distinto de 'ley') se cargan por tenant y estan limitados
+-- a 3 por anio en conjunto (Art. 184 literal d). Esa validacion vive
+-- en la capa de aplicacion.
+-- ============================================================
+
+
+
+-- =============================================
+-- SEED: DEFAULT PAYROLL CONCEPTS
+-- Source: seeds/catalog/hr/004-insert-default-payroll-concepts.sql
+-- =============================================
+-- ============================================================
+-- Conceptos de Nomina Predeterminados (Venezuela, LOTTT)
+-- ============================================================
+-- Este seed NO inserta directamente en payroll_concept
+-- (esa tabla es por tenant). Popula la plantilla
+-- payroll_concept_template que la funcion
+-- provision_tenant_payroll_concepts() copia por tenant.
+--
+-- Convencion de valores:
+--   - percentage: fraccion del salario base (0.30 = 30%)
+--   - formula:    parametro del codigo de calculo (ver mas abajo)
+--   - fixed:      monto en bolivares
+--   - manual:     se ingresa al procesar (base_value = 0)
+--
+-- salary_basis (regla de oro del calculo venezolano):
+--   - normal   (Art. 104) -> recargos, feriados, vacaciones, bono
+--                            vacacional. Conceptos del dia a dia.
+--   - integral (Art. 122) -> prestaciones e indemnizaciones.
+--   NUNCA intercambiables. Usar la base equivocada es el error de
+--   calculo mas frecuente.
+--
+-- Codigos de formula soportados por la PLANILLA MENSUAL
+-- (hr_schema strategy.context / payroll.service.ts):
+--   bn   -> Bono nocturno   (horas ponderadas desde overtime_record)  Art. 117
+--   he   -> Horas extra     (horas ponderadas desde overtime_record)  Art. 118
+--   fer  -> Feriado trabajado (horas ponderadas desde overtime_record) Art. 120
+--
+-- Los siguientes codigos de formula existen en el template pero se
+-- siembran is_active = FALSE porque NO se calculan por planilla
+-- mensual, sino por su modulo dedicado (ver seccion correspondiente
+-- mas abajo): vac, bvac (vacations.service.ts), util, bfa
+-- (profit-sharing.service.ts), ant (severance-advance.service.ts).
+-- ============================================================
+
+SET SEARCH_PATH TO hr_schema;
+
+-- Limpiar plantilla para re-seed limpio.
+-- Elimina los conceptos de Costa Rica (CCSS-EMP, irs, hol, vac CR).
+TRUNCATE hr_schema.payroll_concept_template RESTART IDENTITY;
+
+INSERT INTO hr_schema.payroll_concept_template
+  (name, type, calculation_method, is_taxable, base_value, code, article, salary_basis, is_active)
+VALUES
+  -- -------------------------------------------------------
+  -- INGRESOS (earning)
+  -- -------------------------------------------------------
+  -- Recargos de jornada. Base: salario normal (Art. 104).
+  ('Bono nocturno',            'earning',   'formula',    TRUE,  0.30, 'bn',   '117',   'normal', TRUE),
+  ('Horas extra',              'earning',   'formula',    TRUE,  0.50, 'he',   '118',   'normal', TRUE),
+  ('Feriado trabajado',        'earning',   'formula',    TRUE,  0.50, 'fer',  '120',   'normal', TRUE),
+
+  -- -------------------------------------------------------
+  -- BENEFICIOS ANUALES - NO SE PROCESAN EN LA PLANILLA MENSUAL
+  -- -------------------------------------------------------
+  -- Se siembran INACTIVAS (is_active = FALSE). No son conceptos de
+  -- formula mensual: vacaciones/bono vacacional se causan y disfrutan
+  -- via hr_schema.vacation_period (vacations.service.ts), utilidades y
+  -- bonificacion de fin de anio via hr_schema.profit_sharing_period
+  -- (profit-sharing.service.ts), y el anticipo de prestaciones via
+  -- hr_schema.severance_advance (severance-advance.service.ts). Esos
+  -- modulos ya calculan correctamente por Arts. 190/192/131/132/144;
+  -- activarlas aqui hace que el motor de planilla mensual intente
+  -- recalcularlas con una formula generica y de codigo desconocido.
+  ('Vacaciones',               'earning',   'formula',    TRUE,  15,   'vac',  '190',   'normal', FALSE),
+  ('Bono vacacional',          'earning',   'formula',    TRUE,  15,   'bvac', '192',   'normal', FALSE),
+  ('Utilidades',               'earning',   'formula',    TRUE,  30,   'util', '131',   'normal', FALSE),
+  ('Bonificacion fin de ano',  'earning',   'formula',    TRUE,  30,   'bfa',  '132',   'normal', FALSE),
+
+  -- Percepciones variables.
+  ('Comisiones',               'earning',   'manual',     TRUE,  0,    'COM',  '104',   'normal', TRUE),
+  ('Bonificacion',             'earning',   'fixed',      TRUE,  0,    'BON',  '104',   'normal', TRUE),
+
+  -- -------------------------------------------------------
+  -- DEDUCCIONES (deduction)
+  -- -------------------------------------------------------
+  -- Anticipo sobre la garantia de prestaciones (Art. 144): se gestiona
+  -- via hr_schema.severance_advance, no como formula de planilla mensual.
+  ('Anticipo de prestaciones', 'deduction', 'formula',    FALSE, 0,    'ant',  '144',   'integral', FALSE),
+
+  -- Cuota sindical: requiere autorizacion expresa (Arts. 412, 413).
+  ('Cuota sindical',           'deduction', 'manual',     FALSE, 0,    'SIND', '412',   'normal', TRUE),
+
+  -- -------------------------------------------------------
+  -- RETENCIONES LEGALES - DEFINIDAS PERO NO LIBERADAS
+  -- -------------------------------------------------------
+  -- Se siembran INACTIVAS (is_active = FALSE) y con base_value = 0.
+  -- Motivo: la especificacion tecnico-legal que sustenta esta
+  -- migracion (MBP_Nomina_LOTTT_Venezuela.md) cubre prestaciones,
+  -- beneficios, jornada y mora, pero NO define las retenciones
+  -- mensuales venezolanas: ni sus porcentajes, ni sus bases de
+  -- calculo, ni sus topes en unidades tributarias.
+  --
+  -- Quedan registradas para que el hueco sea visible y trazable, no
+  -- para que se calculen. Activarlas con valores inventados produce
+  -- retenciones incorrectas y contingencia frente al SENIAT, el
+  -- IVSS y el BANAVIH.
+  --
+  -- ANTES DE ACTIVARLAS hace falta una especificacion propia que
+  -- defina, para cada una: base de calculo, porcentaje vigente,
+  -- tope, periodicidad y quien retiene.
+  ('IVSS',                     'deduction', 'percentage', FALSE, 0,    'IVSS', 'PEND',  'normal', FALSE),
+  ('Paro Forzoso',             'deduction', 'percentage', FALSE, 0,    'RPE',  'PEND',  'normal', FALSE),
+  ('FAOV',                     'deduction', 'percentage', FALSE, 0,    'FAOV', 'PEND',  'normal', FALSE),
+  ('INCES',                    'deduction', 'percentage', FALSE, 0,    'INCE', 'PEND',  'normal', FALSE),
+  ('ISLR',                     'deduction', 'formula',    FALSE, 0,    'islr', 'PEND',  'normal', FALSE);
+
+-- ============================================================
+-- ADVERTENCIA OPERATIVA
+-- Con las retenciones inactivas, la corrida de nomina mensual
+-- produce un salario neto SIN deducciones legales. Es correcto para
+-- desarrollo y para los calculos de prestaciones, vacaciones y
+-- utilidades, pero NO es liberable a produccion.
+-- ============================================================
+
+
+
+-- =============================================
+-- SEED: PAYROLL PARAMETERS (LOTTT)
+-- Source: seeds/catalog/hr/006-insert-payroll-parameters-defaults.sql
+-- =============================================
+-- ============================================================
+-- Parametros de Nomina - Pisos Legales (Venezuela, LOTTT)
+-- ============================================================
+-- Siembra los MINIMOS LEGALES de hr_schema.payroll_parameters para
+-- todos los tenants existentes.
+--
+-- La LOTTT es de orden publico e irrenunciable (Arts. 2, 19). Una
+-- convencion colectiva solo puede MEJORAR el minimo legal, nunca
+-- reducirlo (Arts. 18.2, 434). Estos valores son por tanto el PISO:
+-- el sistema debe aceptar valores superiores por tenant y rechazar
+-- valores inferiores.
+--
+-- Convencion: los porcentajes se almacenan como fraccion
+-- (0.30 = 30%); los dias como entero expresado en NUMERIC.
+--
+-- valid_from se fija en la fecha de vigencia de la LOTTT
+-- (7 de mayo de 2012, Gaceta Oficial N 6.076 Extraordinario) para
+-- que cualquier calculo historico posterior resuelva el parametro.
+-- ============================================================
+
+SET SEARCH_PATH TO hr_schema;
+
+-- La lista canonica de pisos legales vive en un solo lugar:
+-- hr_schema.provision_tenant_payroll_parameters() (functions/hr).
+-- El backend invoca ese mismo procedimiento al crear un tenant nuevo,
+-- para que la provision no dependa de haber corrido este seed.
+DO $$
+DECLARE
+	_tenant RECORD;
+BEGIN
+	FOR _tenant IN SELECT tenant_id FROM general_schema.tenant LOOP
+		PERFORM hr_schema.provision_tenant_payroll_parameters(_tenant.tenant_id);
+	END LOOP;
+END $$;
+
+-- ============================================================
+-- PARAMETROS SIN VALOR POR DEFECTO - CARGA OBLIGATORIA
+-- ============================================================
+-- Los siguientes NO se siembran porque no tienen un piso legal
+-- estable: dependen de un acto externo y cambian en el tiempo.
+-- Deben cargarse por tenant ANTES de la primera corrida.
+--
+--   salario_minimo_nacional (Art. 129)
+--     Lo fija el Ejecutivo por decreto. Sin el no se puede validar
+--     que un salario respete el minimo ni calcular la diferencia y
+--     los intereses del Art. 130.
+--
+--   tasa_activa_bcv (Arts. 128, 142.f, 143)
+--     La determina el BCV tomando como referencia los seis
+--     principales bancos del pais. Se usa para: penalizar
+--     trimestres sin deposito (Art. 143), la mora del pago final
+--     (Art. 142.f) y la mora del salario ordinario (Art. 128).
+--     El calculo debe usar la tasa VIGENTE EN CADA TRAMO temporal
+--     de la mora, no una tasa fija, por lo que requiere carga
+--     periodica con su vigencia.
+--
+--   tasa_promedio_activa_pasiva_bcv (Art. 143)
+--     Aplica cuando la garantia esta acreditada en la contabilidad
+--     de la entidad con autorizacion escrita del trabajador.
+--
+-- Ejemplo de carga:
+--   INSERT INTO hr_schema.payroll_parameters
+--     (tenant_id, param_key, param_value, valid_from, source)
+--   VALUES
+--     ('<tenant_id>', 'tasa_activa_bcv', 0.585000, '2026-08-01',
+--      'Aviso BCV agosto 2026');
+-- ============================================================
 
 
 
@@ -6875,14 +7859,15 @@ BEGIN
             'general_schema.tax_rate',
             'general_schema.account_payable_status',
             'general_schema.account_payable_type',
-            'general_schema.territorio_catalog',
+            'general_schema.account_receivable_status',
+            'general_schema.account_receivable_type',
             'pos_schema.return_reason',
             'pos_schema.return_status',
             'pos_schema.promotion_type',
             'pos_schema.score_redemption_status',
             'pos_schema.score_transaction_type',
             'pos_schema.sale_condition',
-            'pos_schema.invoice_status',
+            'pos_schema.sale_collection_alert_type',
             'inventory_schema.inventory_log_type',
             'purchase_schema.purchase_order_status',
             'purchase_schema.purchase_order_payment_alert_type',
