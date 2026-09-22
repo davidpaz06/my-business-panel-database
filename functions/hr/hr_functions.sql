@@ -231,7 +231,10 @@ EXECUTE FUNCTION hr_schema.close_suspention_trigger();
 -- ============================================================
 -- provision_tenant_payroll_concepts
 -- Copia la plantilla payroll_concept_template a un tenant.
--- Idempotente: si el tenant ya tiene conceptos, no inserta nada.
+-- Idempotente POR FILA (ON CONFLICT (tenant_id, code) DO NOTHING,
+-- migracion hr/030): re-invocarla sobre un tenant ya provisionado es
+-- seguro y hace BACKFILL de codigos nuevos agregados a la plantilla
+-- despues de su primer provisioning (ej. hr/004: DPAT, ALIM, OTRA).
 -- Llamada durante el onboarding del tenant o bajo demanda.
 -- ============================================================
 CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_concepts(_tenant_id UUID)
@@ -242,12 +245,6 @@ BEGIN
 	-- Verificar que el tenant existe
 	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
 		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
-	END IF;
-
-	-- Si el tenant ya tiene conceptos, no re-provisionar
-	IF EXISTS (SELECT 1 FROM hr_schema.payroll_concept WHERE tenant_id = _tenant_id LIMIT 1) THEN
-		RAISE NOTICE 'Tenant % already has payroll concepts provisioned', _tenant_id;
-		RETURN 0;
 	END IF;
 
 	-- is_active se toma de la plantilla, no se fuerza a TRUE: hay
@@ -261,11 +258,17 @@ BEGIN
 		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, t.is_active, t.base_value, t.code,
 		t.article, t.salary_basis
 	FROM hr_schema.payroll_concept_template t
-	ORDER BY t.template_id;
+	ORDER BY t.template_id
+	ON CONFLICT (tenant_id, code) DO NOTHING;
 
 	GET DIAGNOSTICS _inserted = ROW_COUNT;
 
-	RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	IF _inserted = 0 THEN
+		RAISE NOTICE 'Tenant % already has all template payroll concepts provisioned', _tenant_id;
+	ELSE
+		RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	END IF;
+
 	RETURN _inserted;
 END;
 $$ LANGUAGE plpgsql;

@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-09-21 19:59:17
+-- Generated: 2026-09-22 09:17:27
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -2060,7 +2060,11 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 	-- Regla de oro: normal (Art. 104) para recargos y beneficios del dia a dia;
 	-- integral (Art. 122) para prestaciones e indemnizaciones. No intercambiables.
 	salary_basis VARCHAR(10) NOT NULL DEFAULT 'normal',
-	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral'))
+	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral')),
+	-- Permite backfill idempotente via ON CONFLICT en
+	-- provision_tenant_payroll_concepts() cuando se agregan filas
+	-- nuevas a la plantilla despues de que un tenant ya fue provisionado.
+	CONSTRAINT uq_payroll_concept_tenant_code UNIQUE (tenant_id, code)
 );
 
 -- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
@@ -6571,7 +6575,10 @@ EXECUTE FUNCTION hr_schema.close_suspention_trigger();
 -- ============================================================
 -- provision_tenant_payroll_concepts
 -- Copia la plantilla payroll_concept_template a un tenant.
--- Idempotente: si el tenant ya tiene conceptos, no inserta nada.
+-- Idempotente POR FILA (ON CONFLICT (tenant_id, code) DO NOTHING,
+-- migracion hr/030): re-invocarla sobre un tenant ya provisionado es
+-- seguro y hace BACKFILL de codigos nuevos agregados a la plantilla
+-- despues de su primer provisioning (ej. hr/004: DPAT, ALIM, OTRA).
 -- Llamada durante el onboarding del tenant o bajo demanda.
 -- ============================================================
 CREATE OR REPLACE FUNCTION hr_schema.provision_tenant_payroll_concepts(_tenant_id UUID)
@@ -6582,12 +6589,6 @@ BEGIN
 	-- Verificar que el tenant existe
 	IF NOT EXISTS (SELECT 1 FROM general_schema.tenant WHERE tenant_id = _tenant_id) THEN
 		RAISE EXCEPTION 'Tenant % not found', _tenant_id;
-	END IF;
-
-	-- Si el tenant ya tiene conceptos, no re-provisionar
-	IF EXISTS (SELECT 1 FROM hr_schema.payroll_concept WHERE tenant_id = _tenant_id LIMIT 1) THEN
-		RAISE NOTICE 'Tenant % already has payroll concepts provisioned', _tenant_id;
-		RETURN 0;
 	END IF;
 
 	-- is_active se toma de la plantilla, no se fuerza a TRUE: hay
@@ -6601,11 +6602,17 @@ BEGIN
 		_tenant_id, t.name, t.type, t.calculation_method, t.is_taxable, t.is_active, t.base_value, t.code,
 		t.article, t.salary_basis
 	FROM hr_schema.payroll_concept_template t
-	ORDER BY t.template_id;
+	ORDER BY t.template_id
+	ON CONFLICT (tenant_id, code) DO NOTHING;
 
 	GET DIAGNOSTICS _inserted = ROW_COUNT;
 
-	RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	IF _inserted = 0 THEN
+		RAISE NOTICE 'Tenant % already has all template payroll concepts provisioned', _tenant_id;
+	ELSE
+		RAISE NOTICE 'Provisioned % payroll concepts for tenant %', _inserted, _tenant_id;
+	END IF;
+
 	RETURN _inserted;
 END;
 $$ LANGUAGE plpgsql;
@@ -7484,6 +7491,19 @@ VALUES
 
   -- Cuota sindical: requiere autorizacion expresa (Arts. 412, 413).
   ('Cuota sindical',           'deduction', 'manual',     FALSE, 0,    'SIND', '412',   'normal', TRUE),
+
+  -- Deducciones individuales por trabajador (hr_schema.employee_deduction,
+  -- deductions.service.ts), aplicadas por planilla mensual via el
+  -- installment_amount vigente de cada registro activo (payroll.service.ts).
+  -- Bucket por kind: deuda_patrono, alimentaria, otra (sindical usa 'SIND'
+  -- arriba). base_value = 0 porque el monto real viene del registro, no
+  -- del concepto -- igual que 'Cuota sindical'.
+  ('Deuda con el patrono',     'deduction', 'manual',     FALSE, 0,    'DPAT', '154',   'normal', TRUE),
+  -- Pension alimentaria (Art. 152): exenta del tope de 1/3 del Art. 154
+  -- (ver deductions.service.ts availableMargin), se retiene igual por
+  -- planilla mensual mientras el registro siga activo.
+  ('Pension alimentaria',      'deduction', 'manual',     FALSE, 0,    'ALIM', '152',   'normal', TRUE),
+  ('Otra deduccion autorizada','deduction', 'manual',     FALSE, 0,    'OTRA', '154',   'normal', TRUE),
 
   -- -------------------------------------------------------
   -- RETENCIONES LEGALES - DEFINIDAS PERO NO LIBERADAS

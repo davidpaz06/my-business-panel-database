@@ -80,6 +80,19 @@ VALUES
   -- Cuota sindical: requiere autorizacion expresa (Arts. 412, 413).
   ('Cuota sindical',           'deduction', 'manual',     FALSE, 0,    'SIND', '412',   'normal', TRUE),
 
+  -- Deducciones individuales por trabajador (hr_schema.employee_deduction,
+  -- deductions.service.ts), aplicadas por planilla mensual via el
+  -- installment_amount vigente de cada registro activo (payroll.service.ts).
+  -- Bucket por kind: deuda_patrono, alimentaria, otra (sindical usa 'SIND'
+  -- arriba). base_value = 0 porque el monto real viene del registro, no
+  -- del concepto -- igual que 'Cuota sindical'.
+  ('Deuda con el patrono',     'deduction', 'manual',     FALSE, 0,    'DPAT', '154',   'normal', TRUE),
+  -- Pension alimentaria (Art. 152): exenta del tope de 1/3 del Art. 154
+  -- (ver deductions.service.ts availableMargin), se retiene igual por
+  -- planilla mensual mientras el registro siga activo.
+  ('Pension alimentaria',      'deduction', 'manual',     FALSE, 0,    'ALIM', '152',   'normal', TRUE),
+  ('Otra deduccion autorizada','deduction', 'manual',     FALSE, 0,    'OTRA', '154',   'normal', TRUE),
+
   -- -------------------------------------------------------
   -- RETENCIONES LEGALES - DEFINIDAS PERO NO LIBERADAS
   -- -------------------------------------------------------

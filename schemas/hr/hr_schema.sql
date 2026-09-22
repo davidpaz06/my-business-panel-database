@@ -239,7 +239,11 @@ CREATE TABLE IF NOT EXISTS payroll_concept(
 	-- Regla de oro: normal (Art. 104) para recargos y beneficios del dia a dia;
 	-- integral (Art. 122) para prestaciones e indemnizaciones. No intercambiables.
 	salary_basis VARCHAR(10) NOT NULL DEFAULT 'normal',
-	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral'))
+	CONSTRAINT chk_payroll_concept_salary_basis CHECK (salary_basis IN ('normal', 'integral')),
+	-- Permite backfill idempotente via ON CONFLICT en
+	-- provision_tenant_payroll_concepts() cuando se agregan filas
+	-- nuevas a la plantilla despues de que un tenant ya fue provisionado.
+	CONSTRAINT uq_payroll_concept_tenant_code UNIQUE (tenant_id, code)
 );
 
 -- Plantilla de conceptos de nomina predeterminados (NO scoped por tenant).
