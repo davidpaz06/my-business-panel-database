@@ -200,6 +200,28 @@ CREATE TABLE IF NOT EXISTS invoice_payment(
     unique (invoice_id, customer_payment_id)
 );
 
+-- Notas de credito/debito sobre facturas de venta (Venezuela). No editan ni
+-- anulan invoice -- registro de ajuste aparte, auditable, con numeracion
+-- propia (note_number). Ver migrations/pos/032-credit-debit-notes.sql.
+CREATE TABLE IF NOT EXISTS credit_debit_note (
+    note_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    note_number     SERIAL,
+    tenant_id       UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    invoice_id      UUID NOT NULL REFERENCES pos_schema.invoice(invoice_id) ON DELETE CASCADE,
+    note_type       VARCHAR(10) NOT NULL CHECK (note_type IN ('credit', 'debit')),
+    reason_kind     VARCHAR(30) NOT NULL,
+    description     TEXT,
+    amount          NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+    currency_id     INTEGER REFERENCES general_schema.currency(currency_id) ON DELETE SET NULL,
+    is_voided       BOOLEAN NOT NULL DEFAULT FALSE,
+    voided_at       TIMESTAMP,
+    created_by      UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_credit_debit_note_invoice ON pos_schema.credit_debit_note(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_credit_debit_note_tenant ON pos_schema.credit_debit_note(tenant_id);
+
 CREATE TABLE IF NOT EXISTS return_reason(
     return_reason_id SERIAL PRIMARY KEY,
     reason_code VARCHAR(50) unique not null,

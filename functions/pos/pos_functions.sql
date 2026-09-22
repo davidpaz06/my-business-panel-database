@@ -339,6 +339,7 @@ declare
     _quantity_remaining INTEGER;
     _sale_subtotal_after numeric(10,2);
     _sale_tax_after numeric(10,2);
+    _ar_id uuid;
 BEGIN
     select 
         si.sale_item_id,
@@ -452,6 +453,32 @@ BEGIN
 
     raise notice 'Sale updated: subtotal $% tax $% total $%', _sale_subtotal_after, _sale_tax_after, _new_total;
 
+    -- Reconciliar cuenta por cobrar (Bug #3, auditoria VE): si la venta es
+    -- a credito/apartado y tiene una cuenta por cobrar abierta, la
+    -- devolucion debe reducir lo que el cliente todavia debe, no solo el
+    -- total de la factura/venta.
+    select ar.account_receivable_id into _ar_id
+    from general_schema.account_receivable ar
+    join pos_schema.sale_account_receivable sar
+        on sar.account_receivable_id = ar.account_receivable_id
+    where sar.sale_id = _sale_id;
+
+    if _ar_id is not null then
+        update general_schema.account_receivable
+        set subtotal = _sale_subtotal_after,
+            updated_at = current_timestamp
+        where account_receivable_id = _ar_id;
+
+        update pos_schema.sale_account_receivable
+        set tax_amount = _sale_tax_after,
+            updated_at = current_timestamp
+        where account_receivable_id = _ar_id;
+
+        perform pos_schema.check_account_receivable_completion(_ar_id);
+
+        raise notice 'Account receivable % reconciled after return: new subtotal $%, new tax $%', _ar_id, _sale_subtotal_after, _sale_tax_after;
+    end if;
+
     return new;
 end;
 $$ language plpgsql;
@@ -461,6 +488,46 @@ create trigger update_on_return_trigger
     after insert on pos_schema.return_product
     for each row
     execute function update_on_return();
+
+-- ── Reembolso total: processFullRefund no inserta return_product, por lo
+-- que el trigger de arriba nunca se dispara. Se cierra la cuenta por
+-- cobrar directamente cuando sale.is_refunded pasa a TRUE (Bug #3,
+-- auditoria VE -- ver migrations/pos/031-reconcile-ar-on-return.sql).
+CREATE OR REPLACE FUNCTION cancel_account_receivable_on_full_refund()
+RETURNS TRIGGER AS $$
+DECLARE
+    _ar_id uuid;
+BEGIN
+    IF NEW.is_refunded = TRUE AND (OLD.is_refunded IS DISTINCT FROM TRUE) THEN
+        SELECT ar.account_receivable_id INTO _ar_id
+        FROM general_schema.account_receivable ar
+        JOIN pos_schema.sale_account_receivable sar
+            ON sar.account_receivable_id = ar.account_receivable_id
+        WHERE sar.sale_id = NEW.sale_id;
+
+        IF _ar_id IS NOT NULL THEN
+            UPDATE general_schema.account_receivable
+            SET subtotal = amount_paid,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE account_receivable_id = _ar_id;
+
+            UPDATE pos_schema.sale_account_receivable
+            SET tax_amount = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE account_receivable_id = _ar_id;
+
+            PERFORM pos_schema.check_account_receivable_completion(_ar_id);
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS cancel_ar_on_full_refund_trigger ON pos_schema.sale;
+CREATE TRIGGER cancel_ar_on_full_refund_trigger
+AFTER UPDATE OF is_refunded ON pos_schema.sale
+FOR EACH ROW
+EXECUTE FUNCTION cancel_account_receivable_on_full_refund();
 
 
 CREATE OR REPLACE FUNCTION auto_toggle_promotions()
@@ -1934,4 +2001,98 @@ DROP TRIGGER IF EXISTS update_account_receivable_timestamp ON general_schema.acc
 CREATE TRIGGER update_account_receivable_timestamp
 BEFORE UPDATE ON general_schema.account_receivable
 FOR EACH ROW EXECUTE FUNCTION general_schema.update_timestamp();
+
+-- ============================================================
+-- Notas de credito/debito (Venezuela) -- ver
+-- migrations/pos/032-credit-debit-notes.sql
+-- ============================================================
+CREATE OR REPLACE FUNCTION pos_schema.apply_credit_debit_note_to_ar()
+RETURNS TRIGGER AS $$
+DECLARE
+    _sale_id uuid;
+    _ar_id uuid;
+    _delta numeric(10,2);
+BEGIN
+    IF NEW.is_voided THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT sale_id INTO _sale_id FROM pos_schema.invoice WHERE invoice_id = NEW.invoice_id;
+    IF _sale_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT ar.account_receivable_id INTO _ar_id
+    FROM general_schema.account_receivable ar
+    JOIN pos_schema.sale_account_receivable sar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    WHERE sar.sale_id = _sale_id;
+
+    IF _ar_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    _delta := CASE WHEN NEW.note_type = 'credit' THEN -NEW.amount ELSE NEW.amount END;
+
+    UPDATE general_schema.account_receivable
+    SET subtotal = GREATEST(subtotal + _delta, 0),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE account_receivable_id = _ar_id;
+
+    PERFORM pos_schema.check_account_receivable_completion(_ar_id);
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS apply_credit_debit_note_to_ar_trigger ON pos_schema.credit_debit_note;
+CREATE TRIGGER apply_credit_debit_note_to_ar_trigger
+AFTER INSERT ON pos_schema.credit_debit_note
+FOR EACH ROW
+EXECUTE FUNCTION pos_schema.apply_credit_debit_note_to_ar();
+
+CREATE OR REPLACE FUNCTION pos_schema.revert_credit_debit_note_on_void()
+RETURNS TRIGGER AS $$
+DECLARE
+    _sale_id uuid;
+    _ar_id uuid;
+    _delta numeric(10,2);
+BEGIN
+    IF NOT (NEW.is_voided = TRUE AND OLD.is_voided = FALSE) THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT sale_id INTO _sale_id FROM pos_schema.invoice WHERE invoice_id = NEW.invoice_id;
+    IF _sale_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT ar.account_receivable_id INTO _ar_id
+    FROM general_schema.account_receivable ar
+    JOIN pos_schema.sale_account_receivable sar
+        ON sar.account_receivable_id = ar.account_receivable_id
+    WHERE sar.sale_id = _sale_id;
+
+    IF _ar_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    _delta := CASE WHEN NEW.note_type = 'credit' THEN NEW.amount ELSE -NEW.amount END;
+
+    UPDATE general_schema.account_receivable
+    SET subtotal = GREATEST(subtotal + _delta, 0),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE account_receivable_id = _ar_id;
+
+    PERFORM pos_schema.check_account_receivable_completion(_ar_id);
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS revert_credit_debit_note_on_void_trigger ON pos_schema.credit_debit_note;
+CREATE TRIGGER revert_credit_debit_note_on_void_trigger
+AFTER UPDATE OF is_voided ON pos_schema.credit_debit_note
+FOR EACH ROW
+EXECUTE FUNCTION pos_schema.revert_credit_debit_note_on_void();
 
