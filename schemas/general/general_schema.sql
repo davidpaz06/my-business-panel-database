@@ -154,22 +154,45 @@ CREATE TABLE IF NOT EXISTS currency(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Ledger GLOBAL e inmutable de la tasa base USD -> VES (BCV). Nunca se
+-- edita ni se borra: cada cambio es una fila nueva y la vigente es la de
+-- effective_at mas reciente. Un trigger fuerza que el par sea USD -> VES
+-- (el sistema es bimonetario, ver migrations/general/034).
 CREATE TABLE IF NOT EXISTS exchange_rate (
     exchange_rate_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     from_currency_id INTEGER NOT NULL REFERENCES general_schema.currency(currency_id),
     to_currency_id   INTEGER NOT NULL REFERENCES general_schema.currency(currency_id),
     rate             NUMERIC(12,6) NOT NULL CHECK (rate > 0),
-    effective_date   DATE NOT NULL,
+    effective_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Legado: se conserva para queries viejas que la seleccionan. La clave
+    -- temporal real es effective_at.
+    effective_date   DATE DEFAULT CURRENT_DATE,
     source           VARCHAR(50) DEFAULT 'MANUAL',
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE(from_currency_id, to_currency_id, effective_date),
     CHECK (from_currency_id <> to_currency_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_exchange_rate_lookup
     ON general_schema.exchange_rate(from_currency_id, to_currency_id, effective_date DESC);
+CREATE INDEX IF NOT EXISTS idx_exchange_rate_effective_at
+    ON general_schema.exchange_rate(effective_at DESC);
+
+-- Ledger inmutable del diferencial de tasa por tenant: monto en VES que el
+-- tenant suma (o resta, si es negativo) a la tasa base. Sin filas = 0.
+CREATE TABLE IF NOT EXISTS tenant_exchange_delta (
+    delta_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    delta         NUMERIC(12,6) NOT NULL DEFAULT 0,
+    effective_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    source        VARCHAR(50) DEFAULT 'MANUAL',
+    created_by    UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_exchange_delta_lookup
+    ON general_schema.tenant_exchange_delta(tenant_id, effective_at DESC);
 
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,

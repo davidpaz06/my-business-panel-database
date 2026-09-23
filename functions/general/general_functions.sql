@@ -497,3 +497,102 @@ BEGIN
     );
 END;
 $$;
+
+-- ============================================================
+-- Tasa de cambio bimonetaria (Venezuela)
+-- Ver migrations/general/034-bimonetary-exchange-rate-ledger.sql
+-- ============================================================
+
+-- Fuerza que exchange_rate solo admita el par USD -> VES. Se valida por
+-- trigger y no por CHECK porque Postgres no admite subqueries en un CHECK
+-- y hardcodear los currency_id seria fragil entre entornos.
+CREATE OR REPLACE FUNCTION general_schema.assert_exchange_rate_usd_ves()
+RETURNS TRIGGER AS $$
+DECLARE
+    _usd INTEGER;
+    _ves INTEGER;
+BEGIN
+    SELECT currency_id INTO _usd FROM general_schema.currency WHERE currency_code = 'USD';
+    SELECT currency_id INTO _ves FROM general_schema.currency WHERE currency_code = 'VES';
+
+    IF NEW.from_currency_id IS DISTINCT FROM _usd OR NEW.to_currency_id IS DISTINCT FROM _ves THEN
+        RAISE EXCEPTION 'exchange_rate solo admite el par USD -> VES (recibido from=%, to=%)',
+            NEW.from_currency_id, NEW.to_currency_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS assert_exchange_rate_usd_ves_trigger ON general_schema.exchange_rate;
+CREATE TRIGGER assert_exchange_rate_usd_ves_trigger
+BEFORE INSERT OR UPDATE ON general_schema.exchange_rate
+FOR EACH ROW EXECUTE FUNCTION general_schema.assert_exchange_rate_usd_ves();
+
+-- Tasa vigente aplicable a un tenant: base global + su diferencial.
+-- Fuente unica de verdad para toda la aplicacion.
+CREATE OR REPLACE FUNCTION general_schema.get_effective_exchange_rate(_tenant_id UUID)
+RETURNS TABLE (
+    base_rate      NUMERIC(12,6),
+    delta          NUMERIC(12,6),
+    effective_rate NUMERIC(12,6),
+    base_at        TIMESTAMP,
+    delta_at       TIMESTAMP
+) AS $$
+    WITH base AS (
+        SELECT er.rate AS base_rate, er.effective_at AS base_at
+        FROM general_schema.exchange_rate er
+        ORDER BY er.effective_at DESC, er.created_at DESC
+        LIMIT 1
+    ),
+    d AS (
+        SELECT ted.delta, ted.effective_at AS delta_at
+        FROM general_schema.tenant_exchange_delta ted
+        WHERE ted.tenant_id = _tenant_id
+        ORDER BY ted.effective_at DESC, ted.created_at DESC
+        LIMIT 1
+    )
+    SELECT
+        base.base_rate,
+        COALESCE(d.delta, 0)::NUMERIC(12,6),
+        (base.base_rate + COALESCE(d.delta, 0))::NUMERIC(12,6),
+        base.base_at,
+        d.delta_at
+    FROM base LEFT JOIN d ON TRUE;
+$$ LANGUAGE sql STABLE;
+
+-- Historial completo por tenant: cada cambio de tasa base o de diferencial,
+-- con base/delta/efectiva vigentes en ese momento. Postgres no soporta
+-- IGNORE NULLS en window functions -> patron gaps-and-islands para
+-- arrastrar el ultimo valor conocido de cada serie.
+CREATE OR REPLACE VIEW general_schema.tenant_exchange_rate_ledger AS
+WITH eventos AS (
+    SELECT t.tenant_id, er.effective_at, er.created_at, 'base'::text AS change_kind,
+           er.rate AS base_rate, NULL::numeric AS delta, er.source
+    FROM general_schema.exchange_rate er
+    CROSS JOIN general_schema.tenant t
+    UNION ALL
+    SELECT ted.tenant_id, ted.effective_at, ted.created_at, 'delta'::text,
+           NULL::numeric, ted.delta, ted.source
+    FROM general_schema.tenant_exchange_delta ted
+),
+islas AS (
+    SELECT e.*,
+        count(e.base_rate) OVER (PARTITION BY e.tenant_id ORDER BY e.effective_at, e.created_at) AS grp_base,
+        count(e.delta)     OVER (PARTITION BY e.tenant_id ORDER BY e.effective_at, e.created_at) AS grp_delta
+    FROM eventos e
+),
+arrastrado AS (
+    SELECT i.tenant_id, i.effective_at, i.created_at, i.change_kind, i.source,
+        max(i.base_rate) OVER (PARTITION BY i.tenant_id, i.grp_base)  AS base_rate,
+        max(i.delta)     OVER (PARTITION BY i.tenant_id, i.grp_delta) AS delta
+    FROM islas i
+)
+SELECT a.tenant_id, a.effective_at, a.change_kind, a.source,
+       a.base_rate,
+       COALESCE(a.delta, 0)                 AS delta,
+       (a.base_rate + COALESCE(a.delta, 0)) AS effective_rate,
+       a.created_at
+FROM arrastrado a
+WHERE a.base_rate IS NOT NULL
+ORDER BY a.tenant_id, a.effective_at DESC, a.created_at DESC;
