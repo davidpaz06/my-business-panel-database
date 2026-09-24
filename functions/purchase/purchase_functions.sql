@@ -1188,3 +1188,32 @@ DROP TRIGGER IF EXISTS create_initial_payment_alert_trigger ON purchase_schema.s
 CREATE TRIGGER create_initial_payment_alert_trigger
 AFTER INSERT ON purchase_schema.supplier_invoice
 FOR EACH ROW EXECUTE FUNCTION purchase_schema.create_initial_payment_alert();
+
+-- void_supplier_credit_on_note_void: si la nota de venta que origino un
+-- purchase_schema.supplier_credit se anula, el credito se anula tambien --
+-- pero solo si todavia no se aplico nada (remaining_amount = original_amount).
+-- Ver migrations/purchase/035-supplier-credit-from-damaged-goods.sql.
+CREATE OR REPLACE FUNCTION purchase_schema.void_supplier_credit_on_note_void()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NOT (NEW.is_voided = TRUE AND OLD.is_voided = FALSE) THEN
+        RETURN NEW;
+    END IF;
+
+    UPDATE purchase_schema.supplier_credit
+    SET status = 'VOIDED',
+        remaining_amount = 0,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE source_note_id = NEW.note_id
+      AND status = 'AVAILABLE'
+      AND remaining_amount = original_amount;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS void_supplier_credit_on_note_void_trigger ON pos_schema.credit_debit_note;
+CREATE TRIGGER void_supplier_credit_on_note_void_trigger
+AFTER UPDATE OF is_voided ON pos_schema.credit_debit_note
+FOR EACH ROW
+EXECUTE FUNCTION purchase_schema.void_supplier_credit_on_note_void();

@@ -229,3 +229,38 @@ CREATE INDEX IF NOT EXISTS idx_purchase_dispute_tenant_status
     ON purchase_schema.purchase_dispute(tenant_id, status);
 COMMENT ON TABLE purchase_schema.purchase_dispute IS
     'Workflow de discrepancias con el proveedor (mercancia incompleta o precio distinto al pactado). notify_supplier_pending es una bandera de UI/estado interno; no dispara envio real de email/SMS en esta fase.';
+
+CREATE TABLE IF NOT EXISTS purchase_schema.supplier_credit(
+    supplier_credit_id  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    supplier_id         uuid NOT NULL REFERENCES purchase_schema.supplier(supplier_id) ON DELETE CASCADE,
+    source_note_id      uuid NOT NULL UNIQUE REFERENCES pos_schema.credit_debit_note(note_id) ON DELETE CASCADE,
+    original_amount     NUMERIC(12,3) NOT NULL CHECK (original_amount > 0),
+    remaining_amount     NUMERIC(12,3) NOT NULL CHECK (remaining_amount >= 0),
+    status              VARCHAR(10) NOT NULL DEFAULT 'AVAILABLE'
+                             CHECK (status IN ('AVAILABLE', 'APPLIED', 'VOIDED')),
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (remaining_amount <= original_amount)
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_supplier
+    ON purchase_schema.supplier_credit(supplier_id, status);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_tenant
+    ON purchase_schema.supplier_credit(tenant_id);
+COMMENT ON TABLE purchase_schema.supplier_credit IS
+    'Saldo a favor del tenant frente a un proveedor, originado por una nota de credito de venta por mercancia danada (pos_schema.credit_debit_note). Aplicable contra el balance de una purchase_account_payable via supplier_credit_application.';
+
+CREATE TABLE IF NOT EXISTS purchase_schema.supplier_credit_application(
+    supplier_credit_application_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    supplier_credit_id             uuid NOT NULL REFERENCES purchase_schema.supplier_credit(supplier_credit_id) ON DELETE CASCADE,
+    purchase_account_payable_id    uuid NOT NULL REFERENCES purchase_schema.purchase_account_payable(purchase_account_payable_id) ON DELETE CASCADE,
+    purchase_order_payment_id      uuid NOT NULL REFERENCES purchase_schema.purchase_order_payment(purchase_order_payment_id) ON DELETE CASCADE,
+    amount_applied                 NUMERIC(12,3) NOT NULL CHECK (amount_applied > 0),
+    applied_by                     uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at                     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_application_credit
+    ON purchase_schema.supplier_credit_application(supplier_credit_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_application_payable
+    ON purchase_schema.supplier_credit_application(purchase_account_payable_id);

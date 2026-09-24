@@ -138,6 +138,7 @@ Add-FileContent "seeds/catalog/general/010-insert-account-payable-status.sql" "S
 Add-FileContent "seeds/catalog/general/011-insert-account-payable-types.sql" "SEED: ACCOUNT PAYABLE TYPES"
 Add-FileContent "seeds/catalog/general/013-insert-account-receivable-status.sql" "SEED: ACCOUNT RECEIVABLE STATUS"
 Add-FileContent "seeds/catalog/general/014-insert-account-receivable-types.sql" "SEED: ACCOUNT RECEIVABLE TYPES"
+Add-FileContent "seeds/catalog/general/015-insert-supplier-credit-payment-method.sql" "SEED: SUPPLIER CREDIT PAYMENT METHOD"
 
 # SEEDS - POS
 Write-Host "`nAdding POS catalog seeds..." -ForegroundColor Yellow

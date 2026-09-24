@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-09-24 07:39:36
+-- Generated: 2026-09-24 09:09:11
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -1877,6 +1877,41 @@ CREATE INDEX IF NOT EXISTS idx_purchase_dispute_tenant_status
     ON purchase_schema.purchase_dispute(tenant_id, status);
 COMMENT ON TABLE purchase_schema.purchase_dispute IS
     'Workflow de discrepancias con el proveedor (mercancia incompleta o precio distinto al pactado). notify_supplier_pending es una bandera de UI/estado interno; no dispara envio real de email/SMS en esta fase.';
+
+CREATE TABLE IF NOT EXISTS purchase_schema.supplier_credit(
+    supplier_credit_id  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    supplier_id         uuid NOT NULL REFERENCES purchase_schema.supplier(supplier_id) ON DELETE CASCADE,
+    source_note_id      uuid NOT NULL UNIQUE REFERENCES pos_schema.credit_debit_note(note_id) ON DELETE CASCADE,
+    original_amount     NUMERIC(12,3) NOT NULL CHECK (original_amount > 0),
+    remaining_amount     NUMERIC(12,3) NOT NULL CHECK (remaining_amount >= 0),
+    status              VARCHAR(10) NOT NULL DEFAULT 'AVAILABLE'
+                             CHECK (status IN ('AVAILABLE', 'APPLIED', 'VOIDED')),
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (remaining_amount <= original_amount)
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_supplier
+    ON purchase_schema.supplier_credit(supplier_id, status);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_tenant
+    ON purchase_schema.supplier_credit(tenant_id);
+COMMENT ON TABLE purchase_schema.supplier_credit IS
+    'Saldo a favor del tenant frente a un proveedor, originado por una nota de credito de venta por mercancia danada (pos_schema.credit_debit_note). Aplicable contra el balance de una purchase_account_payable via supplier_credit_application.';
+
+CREATE TABLE IF NOT EXISTS purchase_schema.supplier_credit_application(
+    supplier_credit_application_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    supplier_credit_id             uuid NOT NULL REFERENCES purchase_schema.supplier_credit(supplier_credit_id) ON DELETE CASCADE,
+    purchase_account_payable_id    uuid NOT NULL REFERENCES purchase_schema.purchase_account_payable(purchase_account_payable_id) ON DELETE CASCADE,
+    purchase_order_payment_id      uuid NOT NULL REFERENCES purchase_schema.purchase_order_payment(purchase_order_payment_id) ON DELETE CASCADE,
+    amount_applied                 NUMERIC(12,3) NOT NULL CHECK (amount_applied > 0),
+    applied_by                     uuid REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at                     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_application_credit
+    ON purchase_schema.supplier_credit_application(supplier_credit_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_credit_application_payable
+    ON purchase_schema.supplier_credit_application(purchase_account_payable_id);
 
 
 
@@ -6837,6 +6872,35 @@ CREATE TRIGGER create_initial_payment_alert_trigger
 AFTER INSERT ON purchase_schema.supplier_invoice
 FOR EACH ROW EXECUTE FUNCTION purchase_schema.create_initial_payment_alert();
 
+-- void_supplier_credit_on_note_void: si la nota de venta que origino un
+-- purchase_schema.supplier_credit se anula, el credito se anula tambien --
+-- pero solo si todavia no se aplico nada (remaining_amount = original_amount).
+-- Ver migrations/purchase/035-supplier-credit-from-damaged-goods.sql.
+CREATE OR REPLACE FUNCTION purchase_schema.void_supplier_credit_on_note_void()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NOT (NEW.is_voided = TRUE AND OLD.is_voided = FALSE) THEN
+        RETURN NEW;
+    END IF;
+
+    UPDATE purchase_schema.supplier_credit
+    SET status = 'VOIDED',
+        remaining_amount = 0,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE source_note_id = NEW.note_id
+      AND status = 'AVAILABLE'
+      AND remaining_amount = original_amount;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS void_supplier_credit_on_note_void_trigger ON pos_schema.credit_debit_note;
+CREATE TRIGGER void_supplier_credit_on_note_void_trigger
+AFTER UPDATE OF is_voided ON pos_schema.credit_debit_note
+FOR EACH ROW
+EXECUTE FUNCTION purchase_schema.void_supplier_credit_on_note_void();
+
 
 
 -- =============================================
@@ -7630,6 +7694,21 @@ INSERT INTO general_schema.account_receivable_type (type_name, description) VALU
     ('venta_credito', 'Venta a crédito a cliente registrado'),
     ('venta_apartado', 'Venta con apartado — inventario reservado hasta liquidar saldo')
 ON CONFLICT (type_name) DO NOTHING;
+
+
+
+-- =============================================
+-- SEED: SUPPLIER CREDIT PAYMENT METHOD
+-- Source: seeds/catalog/general/015-insert-supplier-credit-payment-method.sql
+-- =============================================
+SET SEARCH_PATH TO general_schema;
+
+-- Metodo de pago dedicado para aplicar un credito de proveedor (originado por
+-- una nota de credito de mercancia danada) contra una cuenta por pagar de
+-- compras. Ver migrations/purchase/035-supplier-credit-from-damaged-goods.sql.
+INSERT INTO general_schema.payment_method(name, description) VALUES
+('supplier_credit', 'Aplicacion de credito de proveedor (nota de credito por mercancia danada)')
+ON CONFLICT DO NOTHING;
 
 
 
