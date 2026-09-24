@@ -16,7 +16,7 @@ end;
 $$ language plpgsql;
 
 
-CREATE OR REPLACE FUNCTION create_purchase_order(p_supplier_id uuid, p_warehouse_id uuid, p_expected_delivery_date date, p_items jsonb default '[]'::jsonb, p_has_invoice BOOLEAN default true, p_payment_condition VARCHAR(10) default 'CREDIT') returns uuid as $$
+CREATE OR REPLACE FUNCTION create_purchase_order(p_supplier_id uuid, p_warehouse_id uuid, p_expected_delivery_date date, p_items jsonb default '[]'::jsonb, p_has_invoice BOOLEAN default true, p_payment_condition VARCHAR(10) default 'CREDIT', p_payment_due_date date default null) returns uuid as $$
 declare
     v_purchase_order_id uuid;
     v_supplier_invoice_id uuid;
@@ -42,17 +42,23 @@ BEGIN
         raise exception 'Cannot determine tenant_id for supplier %', p_supplier_id;
     end if;
 
+    if p_payment_condition = 'CREDIT' and p_payment_due_date is null then
+        raise exception 'payment_due_date is required when payment_condition is CREDIT';
+    end if;
+
     -- Crear la orden de compra
     INSERT INTO purchase_schema.purchase_order(
         supplier_id,
         warehouse_id,
         expected_delivery_date,
-        purchase_order_status_id
+        purchase_order_status_id,
+        payment_due_date
     ) VALUES (
         p_supplier_id,
         p_warehouse_id,
         p_expected_delivery_date,
-        1  -- Pending
+        1,  -- Pending
+        p_payment_due_date
     ) returning purchase_order_id into v_purchase_order_id;
 
     -- Insertar items si se proporcionaron
@@ -61,7 +67,17 @@ BEGIN
         loop
             v_product_id := (v_item ->> 'product_variant_id')::uuid;
             v_qty := coalesce((v_item ->> 'quantity_ordered')::int, 0);
-            v_unit := coalesce((v_item ->> 'unit_price')::numeric, 0);
+
+            -- Costo resuelto server-side desde el catalogo (ignora cualquier
+            -- unit_price que venga en el payload del cliente).
+            select cost_price into v_unit
+            from general_schema.product_variant
+            where tenant_id = v_tenant_id
+              and product_variant_id = v_product_id;
+
+            if v_unit is null then
+                raise exception 'product_variant % not found for tenant %', v_product_id, v_tenant_id;
+            end if;
 
             INSERT INTO purchase_schema.purchase_order_item(
                 purchase_order_id,
@@ -117,8 +133,8 @@ BEGIN
     -- Calcular subtotal de la orden
     v_subtotal := coalesce(purchase_schema.calculate_purchase_order_total(v_purchase_order_id), 0);
 
-    -- Obtener tasa de impuesto del tenant
-    select coalesce(tr.rate_percentage, 13.00) into v_tax_rate
+    -- Obtener tasa de impuesto del tenant (fallback: IVA General VE 16%)
+    select coalesce(tr.rate_percentage, 16.00) into v_tax_rate
     from general_schema.tenant t
     left join general_schema.tax_rate tr on tr.region_id = t.region_id
     where t.tenant_id = v_tenant_id
@@ -127,8 +143,13 @@ BEGIN
     -- Calcular impuesto
     v_tax_amount := round(v_subtotal * (v_tax_rate / 100.0), 3);
 
-    -- Calcular fecha de vencimiento (30 días por defecto)
-    v_due_date := (current_date + interval '30 days')::date;
+    -- Fecha de vencimiento: la capturada en la orden si es CREDIT; pago de
+    -- una vez (IN_FULL) vence el mismo dia.
+    if p_payment_condition = 'CREDIT' then
+        v_due_date := p_payment_due_date;
+    else
+        v_due_date := current_date;
+    end if;
 
     -- Obtener el ID del tipo de cuenta por pagar 'goods_purchase'
     select account_payable_type_id into v_account_payable_type_id
@@ -1021,3 +1042,149 @@ create trigger update_three_way_matching_timestamp
 before
 update on purchase_schema.three_way_matching
 for each row execute function general_schema.update_timestamp();
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- update_supplier_invoice: edicion de factura permitida solo mientras la
+-- orden asociada esta en estado 2 (Shipped / "enviada"); bloqueada en
+-- cualquier otro estado, en particular 3 (Delivered / "entregada").
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION purchase_schema.update_supplier_invoice(p_supplier_invoice_id uuid, p_items jsonb, p_tenant_id uuid) returns void as $$
+declare
+    v_purchase_order_id uuid;
+    v_status_id int;
+    v_item jsonb;
+    v_product_id uuid;
+    v_qty INTEGER;
+    v_unit numeric(12,3);
+    v_subtotal numeric(12,3);
+begin
+    select si.purchase_order_id, po.purchase_order_status_id
+      into v_purchase_order_id, v_status_id
+    from purchase_schema.supplier_invoice si
+    join purchase_schema.purchase_order po on po.purchase_order_id = si.purchase_order_id
+    where si.supplier_invoice_id = p_supplier_invoice_id;
+
+    if v_purchase_order_id is null then
+        raise exception 'supplier_invoice % not found', p_supplier_invoice_id;
+    end if;
+
+    if v_status_id is distinct from 2 then
+        raise exception 'supplier_invoice % cannot be edited: purchase_order_status_id is %, only status 2 (Shipped/enviada) allows edits', p_supplier_invoice_id, v_status_id;
+    end if;
+
+    delete from purchase_schema.supplier_invoice_item
+    where supplier_invoice_id = p_supplier_invoice_id;
+
+    if p_items is not null and jsonb_typeof(p_items) = 'array' and jsonb_array_length(p_items) > 0 then
+        for v_item in select value from jsonb_array_elements(p_items)
+        loop
+            v_product_id := (v_item ->> 'product_variant_id')::uuid;
+            v_qty := coalesce((v_item ->> 'quantity_billed')::int, 0);
+            v_unit := coalesce((v_item ->> 'unit_price')::numeric, 0);
+
+            INSERT INTO purchase_schema.supplier_invoice_item(
+                supplier_invoice_id,
+                tenant_id,
+                product_variant_id,
+                quantity_billed,
+                unit_price
+            ) VALUES (
+                p_supplier_invoice_id,
+                p_tenant_id,
+                v_product_id,
+                v_qty,
+                v_unit
+            );
+        end loop;
+    end if;
+
+    select coalesce(sum(quantity_billed * unit_price), 0)
+      into v_subtotal
+    from purchase_schema.supplier_invoice_item
+    where supplier_invoice_id = p_supplier_invoice_id;
+
+    update purchase_schema.supplier_invoice
+       set subtotal_amount = round(v_subtotal::numeric, 3),
+           updated_at = current_timestamp
+     where supplier_invoice_id = p_supplier_invoice_id;
+end;
+$$ language plpgsql;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- create_initial_payment_alert: crea automaticamente la alerta inicial
+-- (Upcoming Due Date) al emitir una factura CREDIT. No reemplaza
+-- generate_payment_alerts(), que sigue disponible para reproceso/backfill.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION purchase_schema.create_initial_payment_alert() returns trigger as $$
+declare
+    v_tenant_id uuid;
+    v_purchase_account_payable_id uuid;
+    v_warning_days int;
+    v_alert_type_id int;
+    v_alert_date timestamp;
+begin
+    if NEW.payment_condition is distinct from 'CREDIT' then
+        return NEW;
+    end if;
+
+    select b.tenant_id into v_tenant_id
+    from purchase_schema.purchase_order po
+    join inventory_schema.warehouse w on w.warehouse_id = po.warehouse_id
+    join general_schema.branch b on b.branch_id = w.branch_id
+    where po.purchase_order_id = NEW.purchase_order_id;
+
+    if v_tenant_id is null then
+        return NEW;
+    end if;
+
+    select pap.purchase_account_payable_id into v_purchase_account_payable_id
+    from purchase_schema.purchase_account_payable pap
+    where pap.purchase_order_id = NEW.purchase_order_id;
+
+    if v_purchase_account_payable_id is null then
+        return NEW;
+    end if;
+
+    select coalesce(c.warning_days_before_due, 7) into v_warning_days
+    from purchase_schema.purchase_order_payment_alert_config c
+    where c.tenant_id = v_tenant_id;
+
+    if v_warning_days is null then
+        v_warning_days := 7;
+    end if;
+
+    select payment_alert_type_id into v_alert_type_id
+    from purchase_schema.purchase_order_payment_alert_type
+    where payment_alert_type_name = 'Upcoming Due Date'
+    limit 1;
+
+    if v_alert_type_id is null then
+        return NEW;
+    end if;
+
+    v_alert_date := coalesce(NEW.due_date, current_date) - (v_warning_days || ' days')::interval;
+
+    INSERT INTO purchase_schema.purchase_order_payment_alert(
+        purchase_account_payable_id,
+        payment_alert_type_id,
+        alert_date,
+        is_resolved
+    ) VALUES (
+        v_purchase_account_payable_id,
+        v_alert_type_id,
+        v_alert_date,
+        false
+    );
+
+    return NEW;
+end;
+$$ language plpgsql;
+
+DROP TRIGGER IF EXISTS create_initial_payment_alert_trigger ON purchase_schema.supplier_invoice;
+CREATE TRIGGER create_initial_payment_alert_trigger
+AFTER INSERT ON purchase_schema.supplier_invoice
+FOR EACH ROW EXECUTE FUNCTION purchase_schema.create_initial_payment_alert();

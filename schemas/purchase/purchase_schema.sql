@@ -42,9 +42,12 @@ CREATE TABLE IF NOT EXISTS purchase_order(
     purchase_order_date date DEFAULT CURRENT_date,
     expected_delivery_date date,
     purchase_order_status_id INTEGER not null REFERENCES purchase_schema.purchase_order_status(status_id) DEFAULT 1,
+    payment_due_date date,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+COMMENT ON COLUMN purchase_schema.purchase_order.payment_due_date IS
+    'Fecha limite de pago capturada en la creacion de la orden. Obligatoria cuando payment_condition = CREDIT (validado en backend/frontend). Ignorada/NULL para IN_FULL.';
 
 CREATE TABLE IF NOT EXISTS purchase_order_item(
     purchase_order_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -56,10 +59,12 @@ CREATE TABLE IF NOT EXISTS purchase_order_item(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (tenant_id, product_variant_id) 
+    FOREIGN KEY (tenant_id, product_variant_id)
         REFERENCES general_schema.product_variant(tenant_id, product_variant_id) on delete cascade
 );
-CREATE INDEX IF NOT EXISTS idx_purchase_order_item_variant 
+COMMENT ON COLUMN purchase_schema.purchase_order_item.unit_price IS
+    'Snapshot server-side del costo del producto (general_schema.product_variant.cost_price, USD) al momento de crear la orden. No editable por request del cliente.';
+CREATE INDEX IF NOT EXISTS idx_purchase_order_item_variant
     ON purchase_schema.purchase_order_item(tenant_id, product_variant_id);
 
 CREATE TABLE IF NOT EXISTS purchase_order_tracking(
@@ -79,7 +84,7 @@ CREATE TABLE IF NOT EXISTS supplier_invoice(
     payment_condition VARCHAR(10) not null DEFAULT 'CREDIT', 
     due_date date,
     subtotal_amount NUMERIC(12,3) not null,
-    tax_rate NUMERIC(5,2) not null DEFAULT 13.00,
+    tax_rate NUMERIC(5,2) not null DEFAULT 16.00,
     tax_amount NUMERIC(12,3) generated always as (round(subtotal_amount * (tax_rate / 100), 3)) stored,
     total_amount NUMERIC(12,3) generated always as (
         subtotal_amount + round(subtotal_amount * (tax_rate / 100), 3)
@@ -147,7 +152,7 @@ CREATE TABLE IF NOT EXISTS purchase_schema.purchase_order_payment(
     purchase_order_payment_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_account_payable_id uuid NOT NULL REFERENCES purchase_schema.purchase_account_payable(purchase_account_payable_id) ON DELETE CASCADE,
     payment_method_id INTEGER REFERENCES general_schema.payment_method(payment_method_id),
-    currency_id INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    currency_id INTEGER NOT NULL DEFAULT 2 REFERENCES general_schema.currency(currency_id),
     amount_paid NUMERIC(12,3) NOT NULL CHECK (amount_paid > 0),
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     payment_reference VARCHAR(100),
@@ -200,3 +205,27 @@ CREATE TABLE IF NOT EXISTS three_way_matching(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS purchase_schema.purchase_dispute(
+    dispute_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    purchase_order_id uuid NOT NULL REFERENCES purchase_schema.purchase_order(purchase_order_id) ON DELETE CASCADE,
+    supplier_invoice_id uuid REFERENCES purchase_schema.supplier_invoice(supplier_invoice_id) ON DELETE SET NULL,
+    tenant_id uuid NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    dispute_type VARCHAR(20) NOT NULL,
+    description TEXT NOT NULL,
+    status VARCHAR(10) NOT NULL DEFAULT 'OPEN',
+    notify_supplier_pending BOOLEAN NOT NULL DEFAULT TRUE,
+    resolution_notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (dispute_type IN ('MISSING_GOODS', 'PRICE_MISMATCH')),
+    CHECK (status IN ('OPEN', 'RESOLVED'))
+);
+CREATE INDEX IF NOT EXISTS idx_purchase_dispute_order
+    ON purchase_schema.purchase_dispute(purchase_order_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_dispute_tenant_status
+    ON purchase_schema.purchase_dispute(tenant_id, status);
+COMMENT ON TABLE purchase_schema.purchase_dispute IS
+    'Workflow de discrepancias con el proveedor (mercancia incompleta o precio distinto al pactado). notify_supplier_pending es una bandera de UI/estado interno; no dispara envio real de email/SMS en esta fase.';
