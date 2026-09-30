@@ -206,6 +206,29 @@ CREATE TABLE IF NOT EXISTS tenant_exchange_delta (
 CREATE INDEX IF NOT EXISTS idx_tenant_exchange_delta_lookup
     ON general_schema.tenant_exchange_delta(tenant_id, effective_at DESC);
 
+-- Switch de actualizacion automatica de tasa por tenant. Sin fila =
+-- automatico (base BCV + diferencial). auto_update = FALSE: el tenant usa su
+-- ultima tasa manual y la base (alimentada por el job) no le afecta.
+CREATE TABLE IF NOT EXISTS tenant_exchange_config (
+    tenant_id    UUID PRIMARY KEY REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    auto_update  BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by   UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Ledger inmutable de tasas manuales por tenant (solo aplican con auto_update = FALSE).
+CREATE TABLE IF NOT EXISTS tenant_manual_rate (
+    manual_rate_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    rate           NUMERIC(12,6) NOT NULL CHECK (rate > 0),
+    effective_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by     UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_manual_rate_lookup
+    ON general_schema.tenant_manual_rate(tenant_id, effective_at DESC);
+
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,
     region VARCHAR(100),

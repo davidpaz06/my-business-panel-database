@@ -529,17 +529,30 @@ CREATE TRIGGER assert_exchange_rate_usd_ves_trigger
 BEFORE INSERT OR UPDATE ON general_schema.exchange_rate
 FOR EACH ROW EXECUTE FUNCTION general_schema.assert_exchange_rate_usd_ves();
 
--- Tasa vigente aplicable a un tenant: base global + su diferencial.
--- Fuente unica de verdad para toda la aplicacion.
-CREATE OR REPLACE FUNCTION general_schema.get_effective_exchange_rate(_tenant_id UUID)
+-- Tasa vigente aplicable a un tenant. Automatico (default): base global +
+-- su diferencial. Manual (tenant_exchange_config.auto_update = FALSE): su
+-- ultima tasa de tenant_manual_rate, sin base ni diferencial. Fuente unica
+-- de verdad para toda la aplicacion (migrations/general/038).
+-- DROP previo: CREATE OR REPLACE no puede cambiar las columnas de retorno.
+DROP FUNCTION IF EXISTS general_schema.get_effective_exchange_rate(UUID);
+CREATE FUNCTION general_schema.get_effective_exchange_rate(_tenant_id UUID)
 RETURNS TABLE (
     base_rate      NUMERIC(12,6),
     delta          NUMERIC(12,6),
     effective_rate NUMERIC(12,6),
     base_at        TIMESTAMP,
-    delta_at       TIMESTAMP
+    delta_at       TIMESTAMP,
+    auto_update    BOOLEAN,
+    manual_rate    NUMERIC(12,6),
+    manual_at      TIMESTAMP
 ) AS $$
-    WITH base AS (
+    WITH cfg AS (
+        SELECT COALESCE(
+            (SELECT c.auto_update FROM general_schema.tenant_exchange_config c WHERE c.tenant_id = _tenant_id),
+            TRUE
+        ) AS auto_update
+    ),
+    base AS (
         SELECT er.rate AS base_rate, er.effective_at AS base_at
         FROM general_schema.exchange_rate er
         ORDER BY er.effective_at DESC, er.created_at DESC
@@ -551,14 +564,30 @@ RETURNS TABLE (
         WHERE ted.tenant_id = _tenant_id
         ORDER BY ted.effective_at DESC, ted.created_at DESC
         LIMIT 1
+    ),
+    m AS (
+        SELECT tmr.rate AS manual_rate, tmr.effective_at AS manual_at
+        FROM general_schema.tenant_manual_rate tmr
+        WHERE tmr.tenant_id = _tenant_id
+        ORDER BY tmr.effective_at DESC, tmr.created_at DESC
+        LIMIT 1
     )
     SELECT
         base.base_rate,
-        COALESCE(d.delta, 0)::NUMERIC(12,6),
-        (base.base_rate + COALESCE(d.delta, 0))::NUMERIC(12,6),
+        CASE WHEN cfg.auto_update OR m.manual_rate IS NULL
+             THEN COALESCE(d.delta, 0) ELSE 0 END::NUMERIC(12,6),
+        CASE WHEN cfg.auto_update OR m.manual_rate IS NULL
+             THEN base.base_rate + COALESCE(d.delta, 0)
+             ELSE m.manual_rate END::NUMERIC(12,6),
         base.base_at,
-        d.delta_at
-    FROM base LEFT JOIN d ON TRUE;
+        d.delta_at,
+        cfg.auto_update,
+        m.manual_rate,
+        m.manual_at
+    FROM cfg
+    LEFT JOIN base ON TRUE
+    LEFT JOIN d ON TRUE
+    LEFT JOIN m ON TRUE;
 $$ LANGUAGE sql STABLE;
 
 -- Historial completo por tenant: cada cambio de tasa base o de diferencial,
