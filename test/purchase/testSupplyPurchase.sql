@@ -669,6 +669,25 @@ begin
         raise exception 'start_goods_receipt no es idempotente en estado PENDING';
     end if;
 
+    -- cancel_goods_receipt: simula iniciar la recepcion por error y
+    -- cancelarla -- debe borrar el goods_receipt PENDING (y sus items via
+    -- cascada) para poder empezar de cero.
+    perform purchase_schema.cancel_goods_receipt(v_goods_receipt_id);
+
+    if exists(select 1 from purchase_schema.goods_receipt where goods_receipt_id = v_goods_receipt_id) then
+        raise exception 'cancel_goods_receipt no elimino el goods_receipt PENDING';
+    end if;
+
+    if exists(select 1 from purchase_schema.goods_receipt_item where goods_receipt_id = v_goods_receipt_id) then
+        raise exception 'cancel_goods_receipt no elimino goods_receipt_item via cascada';
+    end if;
+
+    raise notice '   OK: cancel_goods_receipt elimino la recepcion PENDING (reintento limpio disponible)';
+
+    -- Reinicia la recepcion tras la cancelacion, como haria el usuario real
+    v_goods_receipt_id := purchase_schema.start_goods_receipt(v_purchase_order_id);
+    raise notice '   Goods receipt reiniciado tras cancelacion: %', v_goods_receipt_id;
+
     -- Paso 2: corregir cantidad recibida contra lo que realmente llego
     -- (simula mercancia recibida en menor cantidad a la pedida)
     select gri.product_variant_id into v_first_variant

@@ -713,6 +713,31 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+-- Cancela una recepcion iniciada por error o que se quiere reintentar desde
+-- cero. Solo mientras PENDING -- borra el goods_receipt (cascada se lleva
+-- sus goods_receipt_item) para que start_goods_receipt() pueda crear uno
+-- limpio despues. Ver migrations/purchase/039-cancel-goods-receipt.sql.
+CREATE OR REPLACE FUNCTION purchase_schema.cancel_goods_receipt(p_goods_receipt_id uuid) RETURNS VOID AS $$
+DECLARE
+    v_status VARCHAR(10);
+BEGIN
+    SELECT status INTO v_status
+    FROM purchase_schema.goods_receipt
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF v_status IS NULL THEN
+        RAISE EXCEPTION 'goods_receipt % not found', p_goods_receipt_id;
+    END IF;
+
+    IF v_status <> 'PENDING' THEN
+        RAISE EXCEPTION 'Solo se puede cancelar una recepcion mientras esta PENDING';
+    END IF;
+
+    DELETE FROM purchase_schema.goods_receipt WHERE goods_receipt_id = p_goods_receipt_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
 -- Bloquea cualquier UPDATE que ponga purchase_order_status_id en 3
 -- (Delivered) fuera de confirm_goods_receipt() -- doble candado backend+DB,
 -- mismo criterio que ya se usa para bloquear la edicion de facturas.

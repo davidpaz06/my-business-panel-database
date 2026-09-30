@@ -26,6 +26,7 @@ Covers:
   - `purchase_schema.start_goods_receipt(purchase_order_id)` — starts receiving (order must be status 2)
   - `purchase_schema.update_goods_receipt_items(goods_receipt_id, items, tenant_id)` — edits while PENDING
   - `purchase_schema.confirm_goods_receipt(goods_receipt_id)` — locks items, applies inventory, runs matching, sets order to Delivered
+  - `purchase_schema.cancel_goods_receipt(goods_receipt_id)` — deletes a PENDING receipt (started by mistake) so it can be restarted clean
   - `purchase_schema.execute_three_way_matching(...)` (called by confirm_goods_receipt)
   - `purchase_schema.guard_purchase_order_delivery_transition()` (trigger — blocks any direct UPDATE to status 3 outside confirm_goods_receipt)
 
@@ -68,6 +69,10 @@ Covers:
   - calls execute_three_way_matching(order_id, goods_receipt_id)
   - if quantities_matched or amounts_matched come back false, auto-opens a purchase_dispute
     (MISSING_GOODS / PRICE_MISMATCH) instead of relying on someone reading the matching report
+- cancel_goods_receipt(goods_receipt_id) (only while status PENDING):
+  - deletes the goods_receipt row (cascade removes its goods_receipt_item rows)
+  - purchase_order is left untouched (still status 2/Shipped) — start_goods_receipt can be called again
+  - rejects cancelling a CONFIRMED receipt: that one already applied inventory and matching, not reversible here
 - execute_three_way_matching():
   - compares subtotals, tax amounts and totals (with tolerance)
   - compares summed quantities across order, invoice and receipt
