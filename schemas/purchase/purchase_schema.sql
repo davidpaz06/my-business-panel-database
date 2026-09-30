@@ -116,12 +116,18 @@ CREATE TABLE IF NOT EXISTS goods_receipt(
     goods_receipt_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_order_id uuid not null REFERENCES purchase_schema.purchase_order(purchase_order_id) on delete cascade,
     received_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
+    confirmed_at TIMESTAMP,
     subtotal_amount NUMERIC(12,3) DEFAULT 0,
     tax_amount NUMERIC(12,3) DEFAULT 0,
     total_amount NUMERIC(12,3) generated always as (subtotal_amount + tax_amount) stored,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (status IN ('PENDING', 'CONFIRMED'))
 );
+COMMENT ON TABLE purchase_schema.goods_receipt IS
+    'Recepcion de mercancia. Se crea en PENDING via start_goods_receipt() cuando la orden esta en status 2 (Shipped/enviada); goods_receipt_item es editable mientras PENDING (corrige lo que realmente llego). confirm_goods_receipt() bloquea edicion, aplica inventario, corre el three-way matching y recien ahi mueve purchase_order a status 3 (Delivered). purchase_order_item nunca se reescribe: es el registro inmutable de lo que se pidio.';
 
 CREATE TABLE IF NOT EXISTS goods_receipt_item(
     goods_receipt_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

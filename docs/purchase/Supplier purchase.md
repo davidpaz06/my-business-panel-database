@@ -23,8 +23,11 @@ Covers:
   - `purchase_schema.create_purchase_order(...)`
   - `purchase_schema.calculate_purchase_order_total(...)`
   - `purchase_schema.verify_purchase_order_payment(...)`
-  - `purchase_schema.create_goods_receipt()` (trigger on order status change)
-  - `purchase_schema.execute_three_way_matching(...)` (called after items are inserted)
+  - `purchase_schema.start_goods_receipt(purchase_order_id)` — starts receiving (order must be status 2)
+  - `purchase_schema.update_goods_receipt_items(goods_receipt_id, items, tenant_id)` — edits while PENDING
+  - `purchase_schema.confirm_goods_receipt(goods_receipt_id)` — locks items, applies inventory, runs matching, sets order to Delivered
+  - `purchase_schema.execute_three_way_matching(...)` (called by confirm_goods_receipt)
+  - `purchase_schema.guard_purchase_order_delivery_transition()` (trigger — blocks any direct UPDATE to status 3 outside confirm_goods_receipt)
 
 ## Key entities
 
@@ -50,10 +53,21 @@ Covers:
 - verify_purchase_order_payment(payment_id):
   - marks payment verified and updates purchase_account_payable status/amounts
   - when fully paid, marks supplier_invoice.paid = true
-- create_goods_receipt() (triggered when purchase_order status → Delivered):
-  - inserts goods_receipt row (subtotal, tax)
-  - inserts goods_receipt_item rows copying order quantities
-  - calls execute_three_way_matching(order_id, goods_receipt_id) after all items inserted
+- start_goods_receipt(purchase_order_id) (order must be status 2/Shipped):
+  - inserts goods_receipt row (status PENDING, subtotal/tax copied from purchase_account_payable)
+  - inserts goods_receipt_item rows pre-filled from purchase_order_item, as an editable checklist
+  - idempotent while PENDING: calling it again on the same order returns the same goods_receipt_id
+- update_goods_receipt_items(goods_receipt_id, items, tenant_id) (only while status PENDING):
+  - deletes and reinserts goods_receipt_item from the given items array (product_variant_id, quantity_received)
+  - this is where a receiving discrepancy (wrong/short/damaged shipment) gets corrected
+  - purchase_order_item is never touched — it stays the immutable record of what was originally ordered
+- confirm_goods_receipt(goods_receipt_id) (only while status PENDING, requires >= 1 item):
+  - sets goods_receipt.status = CONFIRMED (locks it — update_goods_receipt_items rejects further edits)
+  - applies inventory from goods_receipt_item (not purchase_order_item) via apply_inventory_on_delivery
+  - sets purchase_order.purchase_order_status_id = 3 (the only legitimate path there — see guard trigger below)
+  - calls execute_three_way_matching(order_id, goods_receipt_id)
+  - if quantities_matched or amounts_matched come back false, auto-opens a purchase_dispute
+    (MISSING_GOODS / PRICE_MISMATCH) instead of relying on someone reading the matching report
 - execute_three_way_matching():
   - compares subtotals, tax amounts and totals (with tolerance)
   - compares summed quantities across order, invoice and receipt
@@ -79,12 +93,15 @@ Covers:
 4. Update order status to Shipped (optional)
    - UPDATE purchase_order set purchase_order_status_id = 2
 
-5. Update order status to Delivered → goods receipt created automatically
-   - UPDATE purchase_order set purchase_order_status_id = 3
-   - Trigger create_goods_receipt():
-     - Inserts goods_receipt (stores subtotal & tax from purchase_account_payable)
-     - Inserts goods_receipt_item rows (quantity_received from purchase_order_item)
-     - Calls execute_three_way_matching() only after items exist
+5. Receive the goods (three explicit steps, not a status-change side effect)
+   - SELECT purchase_schema.start_goods_receipt('<order-uuid>')
+     -> goods_receipt (PENDING) + goods_receipt_item checklist pre-filled from purchase_order_item
+   - (optional) CALL purchase_schema.update_goods_receipt_items('<goods-receipt-uuid>', '<items jsonb>', '<tenant-uuid>')
+     -> corrects quantity_received / which products actually arrived, before anything is finalized
+   - CALL purchase_schema.confirm_goods_receipt('<goods-receipt-uuid>')
+     -> locks the receipt, applies inventory, runs three-way matching, sets order status to 3 (Delivered)
+   - A direct `UPDATE purchase_order SET purchase_order_status_id = 3` is rejected by
+     `guard_purchase_order_delivery_transition_trigger` — status 3 is only reachable via confirm_goods_receipt().
 
 6. Three-way matching
    - execute_three_way_matching() compares:
@@ -135,6 +152,15 @@ Covers:
 - amounts_matched false:
   - verify comparison uses subtotals (without tax) and tax amounts separately; check rounding tolerance.
   - ensure goods_receipt stores correct subtotal and tax (copied from purchase_account_payable or computed consistently).
+- quantities_matched always true regardless of what actually arrived (historical bug, fixed in
+  migration 037-goods-receipt-workflow): goods_receipt_item used to be an automatic copy of
+  purchase_order_item made in the same instant the order flipped to status 3, so there was never a
+  human correction step and the receipt-vs-order comparison was a tautology. Receiving is now split
+  into start_goods_receipt / update_goods_receipt_items / confirm_goods_receipt precisely so a real
+  quantity discrepancy can exist and be caught.
+- discrepancy detected but nobody notices: confirm_goods_receipt() auto-opens a purchase_dispute
+  (MISSING_GOODS for quantities_matched = false, PRICE_MISMATCH for amounts_matched = false) instead
+  of only writing a row to three_way_matching — check `purchase_schema.purchase_dispute` for open items.
 
 ## Implementation notes / best practices
 
@@ -147,9 +173,12 @@ Covers:
 
 1. SELECT create_purchase_order(...) → order, items, invoice, payable
 2. INSERT payments → CALL verify_purchase_order_payment(...) until paid
-3. UPDATE purchase_order SET purchase_order_status_id = 3
-4. create_goods_receipt() runs, inserts items, then calls execute_three_way_matching()
-5. SELECT \* FROM three_way_matching → expect amounts_matched = true, quantities_matched = true, is_matched = true
+3. UPDATE purchase_order SET purchase_order_status_id = 2 (Shipped)
+4. SELECT start_goods_receipt(order_id) → goods_receipt (PENDING) + checklist items
+5. (optional) CALL update_goods_receipt_items(goods_receipt_id, corrected_items, tenant_id)
+6. CALL confirm_goods_receipt(goods_receipt_id) → inventory applied, matching runs, order → Delivered
+7. SELECT \* FROM three_way_matching → amounts_matched / quantities_matched reflect what was actually
+   confirmed; a false here means confirm_goods_receipt already opened a purchase_dispute automatically
 
 ## REFERENCES
 

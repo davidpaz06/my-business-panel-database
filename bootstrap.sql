@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-09-24 09:09:11
+-- Generated: 2026-09-29 19:11:01
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS role(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS users( 
+CREATE TABLE IF NOT EXISTS users(
     user_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     email VARCHAR(100) unique not null,
@@ -174,6 +174,18 @@ CREATE TABLE IF NOT EXISTS users(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS refresh_token(
+    refresh_token_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          uuid NOT NULL REFERENCES general_schema.users(user_id) ON DELETE CASCADE,
+    token_hash       VARCHAR(255) NOT NULL,
+    expires_at       TIMESTAMP NOT NULL,
+    revoked          BOOLEAN NOT NULL DEFAULT false,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_token_user_id ON refresh_token(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_token_revoked ON refresh_token(revoked);
 
 CREATE TABLE IF NOT EXISTS currency(
     currency_id SERIAL PRIMARY KEY,
@@ -1764,12 +1776,18 @@ CREATE TABLE IF NOT EXISTS goods_receipt(
     goods_receipt_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     purchase_order_id uuid not null REFERENCES purchase_schema.purchase_order(purchase_order_id) on delete cascade,
     received_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
+    confirmed_at TIMESTAMP,
     subtotal_amount NUMERIC(12,3) DEFAULT 0,
     tax_amount NUMERIC(12,3) DEFAULT 0,
     total_amount NUMERIC(12,3) generated always as (subtotal_amount + tax_amount) stored,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (status IN ('PENDING', 'CONFIRMED'))
 );
+COMMENT ON TABLE purchase_schema.goods_receipt IS
+    'Recepcion de mercancia. Se crea en PENDING via start_goods_receipt() cuando la orden esta en status 2 (Shipped/enviada); goods_receipt_item es editable mientras PENDING (corrige lo que realmente llego). confirm_goods_receipt() bloquea edicion, aplica inventario, corre el three-way matching y recien ahi mueve purchase_order a status 3 (Delivered). purchase_order_item nunca se reescribe: es el registro inmutable de lo que se pidio.';
 
 CREATE TABLE IF NOT EXISTS goods_receipt_item(
     goods_receipt_item_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -6114,7 +6132,10 @@ END;
 $$;
 
 
-CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(p_purchase_order_id UUID) RETURNS VOID LANGUAGE plpgsql AS $$
+-- apply_inventory_on_delivery: lee cantidades de goods_receipt_item (lo que
+-- realmente llego, corregido por el receptor) en vez de purchase_order_item
+-- (lo que se pidio originalmente). Ver confirm_goods_receipt() mas abajo.
+CREATE OR REPLACE FUNCTION purchase_schema.apply_inventory_on_delivery(p_purchase_order_id UUID, p_goods_receipt_id UUID) RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     v_warehouse_id UUID;
     v_log_in_type_id INTEGER;
@@ -6146,9 +6167,9 @@ BEGIN
     LIMIT 1;
 
     FOR v_item IN
-        SELECT poi.tenant_id, poi.product_variant_id, poi.quantity_ordered
-        FROM purchase_schema.purchase_order_item poi
-        WHERE poi.purchase_order_id = p_purchase_order_id
+        SELECT gri.tenant_id, gri.product_variant_id, gri.quantity_received
+        FROM purchase_schema.goods_receipt_item gri
+        WHERE gri.goods_receipt_id = p_goods_receipt_id
     LOOP
         SELECT pv.is_composite INTO v_is_composite
         FROM general_schema.product_variant pv
@@ -6165,7 +6186,7 @@ BEGIN
                 WHERE pvc.tenant_id = v_item.tenant_id
                   AND pvc.parent_product_variant_id = v_item.product_variant_id
             LOOP
-                v_total_qty := v_item.quantity_ordered * v_component.component_qty;
+                v_total_qty := v_item.quantity_received * v_component.component_qty;
 
                 PERFORM purchase_schema.upsert_inventory_stock(
                     v_item.tenant_id,
@@ -6181,7 +6202,7 @@ BEGIN
                 v_item.tenant_id,
                 v_item.product_variant_id,
                 v_warehouse_id,
-                v_item.quantity_ordered,
+                v_item.quantity_received,
                 v_log_in_type_id
             );
         END IF;
@@ -6190,78 +6211,233 @@ END;
 $$;
 
 
-CREATE OR REPLACE FUNCTION create_goods_receipt() returns trigger as $$
-declare
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Flujo de recepcion de mercancia (goods_receipt): dos pasos explicitos en
+-- vez de un trigger automatico sobre purchase_order_status_id.
+--
+--   1. start_goods_receipt()   -- orden en status 2 (Shipped/enviada):
+--                                  crea goods_receipt PENDING + goods_receipt_item
+--                                  precargado como checklist desde purchase_order_item.
+--   2. update_goods_receipt_items() -- mientras PENDING: corrige cantidad/productos
+--                                       contra lo que realmente llego (mercancia
+--                                       danada, faltante, o distinta a lo pedido).
+--   3. confirm_goods_receipt() -- bloquea edicion, aplica inventario desde los
+--                                  items ya corregidos, corre three-way matching,
+--                                  abre disputa automatica si hay discrepancia, y
+--                                  recien ahi mueve la orden a status 3 (Delivered).
+--
+-- purchase_order_item nunca se reescribe -- sigue siendo el registro inmutable
+-- de lo que se pidio originalmente.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION purchase_schema.start_goods_receipt(p_purchase_order_id uuid) RETURNS uuid AS $$
+DECLARE
+    v_status_id int;
     v_goods_receipt_id uuid;
     v_subtotal numeric(12,3);
     v_tax_amount numeric(12,3);
-    v_item record;
 BEGIN
-    if new.purchase_order_status_id = 3 and old.purchase_order_status_id is distinct from 3 then
-        if not exists(
-            select 1
-            from purchase_schema.goods_receipt
-            where purchase_order_id = new.purchase_order_id
-        ) then
-            select
-                ap.subtotal,
-                sap.tax_amount
-            into v_subtotal, v_tax_amount
-            from general_schema.account_payable ap
-            join purchase_schema.purchase_account_payable sap
-                on ap.account_payable_id = sap.account_payable_id
-            where sap.purchase_order_id = new.purchase_order_id;
+    SELECT purchase_order_status_id INTO v_status_id
+    FROM purchase_schema.purchase_order
+    WHERE purchase_order_id = p_purchase_order_id;
 
-            INSERT INTO purchase_schema.goods_receipt(
-                purchase_order_id,
-                received_date,
-                subtotal_amount,
-                tax_amount
+    IF v_status_id IS NULL THEN
+        RAISE EXCEPTION 'purchase_order % not found', p_purchase_order_id;
+    END IF;
+
+    IF v_status_id IS DISTINCT FROM 2 THEN
+        RAISE EXCEPTION 'purchase_order % cannot start a goods receipt: purchase_order_status_id is %, only status 2 (Shipped/enviada) allows it', p_purchase_order_id, v_status_id;
+    END IF;
+
+    SELECT goods_receipt_id INTO v_goods_receipt_id
+    FROM purchase_schema.goods_receipt
+    WHERE purchase_order_id = p_purchase_order_id;
+
+    IF v_goods_receipt_id IS NOT NULL THEN
+        -- Ya existe (PENDING: resume; CONFIRMED: no permitir volver a empezar).
+        IF (SELECT status FROM purchase_schema.goods_receipt WHERE goods_receipt_id = v_goods_receipt_id) = 'CONFIRMED' THEN
+            RAISE EXCEPTION 'purchase_order % already has a confirmed goods receipt', p_purchase_order_id;
+        END IF;
+        RETURN v_goods_receipt_id;
+    END IF;
+
+    SELECT ap.subtotal, sap.tax_amount
+    INTO v_subtotal, v_tax_amount
+    FROM general_schema.account_payable ap
+    JOIN purchase_schema.purchase_account_payable sap
+        ON ap.account_payable_id = sap.account_payable_id
+    WHERE sap.purchase_order_id = p_purchase_order_id;
+
+    INSERT INTO purchase_schema.goods_receipt(
+        purchase_order_id, received_date, status, subtotal_amount, tax_amount
+    ) VALUES (
+        p_purchase_order_id, current_timestamp, 'PENDING', coalesce(v_subtotal, 0), coalesce(v_tax_amount, 0)
+    ) RETURNING goods_receipt_id INTO v_goods_receipt_id;
+
+    INSERT INTO purchase_schema.goods_receipt_item(
+        goods_receipt_id, tenant_id, product_variant_id, quantity_received
+    )
+    SELECT v_goods_receipt_id, poi.tenant_id, poi.product_variant_id, poi.quantity_ordered
+    FROM purchase_schema.purchase_order_item poi
+    WHERE poi.purchase_order_id = p_purchase_order_id;
+
+    RETURN v_goods_receipt_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION purchase_schema.update_goods_receipt_items(p_goods_receipt_id uuid, p_items jsonb, p_tenant_id uuid) RETURNS VOID AS $$
+DECLARE
+    v_status VARCHAR(10);
+    v_item jsonb;
+    v_product_id uuid;
+    v_qty INTEGER;
+BEGIN
+    SELECT status INTO v_status
+    FROM purchase_schema.goods_receipt
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF v_status IS NULL THEN
+        RAISE EXCEPTION 'goods_receipt % not found', p_goods_receipt_id;
+    END IF;
+
+    IF v_status IS DISTINCT FROM 'PENDING' THEN
+        RAISE EXCEPTION 'goods_receipt % cannot be edited: status is %, only PENDING allows edits', p_goods_receipt_id, v_status;
+    END IF;
+
+    DELETE FROM purchase_schema.goods_receipt_item
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF p_items IS NOT NULL AND jsonb_typeof(p_items) = 'array' THEN
+        FOR v_item IN SELECT value FROM jsonb_array_elements(p_items)
+        LOOP
+            v_product_id := (v_item ->> 'product_variant_id')::uuid;
+            v_qty := coalesce((v_item ->> 'quantity_received')::int, 0);
+
+            INSERT INTO purchase_schema.goods_receipt_item(
+                goods_receipt_id, tenant_id, product_variant_id, quantity_received
             ) VALUES (
-                new.purchase_order_id,
-                current_timestamp,
-                v_subtotal,
-                v_tax_amount
-            ) returning goods_receipt_id into v_goods_receipt_id;
-
-            for v_item in
-                select tenant_id, product_variant_id, quantity_ordered
-                from purchase_schema.purchase_order_item
-                where purchase_order_id = new.purchase_order_id
-            loop
-                INSERT INTO purchase_schema.goods_receipt_item(
-                    goods_receipt_id,
-                    tenant_id,
-                    product_variant_id,
-                    quantity_received
-                ) VALUES (
-                    v_goods_receipt_id,
-                    v_item.tenant_id,
-                    v_item.product_variant_id,
-                    v_item.quantity_ordered
-                );
-            end loop;
-
-            perform purchase_schema.execute_three_way_matching(new.purchase_order_id, v_goods_receipt_id);
-        end if;
-
-        -- Push items into inventory at the destination warehouse. The
-        -- 'IS DISTINCT FROM 3' guard above ensures this only runs once
-        -- per real status transition.
-        perform purchase_schema.apply_inventory_on_delivery(new.purchase_order_id);
-    end if;
-
-    return new;
-end;
-$$ language plpgsql;
+                p_goods_receipt_id, p_tenant_id, v_product_id, v_qty
+            );
+        END LOOP;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 
-drop trigger if exists create_goods_receipt_trigger on purchase_schema.purchase_order;
+CREATE OR REPLACE FUNCTION purchase_schema.confirm_goods_receipt(p_goods_receipt_id uuid) RETURNS VOID AS $$
+DECLARE
+    v_status VARCHAR(10);
+    v_purchase_order_id uuid;
+    v_tenant_id uuid;
+    v_supplier_invoice_id uuid;
+    v_item_count int;
+    v_matching RECORD;
+BEGIN
+    SELECT status, purchase_order_id INTO v_status, v_purchase_order_id
+    FROM purchase_schema.goods_receipt
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF v_purchase_order_id IS NULL THEN
+        RAISE EXCEPTION 'goods_receipt % not found', p_goods_receipt_id;
+    END IF;
+
+    IF v_status IS DISTINCT FROM 'PENDING' THEN
+        RAISE EXCEPTION 'goods_receipt % cannot be confirmed: status is %, only PENDING allows confirmation', p_goods_receipt_id, v_status;
+    END IF;
+
+    SELECT count(*) INTO v_item_count
+    FROM purchase_schema.goods_receipt_item
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF v_item_count = 0 THEN
+        RAISE EXCEPTION 'goods_receipt % cannot be confirmed with zero items', p_goods_receipt_id;
+    END IF;
+
+    UPDATE purchase_schema.goods_receipt
+    SET status = 'CONFIRMED', confirmed_at = current_timestamp, updated_at = current_timestamp
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    -- Levanta el candado del guard trigger de purchase_order solo para esta
+    -- transaccion: la unica via legitima para llegar a status 3 (Delivered).
+    PERFORM set_config('purchase.allow_delivery_transition', 'true', true);
+
+    UPDATE purchase_schema.purchase_order
+    SET purchase_order_status_id = 3
+    WHERE purchase_order_id = v_purchase_order_id;
+
+    PERFORM purchase_schema.apply_inventory_on_delivery(v_purchase_order_id, p_goods_receipt_id);
+
+    PERFORM purchase_schema.execute_three_way_matching(v_purchase_order_id, p_goods_receipt_id);
+
+    -- Discrepancia automatica -> abre disputa en vez de depender de que
+    -- alguien revise el reporte de three_way_matching manualmente.
+    SELECT amounts_matched, quantities_matched INTO v_matching
+    FROM purchase_schema.three_way_matching
+    WHERE goods_receipt_id = p_goods_receipt_id;
+
+    IF v_matching IS NOT NULL AND (v_matching.amounts_matched IS FALSE OR v_matching.quantities_matched IS FALSE) THEN
+        SELECT s.added_by INTO v_tenant_id
+        FROM purchase_schema.purchase_order po
+        JOIN purchase_schema.supplier s ON s.supplier_id = po.supplier_id
+        WHERE po.purchase_order_id = v_purchase_order_id;
+
+        SELECT supplier_invoice_id INTO v_supplier_invoice_id
+        FROM purchase_schema.supplier_invoice
+        WHERE purchase_order_id = v_purchase_order_id;
+
+        IF v_matching.quantities_matched IS FALSE AND NOT EXISTS(
+            SELECT 1 FROM purchase_schema.purchase_dispute
+            WHERE purchase_order_id = v_purchase_order_id AND dispute_type = 'MISSING_GOODS' AND status = 'OPEN'
+        ) THEN
+            INSERT INTO purchase_schema.purchase_dispute(
+                purchase_order_id, supplier_invoice_id, tenant_id, dispute_type, description
+            ) VALUES (
+                v_purchase_order_id, v_supplier_invoice_id, v_tenant_id, 'MISSING_GOODS',
+                'Discrepancia de cantidad detectada automaticamente por el three-way matching al confirmar la recepcion.'
+            );
+        END IF;
+
+        IF v_matching.amounts_matched IS FALSE AND NOT EXISTS(
+            SELECT 1 FROM purchase_schema.purchase_dispute
+            WHERE purchase_order_id = v_purchase_order_id AND dispute_type = 'PRICE_MISMATCH' AND status = 'OPEN'
+        ) THEN
+            INSERT INTO purchase_schema.purchase_dispute(
+                purchase_order_id, supplier_invoice_id, tenant_id, dispute_type, description
+            ) VALUES (
+                v_purchase_order_id, v_supplier_invoice_id, v_tenant_id, 'PRICE_MISMATCH',
+                'Discrepancia de monto detectada automaticamente por el three-way matching al confirmar la recepcion.'
+            );
+        END IF;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 
-create trigger create_goods_receipt_trigger after
-update of purchase_order_status_id on purchase_schema.purchase_order
-for each row execute function purchase_schema.create_goods_receipt();
+-- Bloquea cualquier UPDATE que ponga purchase_order_status_id en 3
+-- (Delivered) fuera de confirm_goods_receipt() -- doble candado backend+DB,
+-- mismo criterio que ya se usa para bloquear la edicion de facturas.
+CREATE OR REPLACE FUNCTION purchase_schema.guard_purchase_order_delivery_transition() RETURNS trigger AS $$
+BEGIN
+    IF new.purchase_order_status_id = 3
+       AND old.purchase_order_status_id IS DISTINCT FROM 3
+       AND coalesce(current_setting('purchase.allow_delivery_transition', true), '') IS DISTINCT FROM 'true'
+    THEN
+        RAISE EXCEPTION 'purchase_order_status_id cannot be set to 3 (Delivered) directly; use purchase_schema.confirm_goods_receipt()';
+    END IF;
+    RETURN new;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS create_goods_receipt_trigger ON purchase_schema.purchase_order;
+DROP FUNCTION IF EXISTS purchase_schema.create_goods_receipt();
+
+DROP TRIGGER IF EXISTS guard_purchase_order_delivery_transition_trigger ON purchase_schema.purchase_order;
+
+CREATE TRIGGER guard_purchase_order_delivery_transition_trigger BEFORE
+UPDATE OF purchase_order_status_id ON purchase_schema.purchase_order
+FOR EACH ROW EXECUTE FUNCTION purchase_schema.guard_purchase_order_delivery_transition();
 
 
 CREATE OR REPLACE FUNCTION execute_three_way_matching(p_purchase_order_id uuid, p_goods_receipt_id uuid) returns void as $$

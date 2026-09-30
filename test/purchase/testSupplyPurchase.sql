@@ -611,7 +611,7 @@ end $$;
 
 
 -- ========================================
--- SECCIÓN 7: Marcar como Delivered → genera goods_receipt
+-- SECCION 7: Recepcion de mercancia (start -> editar -> confirm) -> Delivered
 -- ========================================
 DO $$
 declare
@@ -621,12 +621,15 @@ declare
     v_new_status int;
     v_new_status_name VARCHAR;
     v_goods_receipt_id uuid;
+    v_goods_receipt_status VARCHAR;
     v_goods_receipt_total numeric(12,3);
     v_items_count int;
-BEGIN
+    v_first_variant uuid;
+    v_corrected_items jsonb;
+begin
     raise notice '';
     raise notice '========================================';
-    raise notice '📦 SECCIÓN 7: Marcar como Delivered';
+    raise notice 'SECCION 7: Recepcion de mercancia';
     raise notice '========================================';
 
     select so.purchase_order_id, so.purchase_order_status_id, sos.status_name
@@ -637,12 +640,83 @@ BEGIN
     where s.supplier_name = 'Full Flow Supplier'
     limit 1;
 
-    raise notice '   📦 Order ID: %', v_purchase_order_id;
-    raise notice '   📊 Status anterior: % (%)', v_old_status_name, v_old_status;
+    raise notice '   Order ID: %', v_purchase_order_id;
+    raise notice '   Status anterior: % (%)', v_old_status_name, v_old_status;
 
-    update purchase_schema.purchase_order
-    set purchase_order_status_id = 3
-    where purchase_order_id = v_purchase_order_id;
+    -- Intentar saltarse la recepcion (UPDATE directo a status 3) debe fallar:
+    -- el guard trigger solo permite esa transicion via confirm_goods_receipt().
+    begin
+        update purchase_schema.purchase_order
+        set purchase_order_status_id = 3
+        where purchase_order_id = v_purchase_order_id;
+
+        raise exception 'El guard trigger NO bloqueo el UPDATE directo a status 3';
+    exception
+        when others then
+            if sqlerrm like '%confirm_goods_receipt%' then
+                raise notice '   OK: UPDATE directo a status 3 bloqueado por el guard trigger';
+            else
+                raise;
+            end if;
+    end;
+
+    -- Paso 1: iniciar recepcion (checklist precargado desde purchase_order_item)
+    v_goods_receipt_id := purchase_schema.start_goods_receipt(v_purchase_order_id);
+    raise notice '   Goods receipt iniciado (PENDING): %', v_goods_receipt_id;
+
+    -- start_goods_receipt es idempotente mientras siga PENDING
+    if purchase_schema.start_goods_receipt(v_purchase_order_id) is distinct from v_goods_receipt_id then
+        raise exception 'start_goods_receipt no es idempotente en estado PENDING';
+    end if;
+
+    -- Paso 2: corregir cantidad recibida contra lo que realmente llego
+    -- (simula mercancia recibida en menor cantidad a la pedida)
+    select gri.product_variant_id into v_first_variant
+    from purchase_schema.goods_receipt_item gri
+    where gri.goods_receipt_id = v_goods_receipt_id
+    limit 1;
+
+    select jsonb_agg(
+        case when gri.product_variant_id = v_first_variant
+             then jsonb_build_object('product_variant_id', gri.product_variant_id, 'quantity_received', greatest(gri.quantity_received - 1, 0))
+             else jsonb_build_object('product_variant_id', gri.product_variant_id, 'quantity_received', gri.quantity_received)
+        end
+    ) into v_corrected_items
+    from purchase_schema.goods_receipt_item gri
+    where gri.goods_receipt_id = v_goods_receipt_id;
+
+    perform purchase_schema.update_goods_receipt_items(v_goods_receipt_id, v_corrected_items, (
+        select tenant_id from purchase_schema.goods_receipt_item where goods_receipt_id = v_goods_receipt_id limit 1
+    ));
+
+    raise notice '   Cantidad corregida en goods_receipt_item (mercancia incompleta simulada)';
+
+    -- Paso 3: confirmar recepcion -> aplica inventario, three-way matching,
+    -- abre disputa automatica por la discrepancia, y recien ahi status 3.
+    perform purchase_schema.confirm_goods_receipt(v_goods_receipt_id);
+
+    select status, total_amount into v_goods_receipt_status, v_goods_receipt_total
+    from purchase_schema.goods_receipt
+    where goods_receipt_id = v_goods_receipt_id;
+
+    if v_goods_receipt_status is distinct from 'CONFIRMED' then
+        raise exception 'goods_receipt no quedo CONFIRMED tras confirm_goods_receipt';
+    end if;
+
+    -- Edicion debe estar bloqueada una vez CONFIRMED
+    begin
+        perform purchase_schema.update_goods_receipt_items(v_goods_receipt_id, '[]'::jsonb, (
+            select tenant_id from general_schema.tenant limit 1
+        ));
+        raise exception 'update_goods_receipt_items NO bloqueo la edicion tras CONFIRMED';
+    exception
+        when others then
+            if sqlerrm like '%only PENDING allows edits%' then
+                raise notice '   OK: edicion bloqueada tras CONFIRMED';
+            else
+                raise;
+            end if;
+    end;
 
     select so.purchase_order_status_id, sos.status_name
     into v_new_status, v_new_status_name
@@ -650,28 +724,19 @@ BEGIN
     join purchase_schema.purchase_order_status sos on so.purchase_order_status_id = sos.status_id
     where so.purchase_order_id = v_purchase_order_id;
 
-    raise notice '   ✓ Status actualizado: % (%)', v_new_status_name, v_new_status;
-
-    select goods_receipt_id, total_amount 
-    into v_goods_receipt_id, v_goods_receipt_total
-    from purchase_schema.goods_receipt
-    where purchase_order_id = v_purchase_order_id;
-
-    if v_goods_receipt_id is null then
-        raise exception '❌ Goods receipt NO fue creado automáticamente';
-    end if;
+    raise notice '   Status actualizado (via confirm_goods_receipt): % (%)', v_new_status_name, v_new_status;
 
     select count(*) into v_items_count
     from purchase_schema.goods_receipt_item
     where goods_receipt_id = v_goods_receipt_id;
 
     raise notice '';
-    raise notice '   ✅ Goods receipt generado automáticamente:';
+    raise notice '   Goods receipt confirmado:';
     raise notice '      ID: %', v_goods_receipt_id;
     raise notice '      Total: $%', v_goods_receipt_total;
     raise notice '      Items recibidos: %', v_items_count;
 
-    raise notice '✅ SECCIÓN 7 COMPLETADA';
+    raise notice 'SECCION 7 COMPLETADA';
     raise notice '========================================';
 end $$;
 
@@ -812,6 +877,48 @@ BEGIN
     end if;
 
     raise notice '✅ SECCIÓN 8 COMPLETADA';
+    raise notice '========================================';
+end $$;
+
+
+-- ========================================
+-- SECCION 8b: Verificar disputa automatica por la discrepancia simulada
+-- ========================================
+DO $$
+declare
+    v_purchase_order_id uuid;
+    v_dispute_id uuid;
+    v_dispute_type VARCHAR;
+    v_dispute_status VARCHAR;
+begin
+    raise notice '';
+    raise notice '========================================';
+    raise notice 'SECCION 8b: Disputa automatica (MISSING_GOODS)';
+    raise notice '========================================';
+
+    select so.purchase_order_id into v_purchase_order_id
+    from purchase_schema.purchase_order so
+    join purchase_schema.supplier s on so.supplier_id = s.supplier_id
+    where s.supplier_name = 'Full Flow Supplier'
+    limit 1;
+
+    select dispute_id, dispute_type, status
+    into v_dispute_id, v_dispute_type, v_dispute_status
+    from purchase_schema.purchase_dispute
+    where purchase_order_id = v_purchase_order_id
+      and dispute_type = 'MISSING_GOODS'
+    limit 1;
+
+    if v_dispute_id is null then
+        raise exception 'confirm_goods_receipt no abrio la disputa MISSING_GOODS esperada por la discrepancia de cantidad simulada en SECCION 7';
+    end if;
+
+    raise notice '   OK: disputa abierta automaticamente';
+    raise notice '      ID: %', v_dispute_id;
+    raise notice '      Tipo: %', v_dispute_type;
+    raise notice '      Status: %', v_dispute_status;
+
+    raise notice 'SECCION 8b COMPLETADA';
     raise notice '========================================';
 end $$;
 

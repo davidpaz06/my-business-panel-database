@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS role(
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS users( 
+CREATE TABLE IF NOT EXISTS users(
     user_id uuid PRIMARY KEY default gen_random_uuid(),
     tenant_id uuid REFERENCES general_schema.tenant(tenant_id) on delete cascade,
     email VARCHAR(100) unique not null,
@@ -144,6 +144,18 @@ CREATE TABLE IF NOT EXISTS users(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS refresh_token(
+    refresh_token_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          uuid NOT NULL REFERENCES general_schema.users(user_id) ON DELETE CASCADE,
+    token_hash       VARCHAR(255) NOT NULL,
+    expires_at       TIMESTAMP NOT NULL,
+    revoked          BOOLEAN NOT NULL DEFAULT false,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_token_user_id ON refresh_token(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_token_revoked ON refresh_token(revoked);
 
 CREATE TABLE IF NOT EXISTS currency(
     currency_id SERIAL PRIMARY KEY,
