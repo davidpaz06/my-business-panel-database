@@ -43,7 +43,11 @@ Covers:
 
 - create_purchase_order():
   - inserts purchase_order and purchase_order_item rows
-  - computes subtotal and tax, inserts purchase_account_payable
+  - computes subtotal and tax, inserts purchase_account_payable. The product cost
+    (product_variant.cost_price) already includes IVA, so the order total is the sum of
+    quantity * cost as-is and IVA is broken down, not added: subtotal (base) =
+    total / (1 + rate), tax = total - subtotal (migration 041). The rate is the highest
+    tax_rate of the tenant's region (Exento 0% is ignored), fallback 16%
   - inserts supplier_invoice and supplier_invoice_item when invoice requested
   - For each item being purchased, if the product_variant.supplier_id is NULL,
     it is automatically updated to the supplier_id from the purchase order
@@ -141,6 +145,7 @@ Covers:
 - Totals and quantities:
 
 ```sql
+  -- order_subtotal here is the gross cost (IVA included); the order's tax-exclusive subtotal is account_payable.subtotal
   SELECT coalesce(sum(quantity_ordered \* unit_price),0) AS order_subtotal, coalesce(sum(quantity_ordered),0) AS order_qty FROM purchase.purchase_order_item WHERE purchase_order_id = '<order-uuid>';
   SELECT subtotal_amount, tax_amount, total_amount FROM purchase.supplier_invoice WHERE purchase_order_id = '<order-uuid>';
   SELECT subtotal_amount, tax_amount, total_amount FROM purchase.goods_receipt WHERE purchase_order_id = '<order-uuid>';

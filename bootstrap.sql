@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-10-05 18:24:21
+-- Generated: 2026-10-05 22:52:22
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -5861,6 +5861,7 @@ declare
     v_product_id uuid;
     v_qty INTEGER;
     v_unit numeric(12,3);
+    v_gross numeric(12,3);
     v_subtotal numeric(12,3);
     v_tax_rate numeric(5,2);
     v_tax_amount numeric(12,3);
@@ -5966,18 +5967,23 @@ BEGIN
             );
     end if;
 
-    -- Calcular subtotal de la orden
-    v_subtotal := coalesce(purchase_schema.calculate_purchase_order_total(v_purchase_order_id), 0);
+    -- El costo del producto (product_variant.cost_price) ya incluye IVA, por lo
+    -- que el total de la orden es la suma de costos tal cual. El IVA se
+    -- desglosa, no se suma: base = bruto / (1 + tasa), iva = bruto - base.
+    v_gross := coalesce(purchase_schema.calculate_purchase_order_total(v_purchase_order_id), 0);
 
-    -- Obtener tasa de impuesto del tenant (fallback: IVA General VE 16%)
+    -- Tasa general del tenant: la mayor de su region (descarta la tarifa
+    -- Exento 0%; sin ORDER BY el limit 1 elegia una fila arbitraria).
+    -- Fallback: IVA General VE 16%.
     select coalesce(tr.rate_percentage, 16.00) into v_tax_rate
     from general_schema.tenant t
     left join general_schema.tax_rate tr on tr.region_id = t.region_id
     where t.tenant_id = v_tenant_id
+    order by tr.rate_percentage desc nulls last
     limit 1;
 
-    -- Calcular impuesto
-    v_tax_amount := round(v_subtotal * (v_tax_rate / 100.0), 3);
+    v_subtotal := round(v_gross / (1 + v_tax_rate / 100.0), 3);
+    v_tax_amount := v_gross - v_subtotal;
 
     -- Fecha de vencimiento: la capturada en la orden si es CREDIT; pago de
     -- una vez (IN_FULL) vence el mismo dia.
