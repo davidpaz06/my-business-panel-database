@@ -134,6 +134,10 @@ CREATE TABLE IF NOT EXISTS customer_payment(
 
 CREATE TABLE IF NOT EXISTS invoice(
     invoice_id uuid PRIMARY KEY default gen_random_uuid(),
+    -- tenant_id e invoice_number los asigna trg_invoice_assign_number
+    -- (BEFORE INSERT); NULL en facturas emitidas antes de la migracion 040.
+    tenant_id uuid REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    invoice_number INTEGER,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -148,6 +152,23 @@ CREATE TABLE IF NOT EXISTS invoice(
     change_amount NUMERIC(10,2) DEFAULT 0,
     invoiced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON COLUMN pos_schema.invoice.invoice_number IS
+    'Correlativo interno por tenant (se muestra con 8 digitos). NULL en facturas emitidas antes de la migracion 040.';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_tenant_number
+    ON pos_schema.invoice(tenant_id, invoice_number)
+    WHERE invoice_number IS NOT NULL;
+
+-- Contador del correlativo de factura por tenant. El upsert de
+-- assign_invoice_number() bloquea la fila hasta el commit: serializa la
+-- creacion de facturas por tenant y no deja huecos si la transaccion falla.
+CREATE TABLE IF NOT EXISTS invoice_counter (
+    tenant_id   UUID PRIMARY KEY
+        REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    last_number INTEGER NOT NULL DEFAULT 0 CHECK (last_number >= 0),
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoice_sale_id on pos_schema.invoice(sale_id);

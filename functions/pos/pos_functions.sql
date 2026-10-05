@@ -169,7 +169,6 @@ returns trigger as $$
 declare
     _invoice_id uuid;
     _tenant_customer_id uuid;
-    _tenant_id uuid;
     _currency_id INTEGER;
     _subtotal numeric(10,2);
     _tax numeric(10,2);
@@ -188,16 +187,18 @@ BEGIN
             return new;
         end if;
 
-        _tenant_customer_id := (
-            select tenant_customer_id
-            from pos_schema.customer_payment
-            where sale_id = new.sale_id
-            limit 1
+        -- Cliente desde la venta; el pago solo sirve de respaldo para ventas
+        -- pendientes historicas que se crearon sin cliente.
+        _tenant_customer_id := COALESCE(
+            new.tenant_customer_id,
+            (
+                select tenant_customer_id
+                from pos_schema.customer_payment
+                where sale_id = new.sale_id
+                  and tenant_customer_id is not null
+                limit 1
+            )
         );
-
-        select tenant_id into _tenant_id
-        from general_schema.tenant_customer
-        where tenant_customer_id = _tenant_customer_id;
 
         _currency_id := new.currency_id;
 
@@ -209,7 +210,9 @@ BEGIN
         AND crs.is_active = true
         LIMIT 1;
 
-        -- Insert invoice with placeholder totals (will be updated from items)
+        -- Insert invoice with placeholder totals (will be updated from items).
+        -- trg_invoice_require_customer rechaza cliente nulo y
+        -- trg_invoice_assign_number asigna tenant_id e invoice_number.
         INSERT INTO pos_schema.invoice (
             sale_id,
             tenant_customer_id,
@@ -309,13 +312,71 @@ BEGIN
         raise notice '   Sale ID: %', new.sale_id;
 
         return new;
-
-    exception
-        when others then
-            raise notice 'Error creating invoice: %', sqlerrm;
-            return new;
 end;
 $$ language plpgsql;
+
+-- Numeracion correlativa de factura por tenant (migracion 040). Se asigna en
+-- BEFORE INSERT para cubrir los dos caminos de creacion (sale.service y
+-- create_invoice()). El upsert bloquea la fila del tenant hasta el commit:
+-- serializa y no deja huecos si la transaccion falla.
+CREATE OR REPLACE FUNCTION pos_schema.assign_invoice_number()
+RETURNS trigger AS $$
+DECLARE
+    v_tenant_id UUID;
+    v_number INTEGER;
+BEGIN
+    SELECT b.tenant_id INTO v_tenant_id
+    FROM pos_schema.sale s
+    JOIN general_schema.branch b ON b.branch_id = s.branch_id
+    WHERE s.sale_id = NEW.sale_id;
+
+    IF v_tenant_id IS NULL THEN
+        RAISE EXCEPTION 'No se pudo resolver el tenant de la venta % para numerar la factura', NEW.sale_id;
+    END IF;
+
+    INSERT INTO pos_schema.invoice_counter (tenant_id, last_number)
+    VALUES (v_tenant_id, 1)
+    ON CONFLICT (tenant_id) DO UPDATE
+        SET last_number = pos_schema.invoice_counter.last_number + 1,
+            updated_at = CURRENT_TIMESTAMP
+    RETURNING last_number INTO v_number;
+
+    NEW.tenant_id := v_tenant_id;
+    NEW.invoice_number := v_number;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+drop trigger if exists trg_invoice_assign_number on pos_schema.invoice;
+create trigger trg_invoice_assign_number
+    before insert on pos_schema.invoice
+    for each row
+    execute function pos_schema.assign_invoice_number();
+
+-- Venta anonima eliminada: sale e invoice nuevas exigen cliente. Es un
+-- trigger BEFORE INSERT (y no un CHECK NOT VALID) para no rechazar UPDATEs
+-- de filas historicas sin cliente, p. ej. reembolsar una venta anonima vieja.
+CREATE OR REPLACE FUNCTION pos_schema.require_customer()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.tenant_customer_id IS NULL THEN
+        RAISE EXCEPTION 'La tabla % requiere un cliente registrado (tenant_customer_id): la venta anonima no esta permitida', TG_TABLE_NAME;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+drop trigger if exists trg_sale_require_customer on pos_schema.sale;
+create trigger trg_sale_require_customer
+    before insert on pos_schema.sale
+    for each row
+    execute function pos_schema.require_customer();
+
+drop trigger if exists trg_invoice_require_customer on pos_schema.invoice;
+create trigger trg_invoice_require_customer
+    before insert on pos_schema.invoice
+    for each row
+    execute function pos_schema.require_customer();
 
 drop trigger if exists on_sale_completed_create_bill on pos_schema.sale;
 drop trigger if exists on_sale_completed_create_digital_sale_invoice on pos_schema.sale;

@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS tenant_customer(
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,  
     first_name VARCHAR(100) not null,
     last_name VARCHAR(100) not null,
+    business_name VARCHAR(200), -- razon social; se imprime en la factura cuando el cliente es J/G/C
     identification_type_id INTEGER REFERENCES general_schema.identification_type(identification_type_id) on delete set null,
     document_number VARCHAR(50) not null,
     econ_activity VARCHAR(6),

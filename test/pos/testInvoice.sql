@@ -126,7 +126,7 @@ BEGIN
 
     DELETE FROM general_schema.product WHERE product_name = 'Producto de prueba factura VE';
 
-    DELETE FROM general_schema.tax_rate WHERE rate_code = 'IVA-16-TEST';
+    DELETE FROM general_schema.tax_rate WHERE rate_code = 'IVA16-FTST';
 
     DELETE FROM general_schema.users
     WHERE tenant_id IN (SELECT tenant_id FROM general_schema.tenant WHERE tenant_name = 'Factura Unificada VE');
@@ -158,8 +158,8 @@ BEGIN
     RAISE NOTICE 'SECCION 1: Configuracion inicial';
     RAISE NOTICE '========================================';
 
-    INSERT INTO general_schema.tenant (tenant_name, region_id, contact_email, is_subscribed)
-    VALUES ('Factura Unificada VE', (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 'admin@facturave.com', true)
+    INSERT INTO general_schema.tenant (tenant_name, region_id, identification, contact_email, is_subscribed)
+    VALUES ('Factura Unificada VE', (SELECT region_id FROM general_schema.region WHERE region_name = 'Venezuela'), 'J-FUV-0001', 'admin@facturave.com', true)
     RETURNING tenant_id INTO v_tenant_id;
 
     INSERT INTO general_schema.branch (tenant_id, branch_name, branch_address, is_main_branch)
@@ -172,17 +172,17 @@ BEGIN
 
     INSERT INTO general_schema.tenant_customer (
         tenant_id, first_name, last_name, document_number,
-        email, phone, customer_segment_id
+        email, phone, address, customer_segment_id
     )
     VALUES (
         v_tenant_id, 'Maria', 'Perez', 'V-12345678',
-        'cliente.factura@email.com', '+58-414-7771234', 3
+        'cliente.factura@email.com', '+58-414-7771234', 'Av. Urdaneta, Caracas', 3
     )
     RETURNING tenant_customer_id INTO v_customer_id;
 
     -- Tasa IVA 16% (SENIAT) — sin CABYS: el producto no lleva codigo de catalogo.
     INSERT INTO general_schema.tax_rate (rate_percentage, rate_code, rate_name)
-    VALUES (16.00, 'IVA-16-TEST', 'IVA 16% (Test Factura VE)')
+    VALUES (16.00, 'IVA16-FTST', 'IVA 16% (Test Factura VE)')
     RETURNING tax_rate_id INTO v_tax_rate_id;
 
     INSERT INTO general_schema.product (product_name, tax_rate_id)
@@ -247,6 +247,7 @@ DECLARE
     v_tenant_id UUID;
     v_branch_id UUID;
     v_variant_id UUID;
+    v_customer_id UUID;
     v_sale_id UUID;
 BEGIN
     RAISE NOTICE 'SECCION 3: Crear venta';
@@ -254,9 +255,11 @@ BEGIN
     SELECT tenant_id INTO v_tenant_id FROM general_schema.tenant WHERE tenant_name = 'Factura Unificada VE';
     SELECT branch_id INTO v_branch_id FROM general_schema.branch WHERE tenant_id = v_tenant_id LIMIT 1;
     SELECT product_variant_id INTO v_variant_id FROM general_schema.product_variant WHERE tenant_id = v_tenant_id LIMIT 1;
+    SELECT tenant_customer_id INTO v_customer_id FROM general_schema.tenant_customer WHERE tenant_id = v_tenant_id;
 
-    INSERT INTO pos_schema.sale (branch_id, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
-    VALUES (v_branch_id, 1, 100.00, 16.00, 116.00, false)
+    -- Cliente obligatorio desde la migracion 040 (venta anonima eliminada).
+    INSERT INTO pos_schema.sale (branch_id, tenant_customer_id, sale_condition, currency_id, subtotal_amount, tax_amount, total_amount, is_completed)
+    VALUES (v_branch_id, v_customer_id, '01', 1, 100.00, 16.00, 116.00, false)
     RETURNING sale_id INTO v_sale_id;
 
     INSERT INTO pos_schema.sale_item (sale_id, tenant_id, product_variant_id, quantity, unit_price, total_price)
@@ -355,6 +358,14 @@ BEGIN
         RAISE EXCEPTION 'ASSERT FALLIDO: invoice_payment count = % (esperado 1)', v_invoice_payment_count;
     END IF;
     RAISE NOTICE 'ASSERT OK: invoice_payment count = 1';
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pos_schema.invoice
+        WHERE invoice_id = v_invoice_id AND invoice_number = 1 AND tenant_id = v_tenant_id
+    ) THEN
+        RAISE EXCEPTION 'ASSERT FALLIDO: la primera factura del tenant no tiene invoice_number = 1';
+    END IF;
+    RAISE NOTICE 'ASSERT OK: invoice_number = 1 (correlativo por tenant)';
 
     IF NOT EXISTS (
         SELECT 1 FROM pos_schema.score_transaction WHERE invoice_id = v_invoice_id AND transaction_type_id = 1

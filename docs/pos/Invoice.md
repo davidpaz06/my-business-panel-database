@@ -19,7 +19,9 @@ Retail checkout where a completed sale automatically produces exactly one `invoi
 ```sql
 pos_schema.invoice
 ├── invoice_id                 UUID PK
-├── tenant_customer_id         UUID FK -> general_schema.tenant_customer (nullable, ON DELETE SET NULL)
+├── tenant_id                  UUID FK -> general_schema.tenant (set by trg_invoice_assign_number; NULL on invoices issued before migration 040)
+├── invoice_number             INTEGER (per-tenant sequential, shown as 8 digits e.g. 00055703; NULL before migration 040)
+├── tenant_customer_id         UUID FK -> general_schema.tenant_customer (required on every NEW invoice -- see "Required customer"; column stays nullable for historical rows, ON DELETE SET NULL)
 ├── sale_id                    UUID FK -> pos_schema.sale (NOT NULL, ON DELETE CASCADE)
 ├── currency_id                INTEGER FK -> general_schema.currency
 ├── subtotal_amount            NUMERIC(10,2)
@@ -69,8 +71,8 @@ pos_schema.invoice_payment
 An invoice is **always** created automatically — there is no manual/application-driven invoice type anymore. The trigger `on_sale_completed_create_invoice` fires `AFTER UPDATE OF is_completed ON pos_schema.sale`, `WHEN (old.is_completed IS FALSE AND new.is_completed IS TRUE)`, and calls `pos_schema.create_invoice()`. That function:
 
 1. Guards against duplicate creation: if an `invoice` already exists for `sale_id`, it logs a notice and returns without doing anything else.
-2. Resolves `tenant_customer_id` from the first `customer_payment` row for the sale (not from `sale.tenant_customer_id` directly) — if the sale had no customer-linked payment, the invoice's `tenant_customer_id` ends up `NULL`.
-3. Resolves `tenant_id` from `general_schema.tenant_customer` using that customer id.
+2. Resolves `tenant_customer_id` from `sale.tenant_customer_id`. Only for historical pending sales created without a customer does it fall back to the first customer-linked `customer_payment`. If neither exists the insert is rejected (see "Required customer").
+3. `tenant_id` and `invoice_number` are assigned by the `BEFORE INSERT` trigger `trg_invoice_assign_number` (see "Invoice numbering"), not by this function.
 4. Copies `currency_id` from the sale.
 5. Resolves the branch's active `cash_register_session` / `cash_register` for the sale's branch.
 6. Inserts the `invoice` row with placeholder zero totals.
@@ -78,7 +80,23 @@ An invoice is **always** created automatically — there is no manual/applicatio
 8. Recomputes the invoice's `subtotal_amount` and `tax_amount` as the sum of the just-inserted `invoice_item` rows, and updates the `invoice` row (`total_amount` is then kept in sync by the `calculate_invoice_total` trigger, `subtotal_amount + tax_amount`).
 9. Links every **verified** `customer_payment` row for the sale into `invoice_payment` (one row per payment, `payment_amount` copied as-is). This insert fires `award_points()` per row (see below).
 
-The whole function body is wrapped in `EXCEPTION WHEN OTHERS` — any error during invoice creation is caught, logged via `RAISE NOTICE`, and swallowed; the sale update itself always succeeds regardless of whether invoice creation succeeded. See "Known issues" below — this currently matters in practice.
+Since migration 040 the function no longer wraps its body in `EXCEPTION WHEN OTHERS`: an error during invoice creation propagates and rolls back the sale completion. Before, errors were swallowed and a sale could close without an invoice; with numbering and a required customer that would have been silent data loss.
+
+## Invoice numbering
+
+`invoice.invoice_number` is the business's internal sequential number (what the SENIAT-style ticket prints as `FACTURA: 00055703`). The machine-homologation (MH) code that fiscal-machine receipts carried is not modeled: it is no longer used.
+
+- **Per tenant.** Each tenant has its own counter row in `pos_schema.invoice_counter`.
+- **Assigned in the database**, by the `BEFORE INSERT` trigger `trg_invoice_assign_number`, because an invoice is created by two paths: `sale.service` inserts it directly when it creates an already-completed sale, and `create_invoice()` is the fallback for sales completed later by `UPDATE`. One assignment point covers both.
+- **Gapless.** The counter is incremented with an upsert that locks the tenant's row until commit; if the transaction rolls back, so does the increment. It also serializes invoice creation per tenant.
+- **Historical invoices keep `invoice_number = NULL`** (no renumbering, no backfill). Presentation should hide the number line for those.
+- Unique per tenant through the partial index `uq_invoice_tenant_number`. The 8-digit zero padding is presentation-only (`LPAD(invoice_number::text, 8, '0')`).
+
+## Required customer
+
+Anonymous sales no longer exist: `sale` and `invoice` inserts without `tenant_customer_id` are rejected by the `BEFORE INSERT` triggers `trg_sale_require_customer` / `trg_invoice_require_customer` (`pos_schema.require_customer()`). These are insert-time triggers on purpose, not a `CHECK ... NOT VALID`: a not-valid check is still evaluated on every later `UPDATE` of an old row, which would block, for example, refunding a historical anonymous sale. Historical rows without customer stay readable and updatable.
+
+For legal persons (J/G/C) `general_schema.tenant_customer.business_name` holds the razon social printed on the invoice instead of `first_name`/`last_name`. That it is mandatory for those types, and that the customer's address is mandatory, is enforced by the backend, not by the database (existing customers may not have them).
 
 ## Returns Link to the Invoice
 
@@ -165,14 +183,14 @@ WHERE rt.invoice_id = '<invoice_id>';
 
 ## Common Troubleshooting
 
-- **No invoice after payment**: Confirm `pos_schema.check_sale_payment_completion` actually set `sale.is_completed = true`, and that the `on_sale_completed_create_invoice` trigger exists on `pos_schema.sale`. Because `create_invoice()` swallows all errors (`EXCEPTION WHEN OTHERS`), a broken insert inside it will **not** raise to the caller — the sale still shows `is_completed = true` with no invoice underneath, and the only trace is a `RAISE NOTICE 'Error creating invoice: %'` in the server log. See "Fixed while writing this doc" below for a previously-broken insert that used to trigger exactly this.
-- **Return fails with "Invoice not found for sale"**: `update_on_return()` requires an `invoice` row to already exist for the sale before any `return_product` can be inserted — this is not swallowed, unlike invoice creation.
-- **Points not awarded**: check that the invoice has a non-null `tenant_customer_id` (an anonymous/walk-in sale with no customer-linked payment produces an invoice with `tenant_customer_id = NULL`, and `award_points()` skips silently), and that the tenant has an `is_active = true` `loyalty_program` row.
+- **No invoice after payment**: Confirm `pos_schema.check_sale_payment_completion` actually set `sale.is_completed = true`, and that the `on_sale_completed_create_invoice` trigger exists on `pos_schema.sale`. Since migration 040 `create_invoice()` no longer swallows errors, so a failing insert (including a sale with no customer) raises to the caller and rolls the completion back. In environments built by migrations rather than bootstrap, also check that the legacy `on_sale_completed_create_digital_sale_invoice` trigger is gone (migration 040 drops it): before that, it pointed at a table that no longer exists and the new trigger was never wired. "Fixed while writing this doc" below describes an older insert defect that used to be hidden by the swallowed error.
+- **Return fails with "Invoice not found for sale"**: `update_on_return()` requires an `invoice` row to already exist for the sale before any `return_product` can be inserted — this is not swallowed.
+- **Points not awarded**: check that the invoice has a non-null `tenant_customer_id` (always true for invoices created after migration 040; only historical invoices from anonymous sales have `NULL`, and `award_points()` skips them silently), and that the tenant has an `is_active = true` `loyalty_program` row.
 - **Totals mismatch**: `invoice.total_amount` is recomputed by the `calculate_invoice_total` trigger as `subtotal_amount + tax_amount` on every insert/update — do not set `total_amount` directly and expect it to stick.
 
 ### Fixed while writing this doc (were pre-existing defects, unrelated to the CR->VE terminology change)
 
-- `create_invoice()`'s `INSERT INTO pos_schema.invoice (...)` list referenced a `cash_register_id` column that does not exist on `invoice` (only `cash_register_session_id` does), and the resolved variable held the register id rather than the session id. Because the whole function body is wrapped in `EXCEPTION WHEN OTHERS`, this silently broke invoice creation on every sale completion. Fixed: the variable and the inserted column are now both `cash_register_session_id`, sourced from `crs.cash_register_session_id`.
+- `create_invoice()`'s `INSERT INTO pos_schema.invoice (...)` list referenced a `cash_register_id` column that does not exist on `invoice` (only `cash_register_session_id` does), and the resolved variable held the register id rather than the session id. Because the whole function body was then wrapped in `EXCEPTION WHEN OTHERS` (removed in migration 040), this silently broke invoice creation on every sale completion. Fixed: the variable and the inserted column are now both `cash_register_session_id`, sourced from `crs.cash_register_session_id`.
 - `pos_schema.get_invoice(_sale_id)` selected `b.created_at`, but `invoice` has no such column (only `invoiced_at`). Fixed: renamed the returned column to `invoiced_at` and select `b.invoiced_at`.
 
 ## Notes for Integrators / Developers

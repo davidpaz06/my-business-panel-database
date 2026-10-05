@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-09-30 20:28:03
+-- Generated: 2026-10-05 18:24:21
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS tenant_customer(
     tenant_id uuid not null REFERENCES general_schema.tenant(tenant_id) on delete cascade,  
     first_name VARCHAR(100) not null,
     last_name VARCHAR(100) not null,
+    business_name VARCHAR(200), -- razon social; se imprime en la factura cuando el cliente es J/G/C
     identification_type_id INTEGER REFERENCES general_schema.identification_type(identification_type_id) on delete set null,
     document_number VARCHAR(50) not null,
     econ_activity VARCHAR(6),
@@ -235,6 +236,29 @@ CREATE TABLE IF NOT EXISTS tenant_exchange_delta (
 
 CREATE INDEX IF NOT EXISTS idx_tenant_exchange_delta_lookup
     ON general_schema.tenant_exchange_delta(tenant_id, effective_at DESC);
+
+-- Switch de actualizacion automatica de tasa por tenant. Sin fila =
+-- automatico (base BCV + diferencial). auto_update = FALSE: el tenant usa su
+-- ultima tasa manual y la base (alimentada por el job) no le afecta.
+CREATE TABLE IF NOT EXISTS tenant_exchange_config (
+    tenant_id    UUID PRIMARY KEY REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    auto_update  BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by   UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Ledger inmutable de tasas manuales por tenant (solo aplican con auto_update = FALSE).
+CREATE TABLE IF NOT EXISTS tenant_manual_rate (
+    manual_rate_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    rate           NUMERIC(12,6) NOT NULL CHECK (rate > 0),
+    effective_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by     UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_manual_rate_lookup
+    ON general_schema.tenant_manual_rate(tenant_id, effective_at DESC);
 
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,
@@ -945,6 +969,10 @@ CREATE TABLE IF NOT EXISTS customer_payment(
 
 CREATE TABLE IF NOT EXISTS invoice(
     invoice_id uuid PRIMARY KEY default gen_random_uuid(),
+    -- tenant_id e invoice_number los asigna trg_invoice_assign_number
+    -- (BEFORE INSERT); NULL en facturas emitidas antes de la migracion 040.
+    tenant_id uuid REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    invoice_number INTEGER,
     tenant_customer_id uuid REFERENCES general_schema.tenant_customer(tenant_customer_id) on delete set null,
     sale_id uuid not null REFERENCES pos_schema.sale(sale_id) on delete cascade,
     currency_id INTEGER REFERENCES general_schema.currency(currency_id) on delete set null,
@@ -959,6 +987,23 @@ CREATE TABLE IF NOT EXISTS invoice(
     change_amount NUMERIC(10,2) DEFAULT 0,
     invoiced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON COLUMN pos_schema.invoice.invoice_number IS
+    'Correlativo interno por tenant (se muestra con 8 digitos). NULL en facturas emitidas antes de la migracion 040.';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_tenant_number
+    ON pos_schema.invoice(tenant_id, invoice_number)
+    WHERE invoice_number IS NOT NULL;
+
+-- Contador del correlativo de factura por tenant. El upsert de
+-- assign_invoice_number() bloquea la fila hasta el commit: serializa la
+-- creacion de facturas por tenant y no deja huecos si la transaccion falla.
+CREATE TABLE IF NOT EXISTS invoice_counter (
+    tenant_id   UUID PRIMARY KEY
+        REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    last_number INTEGER NOT NULL DEFAULT 0 CHECK (last_number >= 0),
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoice_sale_id on pos_schema.invoice(sale_id);
@@ -3520,17 +3565,30 @@ CREATE TRIGGER assert_exchange_rate_usd_ves_trigger
 BEFORE INSERT OR UPDATE ON general_schema.exchange_rate
 FOR EACH ROW EXECUTE FUNCTION general_schema.assert_exchange_rate_usd_ves();
 
--- Tasa vigente aplicable a un tenant: base global + su diferencial.
--- Fuente unica de verdad para toda la aplicacion.
-CREATE OR REPLACE FUNCTION general_schema.get_effective_exchange_rate(_tenant_id UUID)
+-- Tasa vigente aplicable a un tenant. Automatico (default): base global +
+-- su diferencial. Manual (tenant_exchange_config.auto_update = FALSE): su
+-- ultima tasa de tenant_manual_rate, sin base ni diferencial. Fuente unica
+-- de verdad para toda la aplicacion (migrations/general/038).
+-- DROP previo: CREATE OR REPLACE no puede cambiar las columnas de retorno.
+DROP FUNCTION IF EXISTS general_schema.get_effective_exchange_rate(UUID);
+CREATE FUNCTION general_schema.get_effective_exchange_rate(_tenant_id UUID)
 RETURNS TABLE (
     base_rate      NUMERIC(12,6),
     delta          NUMERIC(12,6),
     effective_rate NUMERIC(12,6),
     base_at        TIMESTAMP,
-    delta_at       TIMESTAMP
+    delta_at       TIMESTAMP,
+    auto_update    BOOLEAN,
+    manual_rate    NUMERIC(12,6),
+    manual_at      TIMESTAMP
 ) AS $$
-    WITH base AS (
+    WITH cfg AS (
+        SELECT COALESCE(
+            (SELECT c.auto_update FROM general_schema.tenant_exchange_config c WHERE c.tenant_id = _tenant_id),
+            TRUE
+        ) AS auto_update
+    ),
+    base AS (
         SELECT er.rate AS base_rate, er.effective_at AS base_at
         FROM general_schema.exchange_rate er
         ORDER BY er.effective_at DESC, er.created_at DESC
@@ -3542,14 +3600,30 @@ RETURNS TABLE (
         WHERE ted.tenant_id = _tenant_id
         ORDER BY ted.effective_at DESC, ted.created_at DESC
         LIMIT 1
+    ),
+    m AS (
+        SELECT tmr.rate AS manual_rate, tmr.effective_at AS manual_at
+        FROM general_schema.tenant_manual_rate tmr
+        WHERE tmr.tenant_id = _tenant_id
+        ORDER BY tmr.effective_at DESC, tmr.created_at DESC
+        LIMIT 1
     )
     SELECT
         base.base_rate,
-        COALESCE(d.delta, 0)::NUMERIC(12,6),
-        (base.base_rate + COALESCE(d.delta, 0))::NUMERIC(12,6),
+        CASE WHEN cfg.auto_update OR m.manual_rate IS NULL
+             THEN COALESCE(d.delta, 0) ELSE 0 END::NUMERIC(12,6),
+        CASE WHEN cfg.auto_update OR m.manual_rate IS NULL
+             THEN base.base_rate + COALESCE(d.delta, 0)
+             ELSE m.manual_rate END::NUMERIC(12,6),
         base.base_at,
-        d.delta_at
-    FROM base LEFT JOIN d ON TRUE;
+        d.delta_at,
+        cfg.auto_update,
+        m.manual_rate,
+        m.manual_at
+    FROM cfg
+    LEFT JOIN base ON TRUE
+    LEFT JOIN d ON TRUE
+    LEFT JOIN m ON TRUE;
 $$ LANGUAGE sql STABLE;
 
 -- Historial completo por tenant: cada cambio de tasa base o de diferencial,
@@ -3765,7 +3839,6 @@ returns trigger as $$
 declare
     _invoice_id uuid;
     _tenant_customer_id uuid;
-    _tenant_id uuid;
     _currency_id INTEGER;
     _subtotal numeric(10,2);
     _tax numeric(10,2);
@@ -3784,16 +3857,18 @@ BEGIN
             return new;
         end if;
 
-        _tenant_customer_id := (
-            select tenant_customer_id
-            from pos_schema.customer_payment
-            where sale_id = new.sale_id
-            limit 1
+        -- Cliente desde la venta; el pago solo sirve de respaldo para ventas
+        -- pendientes historicas que se crearon sin cliente.
+        _tenant_customer_id := COALESCE(
+            new.tenant_customer_id,
+            (
+                select tenant_customer_id
+                from pos_schema.customer_payment
+                where sale_id = new.sale_id
+                  and tenant_customer_id is not null
+                limit 1
+            )
         );
-
-        select tenant_id into _tenant_id
-        from general_schema.tenant_customer
-        where tenant_customer_id = _tenant_customer_id;
 
         _currency_id := new.currency_id;
 
@@ -3805,7 +3880,9 @@ BEGIN
         AND crs.is_active = true
         LIMIT 1;
 
-        -- Insert invoice with placeholder totals (will be updated from items)
+        -- Insert invoice with placeholder totals (will be updated from items).
+        -- trg_invoice_require_customer rechaza cliente nulo y
+        -- trg_invoice_assign_number asigna tenant_id e invoice_number.
         INSERT INTO pos_schema.invoice (
             sale_id,
             tenant_customer_id,
@@ -3905,13 +3982,71 @@ BEGIN
         raise notice '   Sale ID: %', new.sale_id;
 
         return new;
-
-    exception
-        when others then
-            raise notice 'Error creating invoice: %', sqlerrm;
-            return new;
 end;
 $$ language plpgsql;
+
+-- Numeracion correlativa de factura por tenant (migracion 040). Se asigna en
+-- BEFORE INSERT para cubrir los dos caminos de creacion (sale.service y
+-- create_invoice()). El upsert bloquea la fila del tenant hasta el commit:
+-- serializa y no deja huecos si la transaccion falla.
+CREATE OR REPLACE FUNCTION pos_schema.assign_invoice_number()
+RETURNS trigger AS $$
+DECLARE
+    v_tenant_id UUID;
+    v_number INTEGER;
+BEGIN
+    SELECT b.tenant_id INTO v_tenant_id
+    FROM pos_schema.sale s
+    JOIN general_schema.branch b ON b.branch_id = s.branch_id
+    WHERE s.sale_id = NEW.sale_id;
+
+    IF v_tenant_id IS NULL THEN
+        RAISE EXCEPTION 'No se pudo resolver el tenant de la venta % para numerar la factura', NEW.sale_id;
+    END IF;
+
+    INSERT INTO pos_schema.invoice_counter (tenant_id, last_number)
+    VALUES (v_tenant_id, 1)
+    ON CONFLICT (tenant_id) DO UPDATE
+        SET last_number = pos_schema.invoice_counter.last_number + 1,
+            updated_at = CURRENT_TIMESTAMP
+    RETURNING last_number INTO v_number;
+
+    NEW.tenant_id := v_tenant_id;
+    NEW.invoice_number := v_number;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+drop trigger if exists trg_invoice_assign_number on pos_schema.invoice;
+create trigger trg_invoice_assign_number
+    before insert on pos_schema.invoice
+    for each row
+    execute function pos_schema.assign_invoice_number();
+
+-- Venta anonima eliminada: sale e invoice nuevas exigen cliente. Es un
+-- trigger BEFORE INSERT (y no un CHECK NOT VALID) para no rechazar UPDATEs
+-- de filas historicas sin cliente, p. ej. reembolsar una venta anonima vieja.
+CREATE OR REPLACE FUNCTION pos_schema.require_customer()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.tenant_customer_id IS NULL THEN
+        RAISE EXCEPTION 'La tabla % requiere un cliente registrado (tenant_customer_id): la venta anonima no esta permitida', TG_TABLE_NAME;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+drop trigger if exists trg_sale_require_customer on pos_schema.sale;
+create trigger trg_sale_require_customer
+    before insert on pos_schema.sale
+    for each row
+    execute function pos_schema.require_customer();
+
+drop trigger if exists trg_invoice_require_customer on pos_schema.invoice;
+create trigger trg_invoice_require_customer
+    before insert on pos_schema.invoice
+    for each row
+    execute function pos_schema.require_customer();
 
 drop trigger if exists on_sale_completed_create_bill on pos_schema.sale;
 drop trigger if exists on_sale_completed_create_digital_sale_invoice on pos_schema.sale;
