@@ -1248,9 +1248,10 @@ declare
     v_qty INTEGER;
     v_unit numeric(12,3);
     v_subtotal numeric(12,3);
+    v_tax_rate numeric(5,2);
 begin
-    select si.purchase_order_id, po.purchase_order_status_id
-      into v_purchase_order_id, v_status_id
+    select si.purchase_order_id, po.purchase_order_status_id, si.tax_rate
+      into v_purchase_order_id, v_status_id, v_tax_rate
     from purchase_schema.supplier_invoice si
     join purchase_schema.purchase_order po on po.purchase_order_id = si.purchase_order_id
     where si.supplier_invoice_id = p_supplier_invoice_id;
@@ -1294,8 +1295,11 @@ begin
     from purchase_schema.supplier_invoice_item
     where supplier_invoice_id = p_supplier_invoice_id;
 
+    -- unit_price es el costo con IVA incluido (igual que en la orden), asi que
+    -- subtotal_amount guarda la base: tax_amount y total_amount son columnas
+    -- generadas que suman el IVA sobre subtotal_amount.
     update purchase_schema.supplier_invoice
-       set subtotal_amount = round(v_subtotal::numeric, 3),
+       set subtotal_amount = round(v_subtotal::numeric / (1 + v_tax_rate / 100.0), 3),
            updated_at = current_timestamp
      where supplier_invoice_id = p_supplier_invoice_id;
 end;

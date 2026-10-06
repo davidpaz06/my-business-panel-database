@@ -49,6 +49,9 @@ Covers:
     total / (1 + rate), tax = total - subtotal (migration 041). The rate is the highest
     tax_rate of the tenant's region (Exento 0% is ignored), fallback 16%
   - inserts supplier_invoice and supplier_invoice_item when invoice requested
+- update_supplier_invoice(): invoice items carry the cost with IVA included, so
+  supplier_invoice.subtotal_amount stores the base (sum / (1 + invoice tax_rate)); the generated
+  tax_amount and total_amount columns add the IVA back (migration 043)
   - For each item being purchased, if the product_variant.supplier_id is NULL,
     it is automatically updated to the supplier_id from the purchase order
   - This ensures that after first purchase from a supplier, the product is now

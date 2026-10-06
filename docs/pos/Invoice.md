@@ -49,8 +49,8 @@ pos_schema.invoice_item
 ├── unit_price                 NUMERIC(10,2)
 ├── subtotal                   NUMERIC(10,2) (quantity x unit_price)
 ├── tax_rate_percentage         NUMERIC(5,2) (resolved from tax_rate.rate_percentage; 0 if null)
-├── tax_amount                 NUMERIC(10,2) (subtotal x tax_rate_percentage / 100)
-├── total_price                 NUMERIC(10,2) (subtotal + tax_amount)
+├── tax_amount                 NUMERIC(10,2) (subtotal x tax_rate_percentage / 100; if the variant has includes_iva, total - subtotal)
+├── total_price                 NUMERIC(10,2) (subtotal + tax_amount; equals the amount charged when includes_iva)
 ├── created_at                 TIMESTAMP
 └── updated_at                 TIMESTAMP
 
@@ -76,7 +76,7 @@ An invoice is **always** created automatically — there is no manual/applicatio
 4. Copies `currency_id` from the sale.
 5. Resolves the branch's active `cash_register_session` / `cash_register` for the sale's branch.
 6. Inserts the `invoice` row with placeholder zero totals.
-7. Inserts one `invoice_item` row per `sale_item`, resolving `tax_rate_id` via `product_variant.product_id -> product.tax_rate_id -> tax_rate.rate_percentage`, and computing `subtotal`, `tax_rate_percentage`, `tax_amount`, `total_price` per line.
+7. Inserts one `invoice_item` row per `sale_item`, resolving `tax_rate_id` via `product_variant.product_id -> product.tax_rate_id -> tax_rate.rate_percentage`, and computing `subtotal`, `tax_rate_percentage`, `tax_amount`, `total_price` per line with `pos_schema.invoice_item_amounts()` (migration 042). When `product_variant.includes_iva` is true the sale price already carries the tax, so the line breaks it down (`subtotal = total / (1 + rate)`, `tax_amount = total - subtotal`, `total_price` = the amount charged) instead of adding it on top. The backend's main path (`createItemsFromSale` in `pos.queries.ts`) uses the same function.
 8. Recomputes the invoice's `subtotal_amount` and `tax_amount` as the sum of the just-inserted `invoice_item` rows, and updates the `invoice` row (`total_amount` is then kept in sync by the `calculate_invoice_total` trigger, `subtotal_amount + tax_amount`).
 9. Links every **verified** `customer_payment` row for the sale into `invoice_payment` (one row per payment, `payment_amount` copied as-is). This insert fires `award_points()` per row (see below).
 
@@ -110,7 +110,7 @@ Returns are recorded as:
    - Looks up the underlying `sale_item` and, through it, the invoice for that sale (`SELECT invoice_id FROM pos_schema.invoice WHERE sale_id = ...`) — raises an exception if no invoice exists for the sale (this error is **not** swallowed).
    - Rejects returning more than was purchased.
    - If the return exhausts the line's quantity: explicitly deletes the matching `invoice_item` row, then deletes the `sale_item` row (which would also `CASCADE` the `invoice_item`, but the function deletes it explicitly first).
-   - Otherwise: decrements `sale_item.quantity`/`total_price`, and recomputes the matching `invoice_item`'s `quantity`, `subtotal`, `tax_rate_percentage`, `tax_amount`, `total_price` using the same `product_variant.product_id -> product.tax_rate_id` resolution as `create_invoice()`.
+   - Otherwise: decrements `sale_item.quantity`/`total_price`, and recomputes the matching `invoice_item`'s `quantity`, `subtotal`, `tax_rate_percentage`, `tax_amount`, `total_price` using the same `product_variant.product_id -> product.tax_rate_id` resolution and the same `invoice_item_amounts()` breakdown as `create_invoice()`. The sale's `tax_amount` is recomputed adding tax only on lines whose variant does not have `includes_iva` (same rule as the POS).
    - Recomputes `invoice.subtotal_amount`/`tax_amount`/`total_amount` from the remaining `invoice_item` rows.
    - Recomputes `sale.subtotal_amount`/`tax_amount`/`total_amount` from the remaining `sale_item` rows (with per-item tax resolved the same way).
 

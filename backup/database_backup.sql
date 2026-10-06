@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-10-05 22:52:22
+-- Generated: 2026-10-06 09:00:16
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -3834,6 +3834,24 @@ BEGIN
 end;
 $$ language plpgsql;
 
+-- Desglose de IVA de una linea de factura. p_includes_iva = true: el monto ya
+-- trae el IVA (product_variant.includes_iva), asi que se desglosa:
+-- base = monto / (1 + tasa), iva = monto - base, y base + iva = monto.
+-- false: el IVA se suma encima: base = monto, iva = monto * tasa.
+CREATE OR REPLACE FUNCTION pos_schema.invoice_item_amounts(p_amount numeric, p_rate numeric, p_includes_iva boolean)
+RETURNS TABLE(item_subtotal numeric, item_tax_amount numeric, item_total numeric) AS $$
+    SELECT b.base, b.tax, b.base + b.tax
+    FROM (
+        SELECT
+            CASE WHEN COALESCE(p_includes_iva, false)
+                 THEN ROUND(p_amount / (1 + COALESCE(p_rate, 0) / 100.0), 2)
+                 ELSE p_amount END AS base,
+            CASE WHEN COALESCE(p_includes_iva, false)
+                 THEN p_amount - ROUND(p_amount / (1 + COALESCE(p_rate, 0) / 100.0), 2)
+                 ELSE ROUND(p_amount * COALESCE(p_rate, 0) / 100.0, 2) END AS tax
+    ) b;
+$$ LANGUAGE sql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION create_invoice()
 returns trigger as $$
 declare
@@ -3927,15 +3945,18 @@ BEGIN
             COALESCE(pv.variant_name, p.product_name, 'Product'),
             si.quantity,
             si.unit_price,
-            si.total_price,
+            amt.item_subtotal,
             COALESCE(tr.rate_percentage, 0),
-            ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2),
-            si.total_price + ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2)
+            amt.item_tax_amount,
+            amt.item_total
         FROM pos_schema.sale_item si
         JOIN general_schema.product_variant pv
             ON si.tenant_id = pv.tenant_id AND si.product_variant_id = pv.product_variant_id
         LEFT JOIN general_schema.product p ON pv.product_id = p.product_id
         LEFT JOIN general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
+        CROSS JOIN LATERAL pos_schema.invoice_item_amounts(
+            si.total_price, COALESCE(tr.rate_percentage, 0), pv.includes_iva
+        ) amt
         WHERE si.sale_id = new.sale_id;
 
         GET DIAGNOSTICS _items_count = ROW_COUNT;
@@ -4128,15 +4149,19 @@ BEGIN
         -- Resolve tax_rate the same way as create_invoice
         update pos_schema.invoice_item dii
         set quantity = _quantity_remaining,
-            subtotal = _quantity_remaining * dii.unit_price,
+            subtotal = amt.item_subtotal,
             tax_rate_percentage = COALESCE(tr.rate_percentage, 0),
-            tax_amount = ROUND((_quantity_remaining * dii.unit_price) * COALESCE(tr.rate_percentage, 0) / 100, 2),
-            total_price = (_quantity_remaining * dii.unit_price)
-                + ROUND((_quantity_remaining * dii.unit_price) * COALESCE(tr.rate_percentage, 0) / 100, 2),
+            tax_amount = amt.item_tax_amount,
+            total_price = amt.item_total,
             updated_at = current_timestamp
         from general_schema.product_variant pv
         left join general_schema.product p ON pv.product_id = p.product_id
         left join general_schema.tax_rate tr ON p.tax_rate_id = tr.tax_rate_id
+        cross join lateral pos_schema.invoice_item_amounts(
+            _quantity_remaining * _sale_item_record.unit_price,
+            COALESCE(tr.rate_percentage, 0),
+            pv.includes_iva
+        ) amt
         where dii.invoice_id = _invoice_id
         and dii.sale_item_id = _sale_item_record.sale_item_id
         and dii.tenant_id = pv.tenant_id
@@ -4164,7 +4189,10 @@ BEGIN
     -- Recalculate sale totals from remaining sale_items with per-item tax
     SELECT
         COALESCE(SUM(si.total_price), 0),
-        COALESCE(SUM(ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2)), 0)
+        COALESCE(SUM(
+            CASE WHEN pv.includes_iva THEN 0
+                 ELSE ROUND(si.total_price * COALESCE(tr.rate_percentage, 0) / 100, 2) END
+        ), 0)
     INTO _sale_subtotal_after, _sale_tax_after
     FROM pos_schema.sale_item si
     JOIN general_schema.product_variant pv
@@ -7084,9 +7112,10 @@ declare
     v_qty INTEGER;
     v_unit numeric(12,3);
     v_subtotal numeric(12,3);
+    v_tax_rate numeric(5,2);
 begin
-    select si.purchase_order_id, po.purchase_order_status_id
-      into v_purchase_order_id, v_status_id
+    select si.purchase_order_id, po.purchase_order_status_id, si.tax_rate
+      into v_purchase_order_id, v_status_id, v_tax_rate
     from purchase_schema.supplier_invoice si
     join purchase_schema.purchase_order po on po.purchase_order_id = si.purchase_order_id
     where si.supplier_invoice_id = p_supplier_invoice_id;
@@ -7130,8 +7159,11 @@ begin
     from purchase_schema.supplier_invoice_item
     where supplier_invoice_id = p_supplier_invoice_id;
 
+    -- unit_price es el costo con IVA incluido (igual que en la orden), asi que
+    -- subtotal_amount guarda la base: tax_amount y total_amount son columnas
+    -- generadas que suman el IVA sobre subtotal_amount.
     update purchase_schema.supplier_invoice
-       set subtotal_amount = round(v_subtotal::numeric, 3),
+       set subtotal_amount = round(v_subtotal::numeric / (1 + v_tax_rate / 100.0), 3),
            updated_at = current_timestamp
      where supplier_invoice_id = p_supplier_invoice_id;
 end;
