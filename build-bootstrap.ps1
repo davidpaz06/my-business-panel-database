@@ -247,9 +247,8 @@ COMMIT;
 -- ======================================================
 "@ | Out-File -FilePath $outputFile -Append -Encoding UTF8
 
-# bootstrap.sql es el nombre canonico documentado en CLAUDE.md; docker-init
-# ejecuta backup/database_backup.sql. Se mantienen sincronizados para que un
-# entorno nuevo nunca arranque con un bootstrap desactualizado.
+# bootstrap.sql es el nombre canonico documentado en CLAUDE.md; se mantiene
+# sincronizado con backup/database_backup.sql.
 Copy-Item -Path $outputFile -Destination "bootstrap.sql" -Force
 
 Write-Host "`n========================================" -ForegroundColor Green

@@ -34,13 +34,12 @@ Schemas in load order (see `schema_exec_order.md`): `general → pos → purchas
 ./build-bootstrap.ps1
 ```
 
-Bootstrap is auto-run by the backend's Docker compose on first DB container start. To reset locally from the backend repo:
+Local dev uses a native PostgreSQL server (no Docker). To reset, drop and recreate the database, then load `bootstrap.sql` (from this repo):
 
 ```bash
-docker compose -f docker-compose.dev.yml down
-rm -rf ./postgres-data
-docker compose -f docker-compose.dev.yml up -d
-docker logs my-business-panel-postgres | grep -E "(ERROR|Bootstrap completado|ready to accept)"
+psql -U postgres -c "DROP DATABASE IF EXISTS mybusinesspaneldb"
+psql -U postgres -c "CREATE DATABASE mybusinesspaneldb"
+psql -U postgres -d mybusinesspaneldb -f bootstrap.sql
 ```
 
 Each dev must run their **own local DB** — no shared databases, no testing against shared environments. Must be able to drop, recreate from `bootstrap.sql`, run seeds + tests, with zero manual steps.
