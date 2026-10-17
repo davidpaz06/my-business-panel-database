@@ -590,6 +590,108 @@ RETURNS TABLE (
     LEFT JOIN m ON TRUE;
 $$ LANGUAGE sql STABLE;
 
+-- Historial del switch automatico/manual y tasa vigente en una fecha
+-- (FNZ-X-02, migrations/general/044).
+CREATE OR REPLACE FUNCTION general_schema.record_tenant_exchange_config_history()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.auto_update IS NOT DISTINCT FROM OLD.auto_update THEN
+        RETURN NEW;
+    END IF;
+
+    -- Primer cambio registrado del tenant: sembrar el estado anterior para que
+    -- las fechas previas no tomen el modo nuevo. Sin fila previa el tenant era
+    -- automatico (default); en un UPDATE el estado anterior es OLD.
+    IF NOT EXISTS (
+        SELECT 1 FROM general_schema.tenant_exchange_config_history h
+        WHERE h.tenant_id = NEW.tenant_id
+    ) THEN
+        INSERT INTO general_schema.tenant_exchange_config_history
+            (tenant_id, auto_update, effective_at, changed_by)
+        VALUES (
+            NEW.tenant_id,
+            CASE WHEN TG_OP = 'UPDATE' THEN OLD.auto_update ELSE TRUE END,
+            '-infinity'::timestamp,
+            NULL
+        );
+    END IF;
+
+    INSERT INTO general_schema.tenant_exchange_config_history
+        (tenant_id, auto_update, effective_at, changed_by)
+    VALUES (NEW.tenant_id, NEW.auto_update, NEW.updated_at, NEW.updated_by);
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tenant_exchange_config_history
+    ON general_schema.tenant_exchange_config;
+CREATE TRIGGER trg_tenant_exchange_config_history
+AFTER INSERT OR UPDATE OF auto_update ON general_schema.tenant_exchange_config
+FOR EACH ROW EXECUTE FUNCTION general_schema.record_tenant_exchange_config_history();
+
+-- Tasa USD -> VES vigente para un tenant en un instante (UTC).
+-- Modo: ultimo registro del historial <= instante; si el tenant no tiene
+-- historial (cambio el switch antes de esta migracion), su modo actual.
+-- Automatico: base global + diferencial vigentes en el instante.
+-- Manual: ultima tasa manual <= instante; si aun no habia ninguna, base +
+-- diferencial (misma regla que get_effective_exchange_rate).
+-- Antes de la primera tasa base cargada se usa la mas antigua disponible.
+-- NULL solo si no hay ninguna tasa base en el sistema.
+CREATE OR REPLACE FUNCTION general_schema.get_exchange_rate_at(
+    _tenant_id UUID,
+    _at        TIMESTAMP
+)
+RETURNS NUMERIC(12,6) AS $$
+    WITH mode AS (
+        SELECT COALESCE(
+            (SELECT h.auto_update
+             FROM general_schema.tenant_exchange_config_history h
+             WHERE h.tenant_id = _tenant_id AND h.effective_at <= _at
+             ORDER BY h.effective_at DESC, h.created_at DESC
+             LIMIT 1),
+            (SELECT c.auto_update
+             FROM general_schema.tenant_exchange_config c
+             WHERE c.tenant_id = _tenant_id),
+            TRUE
+        ) AS auto_update
+    ),
+    base AS (
+        SELECT COALESCE(
+            (SELECT er.rate FROM general_schema.exchange_rate er
+             WHERE er.effective_at <= _at
+             ORDER BY er.effective_at DESC, er.created_at DESC
+             LIMIT 1),
+            (SELECT er.rate FROM general_schema.exchange_rate er
+             ORDER BY er.effective_at ASC, er.created_at ASC
+             LIMIT 1)
+        ) AS rate
+    ),
+    d AS (
+        SELECT COALESCE(
+            (SELECT ted.delta FROM general_schema.tenant_exchange_delta ted
+             WHERE ted.tenant_id = _tenant_id AND ted.effective_at <= _at
+             ORDER BY ted.effective_at DESC, ted.created_at DESC
+             LIMIT 1),
+            0
+        ) AS delta
+    ),
+    m AS (
+        SELECT (SELECT tmr.rate FROM general_schema.tenant_manual_rate tmr
+                WHERE tmr.tenant_id = _tenant_id AND tmr.effective_at <= _at
+                ORDER BY tmr.effective_at DESC, tmr.created_at DESC
+                LIMIT 1) AS rate
+    )
+    SELECT (CASE
+                WHEN mode.auto_update OR m.rate IS NULL THEN base.rate + d.delta
+                ELSE m.rate
+            END)::NUMERIC(12,6)
+    FROM mode, base, d, m;
+$$ LANGUAGE sql STABLE;
+
+COMMENT ON FUNCTION general_schema.get_exchange_rate_at(UUID, TIMESTAMP) IS
+    'Tasa USD -> VES vigente para un tenant en un instante UTC, segun el ledger de tasas y el historial del switch automatico/manual. Para convertir montos historicos (Finanzas, FNZ-X-02).';
+
 -- Historial completo por tenant: cada cambio de tasa base o de diferencial,
 -- con base/delta/efectiva vigentes en ese momento. Postgres no soporta
 -- IGNORE NULLS en window functions -> patron gaps-and-islands para

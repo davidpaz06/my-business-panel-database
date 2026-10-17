@@ -656,6 +656,20 @@ CREATE INDEX IF NOT EXISTS idx_sale_collection_receivable
 CREATE INDEX IF NOT EXISTS idx_sale_collection_date
     ON pos_schema.sale_collection(payment_date);
 
+-- FNZ-FI-03: origen de los movimientos de puntos (migracion 046). Se agrega aqui
+-- porque sale_collection se define despues de score_transaction.
+ALTER TABLE pos_schema.score_transaction
+    ADD COLUMN IF NOT EXISTS sale_id UUID
+        REFERENCES pos_schema.sale(sale_id) ON DELETE SET NULL;
+ALTER TABLE pos_schema.score_transaction
+    ADD COLUMN IF NOT EXISTS sale_collection_id UUID
+        REFERENCES pos_schema.sale_collection(sale_collection_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_score_transaction_sale
+    ON pos_schema.score_transaction(sale_id)
+    WHERE sale_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_score_transaction_tenant_created
+    ON pos_schema.score_transaction(tenant_id, created_at);
+
 CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_type (
     collection_alert_type_id   SERIAL PRIMARY KEY,
     collection_alert_type_name VARCHAR(50) NOT NULL,

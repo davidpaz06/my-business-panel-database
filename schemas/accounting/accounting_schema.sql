@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS journal_entry (
     status_id INTEGER NOT NULL DEFAULT 1 REFERENCES accounting_schema.journal_entry_status(status_id),
     total_debit NUMERIC(14,4) NOT NULL DEFAULT 0 CHECK (total_debit >= 0),
     total_credit NUMERIC(14,4) NOT NULL DEFAULT 0 CHECK (total_credit >= 0),
+    -- Moneda del documento de origen y tasa USD -> VES usada; las lineas estan
+    -- siempre en VES (moneda funcional). Ver migrations/accounting/045.
+    currency_id INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    exchange_rate NUMERIC(18,8) NOT NULL DEFAULT 1
+        CONSTRAINT chk_journal_entry_exchange_rate_positive CHECK (exchange_rate > 0),
     created_by UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -290,3 +295,47 @@ CREATE INDEX IF NOT EXISTS idx_fiscal_period_dates
 
 COMMENT ON TABLE accounting_schema.fiscal_period IS
     'Fiscal periods for financial reporting. is_closed prevents modifications to journal entries within the period.';
+
+-- -------------------------------------------------------
+-- RETENCION DE IVA (FNZ-IV-06, migracion 047)
+-- -------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS accounting_schema.iva_withholding (
+    withholding_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id            UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    voucher_number       INTEGER NOT NULL,
+    supplier_invoice_id  UUID NOT NULL REFERENCES purchase_schema.supplier_invoice(supplier_invoice_id),
+    supplier_id          UUID NOT NULL REFERENCES purchase_schema.supplier(supplier_id),
+    invoice_number       VARCHAR(100) NOT NULL,
+    taxable_base         NUMERIC(14,3) NOT NULL,
+    iva_amount           NUMERIC(14,3) NOT NULL,
+    retention_percentage NUMERIC(5,2) NOT NULL,
+    retained_amount      NUMERIC(14,3) NOT NULL,
+    currency_id          INTEGER NOT NULL DEFAULT 2 REFERENCES general_schema.currency(currency_id),
+    exchange_rate        NUMERIC(18,8),
+    issued_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_voided            BOOLEAN NOT NULL DEFAULT FALSE,
+    voided_at            TIMESTAMP,
+    created_by           UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT chk_iva_withholding_pct CHECK (retention_percentage > 0 AND retention_percentage <= 100),
+    CONSTRAINT chk_iva_withholding_amounts CHECK (retained_amount >= 0 AND iva_amount >= 0)
+);
+
+-- Correlativo por tenant, sin huecos reutilizables: un comprobante anulado
+-- conserva su numero.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_iva_withholding_tenant_number
+    ON accounting_schema.iva_withholding(tenant_id, voucher_number);
+
+-- Una factura de proveedor tiene a lo sumo un comprobante vigente.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_iva_withholding_active_invoice
+    ON accounting_schema.iva_withholding(supplier_invoice_id)
+    WHERE is_voided = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_iva_withholding_tenant_issued
+    ON accounting_schema.iva_withholding(tenant_id, issued_at);
+
+COMMENT ON TABLE accounting_schema.iva_withholding IS
+    'Comprobantes de retencion de IVA practicados a proveedores (FNZ-IV-06). Montos en currency_id (USD: las compras estan en USD); exchange_rate = tasa USD -> VES al emitir.';

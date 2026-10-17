@@ -1,6 +1,6 @@
 ﻿-- ======================================================
 -- CONSOLIDATED BOOTSTRAP FILE
--- Generated: 2026-10-06 09:00:16
+-- Generated: 2026-10-17 10:39:53
 -- ======================================================
 -- This file can be executed from any SQL client
 -- ======================================================
@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS tenant(
     is_subscribed BOOLEAN default false,
     stripe_id VARCHAR(255) unique default null,
     tax_regime general_schema.tax_regime NOT NULL DEFAULT 'traditional',
+    is_iva_withholding_agent BOOLEAN NOT NULL DEFAULT FALSE, -- FNZ-IV-06 (mig 047)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -259,6 +260,26 @@ CREATE TABLE IF NOT EXISTS tenant_manual_rate (
 
 CREATE INDEX IF NOT EXISTS idx_tenant_manual_rate_lookup
     ON general_schema.tenant_manual_rate(tenant_id, effective_at DESC);
+
+-- Historial del switch automatico/manual (lo escribe
+-- trg_tenant_exchange_config_history; ver migrations/general/044).
+CREATE TABLE IF NOT EXISTS general_schema.tenant_exchange_config_history (
+    history_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    auto_update   BOOLEAN NOT NULL,
+    effective_at  TIMESTAMP NOT NULL,
+    changed_by    UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_exchange_config_history_lookup
+    ON general_schema.tenant_exchange_config_history(tenant_id, effective_at DESC);
+
+COMMENT ON TABLE general_schema.tenant_exchange_config_history IS
+    'Historial inmutable del switch automatico/manual de tasa por tenant (lo escribe trg_tenant_exchange_config_history). Lo usa get_exchange_rate_at para saber en que modo estaba el tenant en una fecha pasada.';
+
+CREATE INDEX IF NOT EXISTS idx_exchange_rate_effective_at
+    ON general_schema.exchange_rate(effective_at DESC, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,
@@ -1491,6 +1512,20 @@ CREATE INDEX IF NOT EXISTS idx_sale_collection_receivable
 CREATE INDEX IF NOT EXISTS idx_sale_collection_date
     ON pos_schema.sale_collection(payment_date);
 
+-- FNZ-FI-03: origen de los movimientos de puntos (migracion 046). Se agrega aqui
+-- porque sale_collection se define despues de score_transaction.
+ALTER TABLE pos_schema.score_transaction
+    ADD COLUMN IF NOT EXISTS sale_id UUID
+        REFERENCES pos_schema.sale(sale_id) ON DELETE SET NULL;
+ALTER TABLE pos_schema.score_transaction
+    ADD COLUMN IF NOT EXISTS sale_collection_id UUID
+        REFERENCES pos_schema.sale_collection(sale_collection_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_score_transaction_sale
+    ON pos_schema.score_transaction(sale_id)
+    WHERE sale_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_score_transaction_tenant_created
+    ON pos_schema.score_transaction(tenant_id, created_at);
+
 CREATE TABLE IF NOT EXISTS pos_schema.sale_collection_alert_type (
     collection_alert_type_id   SERIAL PRIMARY KEY,
     collection_alert_type_name VARCHAR(50) NOT NULL,
@@ -1713,6 +1748,7 @@ CREATE TABLE IF NOT EXISTS supplier(
     supplier_contact_info TEXT,
     supplier_address TEXT,
     supplier_notes TEXT,
+    iva_retention_percentage NUMERIC(5,2) NOT NULL DEFAULT 0 CONSTRAINT chk_supplier_iva_retention_pct CHECK (iva_retention_percentage >= 0 AND iva_retention_percentage <= 100), -- FNZ-IV-06 (mig 047)
     added_by uuid REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -2839,6 +2875,11 @@ CREATE TABLE IF NOT EXISTS journal_entry (
     status_id INTEGER NOT NULL DEFAULT 1 REFERENCES accounting_schema.journal_entry_status(status_id),
     total_debit NUMERIC(14,4) NOT NULL DEFAULT 0 CHECK (total_debit >= 0),
     total_credit NUMERIC(14,4) NOT NULL DEFAULT 0 CHECK (total_credit >= 0),
+    -- Moneda del documento de origen y tasa USD -> VES usada; las lineas estan
+    -- siempre en VES (moneda funcional). Ver migrations/accounting/045.
+    currency_id INTEGER NOT NULL DEFAULT 1 REFERENCES general_schema.currency(currency_id),
+    exchange_rate NUMERIC(18,8) NOT NULL DEFAULT 1
+        CONSTRAINT chk_journal_entry_exchange_rate_positive CHECK (exchange_rate > 0),
     created_by UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -3018,6 +3059,50 @@ CREATE INDEX IF NOT EXISTS idx_fiscal_period_dates
 
 COMMENT ON TABLE accounting_schema.fiscal_period IS
     'Fiscal periods for financial reporting. is_closed prevents modifications to journal entries within the period.';
+
+-- -------------------------------------------------------
+-- RETENCION DE IVA (FNZ-IV-06, migracion 047)
+-- -------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS accounting_schema.iva_withholding (
+    withholding_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id            UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    voucher_number       INTEGER NOT NULL,
+    supplier_invoice_id  UUID NOT NULL REFERENCES purchase_schema.supplier_invoice(supplier_invoice_id),
+    supplier_id          UUID NOT NULL REFERENCES purchase_schema.supplier(supplier_id),
+    invoice_number       VARCHAR(100) NOT NULL,
+    taxable_base         NUMERIC(14,3) NOT NULL,
+    iva_amount           NUMERIC(14,3) NOT NULL,
+    retention_percentage NUMERIC(5,2) NOT NULL,
+    retained_amount      NUMERIC(14,3) NOT NULL,
+    currency_id          INTEGER NOT NULL DEFAULT 2 REFERENCES general_schema.currency(currency_id),
+    exchange_rate        NUMERIC(18,8),
+    issued_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_voided            BOOLEAN NOT NULL DEFAULT FALSE,
+    voided_at            TIMESTAMP,
+    created_by           UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT chk_iva_withholding_pct CHECK (retention_percentage > 0 AND retention_percentage <= 100),
+    CONSTRAINT chk_iva_withholding_amounts CHECK (retained_amount >= 0 AND iva_amount >= 0)
+);
+
+-- Correlativo por tenant, sin huecos reutilizables: un comprobante anulado
+-- conserva su numero.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_iva_withholding_tenant_number
+    ON accounting_schema.iva_withholding(tenant_id, voucher_number);
+
+-- Una factura de proveedor tiene a lo sumo un comprobante vigente.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_iva_withholding_active_invoice
+    ON accounting_schema.iva_withholding(supplier_invoice_id)
+    WHERE is_voided = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_iva_withholding_tenant_issued
+    ON accounting_schema.iva_withholding(tenant_id, issued_at);
+
+COMMENT ON TABLE accounting_schema.iva_withholding IS
+    'Comprobantes de retencion de IVA practicados a proveedores (FNZ-IV-06). Montos en currency_id (USD: las compras estan en USD); exchange_rate = tasa USD -> VES al emitir.';
 
 
 
@@ -3625,6 +3710,108 @@ RETURNS TABLE (
     LEFT JOIN d ON TRUE
     LEFT JOIN m ON TRUE;
 $$ LANGUAGE sql STABLE;
+
+-- Historial del switch automatico/manual y tasa vigente en una fecha
+-- (FNZ-X-02, migrations/general/044).
+CREATE OR REPLACE FUNCTION general_schema.record_tenant_exchange_config_history()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.auto_update IS NOT DISTINCT FROM OLD.auto_update THEN
+        RETURN NEW;
+    END IF;
+
+    -- Primer cambio registrado del tenant: sembrar el estado anterior para que
+    -- las fechas previas no tomen el modo nuevo. Sin fila previa el tenant era
+    -- automatico (default); en un UPDATE el estado anterior es OLD.
+    IF NOT EXISTS (
+        SELECT 1 FROM general_schema.tenant_exchange_config_history h
+        WHERE h.tenant_id = NEW.tenant_id
+    ) THEN
+        INSERT INTO general_schema.tenant_exchange_config_history
+            (tenant_id, auto_update, effective_at, changed_by)
+        VALUES (
+            NEW.tenant_id,
+            CASE WHEN TG_OP = 'UPDATE' THEN OLD.auto_update ELSE TRUE END,
+            '-infinity'::timestamp,
+            NULL
+        );
+    END IF;
+
+    INSERT INTO general_schema.tenant_exchange_config_history
+        (tenant_id, auto_update, effective_at, changed_by)
+    VALUES (NEW.tenant_id, NEW.auto_update, NEW.updated_at, NEW.updated_by);
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tenant_exchange_config_history
+    ON general_schema.tenant_exchange_config;
+CREATE TRIGGER trg_tenant_exchange_config_history
+AFTER INSERT OR UPDATE OF auto_update ON general_schema.tenant_exchange_config
+FOR EACH ROW EXECUTE FUNCTION general_schema.record_tenant_exchange_config_history();
+
+-- Tasa USD -> VES vigente para un tenant en un instante (UTC).
+-- Modo: ultimo registro del historial <= instante; si el tenant no tiene
+-- historial (cambio el switch antes de esta migracion), su modo actual.
+-- Automatico: base global + diferencial vigentes en el instante.
+-- Manual: ultima tasa manual <= instante; si aun no habia ninguna, base +
+-- diferencial (misma regla que get_effective_exchange_rate).
+-- Antes de la primera tasa base cargada se usa la mas antigua disponible.
+-- NULL solo si no hay ninguna tasa base en el sistema.
+CREATE OR REPLACE FUNCTION general_schema.get_exchange_rate_at(
+    _tenant_id UUID,
+    _at        TIMESTAMP
+)
+RETURNS NUMERIC(12,6) AS $$
+    WITH mode AS (
+        SELECT COALESCE(
+            (SELECT h.auto_update
+             FROM general_schema.tenant_exchange_config_history h
+             WHERE h.tenant_id = _tenant_id AND h.effective_at <= _at
+             ORDER BY h.effective_at DESC, h.created_at DESC
+             LIMIT 1),
+            (SELECT c.auto_update
+             FROM general_schema.tenant_exchange_config c
+             WHERE c.tenant_id = _tenant_id),
+            TRUE
+        ) AS auto_update
+    ),
+    base AS (
+        SELECT COALESCE(
+            (SELECT er.rate FROM general_schema.exchange_rate er
+             WHERE er.effective_at <= _at
+             ORDER BY er.effective_at DESC, er.created_at DESC
+             LIMIT 1),
+            (SELECT er.rate FROM general_schema.exchange_rate er
+             ORDER BY er.effective_at ASC, er.created_at ASC
+             LIMIT 1)
+        ) AS rate
+    ),
+    d AS (
+        SELECT COALESCE(
+            (SELECT ted.delta FROM general_schema.tenant_exchange_delta ted
+             WHERE ted.tenant_id = _tenant_id AND ted.effective_at <= _at
+             ORDER BY ted.effective_at DESC, ted.created_at DESC
+             LIMIT 1),
+            0
+        ) AS delta
+    ),
+    m AS (
+        SELECT (SELECT tmr.rate FROM general_schema.tenant_manual_rate tmr
+                WHERE tmr.tenant_id = _tenant_id AND tmr.effective_at <= _at
+                ORDER BY tmr.effective_at DESC, tmr.created_at DESC
+                LIMIT 1) AS rate
+    )
+    SELECT (CASE
+                WHEN mode.auto_update OR m.rate IS NULL THEN base.rate + d.delta
+                ELSE m.rate
+            END)::NUMERIC(12,6)
+    FROM mode, base, d, m;
+$$ LANGUAGE sql STABLE;
+
+COMMENT ON FUNCTION general_schema.get_exchange_rate_at(UUID, TIMESTAMP) IS
+    'Tasa USD -> VES vigente para un tenant en un instante UTC, segun el ledger de tasas y el historial del switch automatico/manual. Para convertir montos historicos (Finanzas, FNZ-X-02).';
 
 -- Historial completo por tenant: cada cambio de tasa base o de diferencial,
 -- con base/delta/efectiva vigentes en ese momento. Postgres no soporta
@@ -8619,7 +8806,11 @@ INSERT INTO accounting_schema.source_type(source_name, description) VALUES
 ('PAYROLL', 'Registro de nómina'),
 ('MANUAL', 'Asiento manual ingresado por el usuario'),
 ('ADJUSTMENT', 'Ajuste contable'),
-('EXPENSE', 'Registro de gasto operativo')
+('EXPENSE', 'Registro de gasto operativo'),
+('SALE_RETURN', 'Devolución de venta'),
+('CREDIT_NOTE', 'Nota de crédito sobre una factura de venta'),
+('DEBIT_NOTE', 'Nota de débito sobre una factura de venta'),
+('IVA_WITHHOLDING', 'Comprobante de retención de IVA a proveedor')
 ON CONFLICT DO NOTHING;
 
 
@@ -8750,6 +8941,10 @@ INSERT INTO accounting_schema.chart_of_accounts_template(account_code, account_n
 ('5-3-002', 'Empaque y Embalaje',               5, '5-3',   TRUE),
 ('5-3-003', 'Transporte y Envíos',              5, '5-3',   TRUE),
 ('5-3-004', 'Materiales de Producción',         5, '5-3',   TRUE),
+-- Cuenta de respaldo para gastos cuya categoria no tiene codigo contable
+-- (categorias creadas por el tenant). Ver FNZ-GA-09.
+('5-9',     'Otros Gastos',                     5, '5',     FALSE),
+('5-9-001', 'Otros Gastos Operativos',          5, '5-9',   TRUE),
 
 -- -------------------------------------------------------
 -- 6. COSTOS

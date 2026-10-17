@@ -120,6 +120,10 @@ INSERT INTO accounting_schema.chart_of_accounts_template(account_code, account_n
 ('5-3-002', 'Empaque y Embalaje',               5, '5-3',   TRUE),
 ('5-3-003', 'Transporte y Envíos',              5, '5-3',   TRUE),
 ('5-3-004', 'Materiales de Producción',         5, '5-3',   TRUE),
+-- Cuenta de respaldo para gastos cuya categoria no tiene codigo contable
+-- (categorias creadas por el tenant). Ver FNZ-GA-09.
+('5-9',     'Otros Gastos',                     5, '5',     FALSE),
+('5-9-001', 'Otros Gastos Operativos',          5, '5-9',   TRUE),
 
 -- -------------------------------------------------------
 -- 6. COSTOS

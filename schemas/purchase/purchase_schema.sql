@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS supplier(
     supplier_contact_info TEXT,
     supplier_address TEXT,
     supplier_notes TEXT,
+    iva_retention_percentage NUMERIC(5,2) NOT NULL DEFAULT 0 CONSTRAINT chk_supplier_iva_retention_pct CHECK (iva_retention_percentage >= 0 AND iva_retention_percentage <= 100), -- FNZ-IV-06 (mig 047)
     added_by uuid REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tenant(
     is_subscribed BOOLEAN default false,
     stripe_id VARCHAR(255) unique default null,
     tax_regime general_schema.tax_regime NOT NULL DEFAULT 'traditional',
+    is_iva_withholding_agent BOOLEAN NOT NULL DEFAULT FALSE, -- FNZ-IV-06 (mig 047)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -229,6 +230,26 @@ CREATE TABLE IF NOT EXISTS tenant_manual_rate (
 
 CREATE INDEX IF NOT EXISTS idx_tenant_manual_rate_lookup
     ON general_schema.tenant_manual_rate(tenant_id, effective_at DESC);
+
+-- Historial del switch automatico/manual (lo escribe
+-- trg_tenant_exchange_config_history; ver migrations/general/044).
+CREATE TABLE IF NOT EXISTS general_schema.tenant_exchange_config_history (
+    history_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     UUID NOT NULL REFERENCES general_schema.tenant(tenant_id) ON DELETE CASCADE,
+    auto_update   BOOLEAN NOT NULL,
+    effective_at  TIMESTAMP NOT NULL,
+    changed_by    UUID REFERENCES general_schema.users(user_id) ON DELETE SET NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_exchange_config_history_lookup
+    ON general_schema.tenant_exchange_config_history(tenant_id, effective_at DESC);
+
+COMMENT ON TABLE general_schema.tenant_exchange_config_history IS
+    'Historial inmutable del switch automatico/manual de tasa por tenant (lo escribe trg_tenant_exchange_config_history). Lo usa get_exchange_rate_at para saber en que modo estaba el tenant en una fecha pasada.';
+
+CREATE INDEX IF NOT EXISTS idx_exchange_rate_effective_at
+    ON general_schema.exchange_rate(effective_at DESC, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS tax_rate(
     tax_rate_id SERIAL PRIMARY KEY,

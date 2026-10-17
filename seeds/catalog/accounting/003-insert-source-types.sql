@@ -10,5 +10,9 @@ INSERT INTO accounting_schema.source_type(source_name, description) VALUES
 ('PAYROLL', 'Registro de nómina'),
 ('MANUAL', 'Asiento manual ingresado por el usuario'),
 ('ADJUSTMENT', 'Ajuste contable'),
-('EXPENSE', 'Registro de gasto operativo')
+('EXPENSE', 'Registro de gasto operativo'),
+('SALE_RETURN', 'Devolución de venta'),
+('CREDIT_NOTE', 'Nota de crédito sobre una factura de venta'),
+('DEBIT_NOTE', 'Nota de débito sobre una factura de venta'),
+('IVA_WITHHOLDING', 'Comprobante de retención de IVA a proveedor')
 ON CONFLICT DO NOTHING;
